@@ -50,6 +50,8 @@ process_colors = {
     "Fake_e": "#964A8B",
     "Fake_mu": "#964A8B",
     "Prompt": "#E42536",
+    "BuToJpsiK": "#f89c20",
+    "BuToJpsiPi": "#e42536",
 }
 
 process_supergroups = {
