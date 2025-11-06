@@ -42,6 +42,17 @@ parser.add_argument(
     help="Use unfolding binning to produce the gen results",
 )
 parser.add_argument(
+    "--genPtBinningAsReco",
+    action="store_true",
+    help="Use unfolding binning to produce the gen results",
+)
+parser.add_argument(
+    "--useCorrByHelicityBinning",
+    action="store_true",
+    help="Use finer absY binning to produce the gen results."
+    "Used in particular to produce the smooth PDF corrections.",
+)
+parser.add_argument(
     "--singleLeptonHists",
     action="store_true",
     help="Also store single lepton kinematics",
@@ -57,6 +68,7 @@ parser.add_argument(
 parser.add_argument("--signedY", action="store_true", help="use signed Y")
 parser.add_argument(
     "--fiducial",
+    default=None,
     choices=["masswindow", "dilepton", "singlelep"],
     help="Apply selection on leptons (No argument for inclusive)",
 )
@@ -85,6 +97,17 @@ parser.add_argument(
     action="store_true",
     help="Add axis to store info if the event has an outgoing charm quark",
 )
+parser.add_argument(
+    "--finePtVBinning",
+    action="store_true",
+    help="Use 1 GeV binning for ptVgen (e.g., for theory corrections)",
+)
+parser.add_argument(
+    "--centralBosonPDFWeight",
+    action="store_true",
+    help="Apply PDF reweighting using boson parameterized corrections",
+)
+
 
 parser = parsing.set_parser_default(parser, "filterProcs", common.vprocs)
 args = parser.parse_args()
@@ -129,12 +152,27 @@ axis_chargeZgen = hist.axis.Integer(
 
 axis_absetal_gen = hist.axis.Regular(24, 0, 2.4, name="absEtaGen")
 axis_ptl_gen = hist.axis.Regular(34, 26.0, 60.0, name="ptGen")
+axis_mt_gen = hist.axis.Regular(10, 0, 100, name="mtGen")
 axis_chargel_gen = hist.axis.Regular(
-    2, -2.0, 2.0, underflow=False, overflow=False, name=f"qGen"
+    2,
+    -2.0,
+    2.0,
+    name=f"qGen",
+    underflow=False,
+    overflow=False,
 )
 
 theory_corrs = [*args.theoryCorr, *args.ewTheoryCorr]
 corr_helpers = theory_corrections.load_corr_helpers(common.vprocs, theory_corrs)
+
+corrs = []
+if args.helicity and args.propagatePDFstoHelicity:
+    corrs.append("qcdScale")
+if args.centralBosonPDFWeight:
+    corrs.append("pdf_central")
+theory_helpers_procs = theory_corrections.make_theory_helpers(
+    args, procs=["Z", "W"], corrs=corrs
+)
 
 
 def build_graph(df, dataset):
@@ -153,6 +191,11 @@ def build_graph(df, dataset):
         "W",
         "Z",
     ]  # in common.zprocs
+
+    if isW or isZ:
+        theory_helpers = theory_helpers_procs[dataset.name[0]]
+    else:
+        theory_helpers = {}
 
     if args.addCharmAxis:
         axis_massWgen = hist.axis.Variable(
@@ -175,8 +218,13 @@ def build_graph(df, dataset):
         unfolding_axes, unfolding_cols, unfolding_selections = (
             differential.get_dilepton_axes(
                 ["ptVGen", "absYVGen"],
-                common.get_gen_axes(common.get_dilepton_ptV_binning(), True, flow=True),
+                {
+                    "ptll": common.get_dilepton_ptV_binning(fine=False),
+                    "yll": (common.yll_10quantiles_binning),
+                },
+                "prefsr",
                 add_out_of_acceptance_axis=False,
+                rebin_pt=not args.genPtBinningAsReco,
             )
         )
         axis_absYVgen = hist.axis.Variable(
@@ -191,7 +239,18 @@ def build_graph(df, dataset):
         )
 
         axis_massZgen = hist.axis.Regular(1, 60.0, 120.0, name="massVgen")
-
+    elif args.useCorrByHelicityBinning:
+        axis_absYVgen = hist.axis.Variable(
+            common.absYVgen_binning_corr,
+            name="absYVgen",
+            underflow=False,
+        )
+        axis_ptVgen = hist.axis.Variable(
+            common.ptVgen_binning_corr,
+            name="ptVgen",
+            underflow=False,
+        )
+        axis_massZgen = hist.axis.Regular(1, 60.0, 120.0, name="massVgen")
     elif args.useTheoryAgnosticBinning:
         axis_absYVgen = hist.axis.Variable(
             axis_yV_thag.edges,  # same axis as theory agnostic norms
@@ -200,7 +259,6 @@ def build_graph(df, dataset):
         )
         axis_ptVgen = hist.axis.Variable(
             axis_ptV_thag.edges,  # same axis as theory agnostic norms,
-            # common.ptV_binning,
             name="ptVgen",
             underflow=False,
         )
@@ -229,7 +287,7 @@ def build_graph(df, dataset):
             underflow=False,
         )
         axis_ptVgen = hist.axis.Variable(
-            (*common.get_dilepton_ptV_binning(fine=False), 13000.0),
+            (*common.get_dilepton_ptV_binning(fine=args.finePtVBinning), 13000.0),
             name="ptVgen",
             underflow=False,
         )
@@ -250,7 +308,7 @@ def build_graph(df, dataset):
     df = df.Define("isEvenEvent", "event % 2 == 0")
 
     df = theory_tools.define_theory_weights_and_corrs(
-        df, dataset.name, corr_helpers, args
+        df, dataset.name, corr_helpers, args, theory_helpers
     )
 
     if isZ:
@@ -321,25 +379,33 @@ def build_graph(df, dataset):
         )
 
     if args.singleLeptonHists and (isW or isZ):
+        gen_levels = ["prefsr", "postfsr"]
         df = unfolding_tools.define_gen_level(
-            df, dataset.name, ["prefsr"], mode="w_mass" if isW else "z_wlike"
+            df, dataset.name, gen_levels, mode="w_mass" if isW else "z_wlike"
         )
 
-        lep_cols = ["prefsrLep_absEta", "prefsrLep_pt", "prefsrLep_charge"]
-        lep_axes = [axis_absetal_gen, axis_ptl_gen, axis_chargel_gen]
+        lep_axes = [axis_absetal_gen, axis_ptl_gen, axis_mt_gen, axis_chargel_gen]
 
-        if args.addCharmAxis:
-            lep_axes = [*lep_axes, axis_charm]
-            lep_cols = [*lep_cols, "charm"]
+        for level in gen_levels:
+            lep_cols = [
+                f"{level}Lep_absEta",
+                f"{level}Lep_pt",
+                f"{level}V_mT",
+                f"{level}Lep_charge",
+            ]
 
-        results.append(
-            df.HistoBoost(
-                "prefsr_lep",
-                lep_axes,
-                [*lep_cols, "nominal_weight"],
-                storage=hist.storage.Weight(),
+            if args.addCharmAxis:
+                lep_axes = [*lep_axes, axis_charm]
+                lep_cols = [*lep_cols, "charm"]
+
+            results.append(
+                df.HistoBoost(
+                    f"{level}_lep",
+                    lep_axes,
+                    [*lep_cols, "nominal_weight"],
+                    storage=hist.storage.Weight(),
+                )
             )
-        )
 
     if not args.skipEWHists and (isW or isZ) and "Zmumu_powheg-weak" in dataset.name:
         if isZ:
@@ -833,43 +899,36 @@ def build_graph(df, dataset):
         and "LHEPdfWeight" in df.GetColumnNames()
     ):
 
-        qcdScaleByHelicity_helper = (
-            theory_corrections.make_qcd_uncertainty_helper_by_helicity(
-                is_w_like=dataset.name[0] != "W"
-            )
-            if args.helicity
-            else None
-        )
-
         df = syst_tools.add_theory_hists(
             results,
             df,
             args,
             dataset.name,
             corr_helpers,
-            qcdScaleByHelicity_helper,
+            theory_helpers,
             nominal_axes,
             nominal_cols,
             base_name="nominal_gen",
             propagateToHelicity=args.propagatePDFstoHelicity,
         )
 
-        helicity_axes = nominal_axes[:-1] if args.addHelicityAxis else nominal_axes
-        helicity_cols = nominal_cols[:-2] if args.addHelicityAxis else nominal_cols
+        if not dataset.name.startswith("WtoNMu_MN"):
+            helicity_axes = nominal_axes[:-1] if args.addHelicityAxis else nominal_axes
+            helicity_cols = nominal_cols[:-2] if args.addHelicityAxis else nominal_cols
 
-        if args.addCharmAxis:
-            helicity_axes = helicity_axes[:-1]
-            helicity_cols = helicity_cols[:-1]
+            if args.addCharmAxis:
+                helicity_axes = helicity_axes[:-1]
+                helicity_cols = helicity_cols[:-1]
 
-        df = syst_tools.add_helicity_hists(
-            results,
-            df,
-            dataset.name,
-            helicity_axes,
-            helicity_cols,
-            base_name="nominal_gen",
-            storage=hist.storage.Weight(),
-        )
+            df = syst_tools.add_helicity_hists(
+                results,
+                df,
+                dataset.name,
+                helicity_axes,
+                helicity_cols,
+                base_name="nominal_gen",
+                storage=hist.storage.Weight(),
+            )
 
     nominal_gen = df.HistoBoost(
         "nominal_gen",
@@ -877,8 +936,15 @@ def build_graph(df, dataset):
         [*nominal_cols, "nominal_weight"],
         storage=hist.storage.Weight(),
     )
-
     results.append(nominal_gen)
+
+    nominal_gen_pdf_uncorr = df.HistoBoost(
+        "nominal_gen_pdf_uncorr",
+        nominal_axes,
+        [*nominal_cols, "nominal_weight_pdf_uncorr"],
+        storage=hist.storage.Weight(),
+    )
+    results.append(nominal_gen_pdf_uncorr)
 
     return results, weightsum
 
@@ -892,12 +958,8 @@ write_analysis_output(
 # of these histograms, so skip them in that case
 if not args.addHelicityAxis and not args.skipHelicityXsecs:
     logger.info("Writing out helicity cross sections")
-    z_helicity_xsecs = None
-    w_helicity_xsecs = None
 
-    z_helicity_xsecs_lhe = None
-    w_helicity_xsecs_lhe = None
-
+    helicity_xsecs_out = {}
     for dataset in datasets:
         name = dataset.name
         if "nominal_gen_helicity_xsecs_scale" not in resultdict[name]["output"]:
@@ -905,42 +967,70 @@ if not args.addHelicityAxis and not args.skipHelicityXsecs:
                 f"Failed to find nominal_gen_helicity_xsecs_scale hist for proc {name}. Skipping!"
             )
             continue
-        helicity_xsecs = resultdict[name]["output"][
-            "nominal_gen_helicity_xsecs_scale"
-        ].get()
-        helicity_xsecs_lhe = resultdict[name]["output"][
-            "nominal_gen_helicity_xsecs_scale_lhe"
-        ].get()
-        if name in ["ZmumuPostVFP", "Zee_MiNNLO", "Zmumu_MiNNLO"]:
-            if z_helicity_xsecs is None:
-                z_helicity_xsecs = helicity_xsecs
-                z_helicity_xsecs_lhe = helicity_xsecs_lhe
+        for var in ["", "lhe", "hardProcess", "postShower", "postBeamRemnants"]:
+            if name not in [
+                "ZmumuPostVFP",
+                "Zee_MiNNLO",
+                "Zmumu_MiNNLO",
+                "WplusmunuPostVFP",
+                "WminusmunuPostVFP",
+            ]:
+                continue
+
+            if var == "":
+                suffix = ""
             else:
-                z_helicity_xsecs = hh.addHists(
-                    z_helicity_xsecs, helicity_xsecs, createNew=False
-                )
-                z_helicity_xsecs_lhe = hh.addHists(
-                    z_helicity_xsecs_lhe, helicity_xsecs_lhe, createNew=False
-                )
-        elif name in ["WplusmunuPostVFP", "WminusmunuPostVFP"]:
-            if w_helicity_xsecs is None:
-                w_helicity_xsecs = helicity_xsecs
-                w_helicity_xsecs_lhe = helicity_xsecs_lhe
+                suffix = f"_{var}"
+
+            helicity_xsecs = resultdict[name]["output"][
+                f"nominal_gen_helicity_xsecs_scale{suffix}"
+            ].get()
+
+            key = f"{name[0]}{suffix}"
+
+            if key not in helicity_xsecs_out.keys():
+                helicity_xsecs_out[key] = helicity_xsecs
             else:
-                w_helicity_xsecs = hh.addHists(
-                    w_helicity_xsecs, helicity_xsecs, createNew=False
-                )
-                w_helicity_xsecs_lhe = hh.addHists(
-                    w_helicity_xsecs_lhe, helicity_xsecs_lhe, createNew=False
+                helicity_xsecs_out[key] = hh.addHists(
+                    helicity_xsecs_out[key], helicity_xsecs, createNew=False
                 )
 
-    helicity_xsecs_out = {}
-    if z_helicity_xsecs:
-        helicity_xsecs_out["Z"] = z_helicity_xsecs
-        helicity_xsecs_out["Z_lhe"] = z_helicity_xsecs_lhe
-    if w_helicity_xsecs:
-        helicity_xsecs_out["W"] = w_helicity_xsecs
-        helicity_xsecs_out["W_lhe"] = w_helicity_xsecs_lhe
+        # Different PDF set predictions with alphaS variations
+        for var in [
+            "CT18ZalphaS002",
+            "MSHT20alphaS002",
+            "NNPDF31alphaS002",
+            "HERAPDF20extalphaS002",
+            "MSHT20an3loalphaS002",
+            "PDF4LHC21alphaS001",
+            "HERAPDF20alphaS002",
+            "CT18alphaS002",
+            "NNPDF40alphaS001",
+        ]:
+            if name not in [
+                "ZmumuPostVFP",
+                "Zee_MiNNLO",
+                "Zmumu_MiNNLO",
+                "WplusmunuPostVFP",
+                "WminusmunuPostVFP",
+            ]:
+                continue
+
+            histname = f"nominal_gen_helicity_nominal_gen_pdf{var}"
+            if histname not in resultdict[name]["output"].keys():
+                continue
+
+            helicity_xsecs = resultdict[name]["output"][histname].get()
+
+            key = f"{name[0]}_{var}"
+
+            if key not in helicity_xsecs_out.keys():
+                helicity_xsecs_out[key] = helicity_xsecs
+            else:
+                helicity_xsecs_out[key] = hh.addHists(
+                    helicity_xsecs_out[key], helicity_xsecs, createNew=False
+                )
+
     if helicity_xsecs_out:
         outfname = "w_z_helicity_xsecs"
         if args.signedY:

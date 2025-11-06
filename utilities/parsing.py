@@ -8,6 +8,27 @@ from wums import logging
 choices_padding = ["auto", "lower left", "lower right", "upper left", "upper right"]
 
 
+def str_to_complex_or_int(value):
+    # this function only accepts pure imaginary or pure real (integer) numbers
+    # because it is used for UHI (for instance with options such as --axlim)
+    value = value.strip()
+    if value.endswith("j"):
+        try:
+            complex_value = complex(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"Invalid complex number: '{value}'")
+        if complex_value.real != 0:
+            raise ValueError(
+                f"str_to_complex_or_int: invalid value '{value}', it must be pure imaginary"
+            )
+        return complex_value
+    else:
+        try:
+            return int(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"Invalid integer: '{value}'")
+
+
 def set_parser_attribute(parser, argument, attribute, newValue):
     # change an argument of the parser, must be called before parse_arguments
     logger = logging.child_logger(__name__)
@@ -69,7 +90,10 @@ def common_parser(analysis_label=""):
 
     import ROOT
 
-    ROOT.ROOT.EnableImplicitMT(max(0, initargs.nThreads))
+    if initargs.nThreads == 1:
+        ROOT.ROOT.DisableImplicitMT()
+    else:
+        ROOT.ROOT.EnableImplicitMT(max(0, initargs.nThreads))
     from wremnants import theory_corrections, theory_tools
 
     class PDFFilterAction(argparse.Action):
@@ -477,6 +501,71 @@ def common_parser(analysis_label=""):
             type=float,
             help="Lower threshold for muon pt in the veto definition",
         )
+        parser.add_argument(
+            "--vetoRecoEta",
+            default=2.4,
+            type=float,
+            help="Upper threshold for muon absolute eta in the veto definition",
+        )
+        parser.add_argument(
+            "--oneMCfileEveryN",
+            type=int,
+            default=None,
+            help="Use 1 MC file every N, where N is given by this option. Mainly for tests",
+        )
+        # Options to test splitting of data into subsets
+        parser.add_argument(
+            "--addRunAxis",
+            action="store_true",
+            help="Add axis with slices of luminosity based on run numbers",
+        )
+        parser.add_argument(
+            "--nRunBins",
+            type=int,
+            default=5,
+            choices=range(2, 6),
+            help="""
+            Number of bins to use with --addRunAxis 
+            (hardcoded luminosity splitting inside histmakers)""",
+        )
+        parser.add_argument(
+            "--randomizeDataByRun",
+            action="store_true",
+            help="When adding the run axis with --addRunAxis, randomly put data events into the various bins",
+        )
+        parser.add_argument(
+            "--addMuonPhiAxis",
+            type=float,
+            default=None,
+            nargs="+",
+            help="""
+            Add another fit axis with the muon phi.
+            Specify a positive number of bins (default does nothing), which will be uniformly spaced,
+            or a list of bin edges (the number of bins is inferred accordingly.
+            Phi is defined between -pi and +pi
+            """,
+        )
+        parser.add_argument(
+            "--addNvtxAxis",
+            type=float,
+            default=None,
+            nargs="+",
+            help="""
+            Add another fit axis with the number of reconstructed vertices.
+            Specify a list of bin edges
+            """,
+        )
+        parser.add_argument(
+            "--normWeightNvtx",
+            type=float,
+            default=None,
+            nargs="+",
+            help="""
+            Additional normalization weight differential in number of reconstructed vertices.
+            To be used together with --addNvtxAxis, if desired.
+            Specify a list of weights (one less item than --addNvtxAxis)
+            """,
+        )
 
     commonargs, _ = parser.parse_known_args()
 
@@ -521,7 +610,7 @@ def common_parser(analysis_label=""):
         "--sfFile", type=str, help="File with muon scale factors", default=sfFile
     )
 
-    if analysis_label not in ["vgen"]:
+    if analysis_label in ["w_lowpu", "z_lowpu", "w_mass", "z_wlike", "z_dilepton"]:
         parser.add_argument(
             "--eta",
             nargs=3,
@@ -538,8 +627,9 @@ def common_parser(analysis_label=""):
         )
         parser.add_argument(
             "--fitresult",
+            nargs="+",
             type=str,
-            help="Fitresult to be used to reweight the gen distribution (e.g. for iterative POI as NOI fit)",
+            help="Fitresult to be used to reweight the gen distribution (e.g. for iterative POI as NOI fit) if two are given use first for numerator and second for denominator",
         )
         parser.add_argument(
             "--poiAsNoi",
@@ -744,6 +834,12 @@ def plot_parser():
         help="Legend text size (small: axis ticks size, large: axis label size, number)",
     )
     parser.add_argument(
+        "--cmsDecorSize",
+        type=str,
+        default="small",
+        help="'CMS xxx' text size (small: axis ticks size, large: axis label size, number)",
+    )
+    parser.add_argument(
         "--legCols", type=int, default=2, help="Number of columns in legend"
     )
     parser.add_argument(
@@ -752,6 +848,11 @@ def plot_parser():
         default="auto",
         choices=choices_padding,
         help="Where to put empty entries in legend",
+    )
+    parser.add_argument(
+        "--noLowerLeg",
+        action="store_true",
+        help="Don't plot the legend on the lower panel",
     )
     parser.add_argument(
         "--lowerLegPos",

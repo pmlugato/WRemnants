@@ -16,6 +16,8 @@ xsec_WplusJetsToMuNu = 11765.9
 xsec_WminusJetsToMuNu = 8703.87
 xsec_DYJetsToMuMuMass10to50 = 6997.0
 Z_TAU_TO_LEP_RATIO = 1.0 - (1.0 - BR_TAUToMU - BR_TAUToE) ** 2
+# BSM heavy neutrino samples
+xsec_WtoNMu = 100
 
 wprocs = [
     "WplusmunuPostVFP",
@@ -42,6 +44,9 @@ wprocs = [
     "Wminusmunu_winhac-nlo",
     "WplusCharmToMuNu",
     "WminusCharmToMuNu",
+    "WtoNMu_MN-5-V-0p001",
+    "WtoNMu_MN-10-V-0p001",
+    "WtoNMu_MN-50-V-0p001",
 ]
 zprocs = [
     "ZmumuPostVFP",
@@ -179,6 +184,57 @@ absYV_binning = [
     4,
 ]
 
+yll_10quantiles_binning = [-2.5, -1.5, -1.0, -0.5, -0.25, 0, 0.25, 0.5, 1.0, 1.5, 2.5]
+
+absYVgen_binning_corr = np.concatenate(
+    (np.arange(0, 2.6, 0.25), [2.75, 3.0, 3.25, 3.5, 3.75, 4.0, 5.0])
+)
+ptVgen_binning_corr = [
+    0,
+    1,
+    2,
+    2.5,
+    3,
+    3.5,
+    4,
+    4.5,
+    5,
+    5.5,
+    6,
+    6.5,
+    7,
+    7.5,
+    8,
+    8.5,
+    9,
+    9.5,
+    10,
+    10.5,
+    11,
+    11.5,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    22,
+    24,
+    26,
+    28,
+    30,
+    33,
+    37,
+    44,
+    54,
+    75,
+    100,
+    1300,
+]
+
 # categorical axes in python bindings always have an overflow bin, so use a regular axis for the charge
 axis_charge = hist.axis.Regular(
     2, -2.0, 2.0, underflow=False, overflow=False, name="charge"
@@ -276,33 +332,51 @@ def get_binning_fakes_relIso(high_iso_bins=False):
 
 def get_dilepton_ptV_binning(fine=False):
     return (
-        [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 20, 23, 27, 32, 40, 54, 100]
+        [
+            0,
+            1,
+            2,
+            2.5,
+            3,
+            3.5,
+            4,
+            4.5,
+            5,
+            5.5,
+            6,
+            6.5,
+            7,
+            7.5,
+            8,
+            8.5,
+            9,
+            9.5,
+            10,
+            10.5,
+            11,
+            11.5,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            22,
+            24,
+            26,
+            28,
+            30,
+            33,
+            37,
+            44,
+            100,
+        ]
         if not fine
-        else range(60)
+        else range(200)
     )
-
-
-def get_gen_axes(dilepton_ptV_binning=None, inclusive=False, flow=False):
-    if dilepton_ptV_binning is None:
-        dilepton_ptV_binning = get_dilepton_ptV_binning()
-
-    gen_axes = {
-        "ptVGen": hist.axis.Variable(
-            dilepton_ptV_binning[:-1], name="ptVGen", underflow=False, overflow=flow
-        ),
-        # "absYVGen": hist.axis.Regular(10, 0, 2.5, name = "absYVGen", underflow=False, overflow=flow)
-        "absYVGen": hist.axis.Variable(
-            [0, 0.35, 0.7, 1.1, 1.5, 2.5],
-            name="absYVGen",
-            underflow=False,
-            overflow=False,
-        ),
-    }
-    # if inclusive:
-    #     binning = (*gen_axes["absYVGen"].edges[:-1], 5.)
-    #     gen_axes["absYVGen"] = hist.axis.Variable(binning, name="absYVGen", underflow=False, overflow=flow)
-
-    return gen_axes
 
 
 def get_default_ptbins(analysis_label, unfolding=False, gen=False):

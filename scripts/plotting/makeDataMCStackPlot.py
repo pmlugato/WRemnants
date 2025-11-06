@@ -56,7 +56,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--axlim",
-    type=float,
+    type=parsing.str_to_complex_or_int,
     default=[],
     nargs="*",
     help="Restrict axis to this range (assumes pairs of values by axis, with trailing axes optional)",
@@ -72,6 +72,18 @@ parser.add_argument(
     type=str,
     nargs="*",
     help="Filter to plot (default no filter, only specify if you want a subset",
+)
+parser.add_argument(
+    "--excludeProcs",
+    type=str,
+    nargs="*",
+    help="Exclude processes matched by group name or (subset) of name",
+    default=[
+        "QCD",
+        "WtoNMu_5",
+        "WtoNMu_10",
+        "WtoNMu_50",
+    ],
 )
 parser.add_argument("--noData", action="store_true", help="Don't plot data")
 parser.add_argument("--noFill", action="store_true", help="Don't fill")
@@ -266,7 +278,7 @@ logger.debug(f"args.procFilters: {args.procFilters}")
 groups = Datagroups(
     args.infile,
     filterGroups=args.procFilters,
-    excludeGroups=None if args.procFilters else ["QCD"],
+    excludeGroups=args.excludeProcs,
 )
 
 logger.debug(f"groups: {groups}")
@@ -578,6 +590,7 @@ for h in args.hists:
         width_scale=1.25 if len(h.split("-")) == 1 else 1,
         legPos=args.legPos,
         leg_padding=args.legPadding,
+        lowerLeg=not args.noLowerLeg,
         lowerLegCols=args.lowerLegCols,
         lowerLegPos=args.lowerLegPos,
         lower_leg_padding=args.lowerLegPadding,

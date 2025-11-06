@@ -2,9 +2,17 @@ import os
 import time
 
 import h5py
+import hist
+import numpy as np
+import ROOT
 
+import narf
 from utilities import common
+from utilities.io_tools import input_tools
+from wums import boostHistHelpers as hh
 from wums import ioutils, logging, output_tools
+
+narf.clingutils.Declare('#include "histHelpers.hpp"')
 
 logger = logging.child_logger(__name__)
 
@@ -190,7 +198,7 @@ def write_analysis_output(results, outfile, args):
     with h5py.File(outfile, open_as) as f:
         for k, v in results.items():
             logger.debug(f"Pickle and dump {k}")
-            ioutils.pickle_dump_h5py(k, v, f)
+            ioutils.pickle_dump_h5py(k, v, f, override=open_as != "w")
 
         if "meta_info" not in f.keys():
             ioutils.pickle_dump_h5py(
@@ -203,3 +211,168 @@ def write_analysis_output(results, outfile, args):
     logger.info(f"Output saved in {outfile}")
 
     return outfile
+
+
+def get_run_lumi_edges(nRunBins, era):
+    if era == "2016PostVFP":
+        if nRunBins == 2:
+            run_edges = [278768, 280385, 284044]
+            lumi_edges = [0.0, 0.48013, 1.0]
+        elif nRunBins == 3:
+            run_edges = [278768, 279767, 283270, 284044]
+            lumi_edges = [0.0, 0.25749, 0.72954, 1.0]
+        elif nRunBins == 4:
+            run_edges = [278768, 279767, 280385, 283270, 284044]
+            lumi_edges = [0.0, 0.25749, 0.48013, 0.72954, 1.0]
+        elif nRunBins == 5:
+            run_edges = [278768, 279588, 280017, 282037, 283478, 284044]
+            lumi_edges = [0.0, 0.13871, 0.371579, 0.6038544, 0.836724, 1.0]
+        else:
+            raise NotImplementedError(
+                f"Invalid number of bins ({nRunBins}) passed to --nRunBins."
+            )
+    else:
+        raise NotImplementedError(
+            f"Function get_run_lumi_edges() does not yet support era {era}."
+        )
+    return run_edges, lumi_edges
+
+
+def make_quantile_helper(
+    filename,
+    axes,
+    dependent_axes=[],
+    name="nominal",
+    processes=["ZmumuPostVFP"],
+    n_quantiles=[],
+):
+    """
+    Helper to compute the quantile for `axes` from fine binned histogram with `name` in bins of the dependent axes
+    The helper takes colums for `axes` and `dependent_axes` and returns the quantile the event falls as a fraction of 1
+    If quantiles are performed in more than 1 dimension, the number of quantiles in the n lower dimensions must be given in 'n_quantiles'
+    """
+
+    h5file = h5py.File(filename, "r")
+    results = input_tools.load_results_h5py(h5file)
+
+    hIn = hh.sumHists(results[p]["output"][name].get() for p in processes)
+
+    if isinstance(axes, str):
+        axes = [axes]
+
+    def hist_to_helper(h):
+        hConv = narf.hist_to_pyroot_boost(h, tensor_rank=0)
+
+        tensor = getattr(ROOT.wrem, f"HistHelper{len(h.axes)}D", None)
+        if tensor == None:
+            raise NotImplementedError(f"HistHelper{len(h.axes)}D not yet implemented")
+
+        helper = tensor[type(hConv).__cpp_name__](ROOT.std.move(hConv))
+        helper.hist = h
+        helper.axes = h.axes
+        return helper
+
+    def cdf(arr):
+        cdf_arr = np.cumsum(arr, axis=0)
+        # Normalize to get values between 0 and 1
+        slices_norm = [-1 if i == 0 else slice(None) for i in range(len(arr.shape))]
+        slices_bc = [
+            np.newaxis if i == 0 else slice(None) for i in range(len(arr.shape))
+        ]
+        cdf_arr /= cdf_arr[*slices_norm][*slices_bc]
+        # if there are completely empty slices, set them to 0
+        cdf_arr = np.nan_to_num(cdf_arr, nan=0)
+        # first or last bin(s) could be negative, ensure values between 0 and 1
+        cdf_arr = np.minimum(1, np.maximum(0, cdf_arr))
+        return cdf_arr
+
+    hIn = hIn.project(*axes, *dependent_axes)
+
+    helpers = []
+    if len(axes) in [1, 2]:
+        # make 1D quantiles
+        hFirst = hIn.project(axes[-1], *dependent_axes)
+        cdf_arr = cdf(hFirst.values(flow=True))
+
+        hFirstOut = hist.Hist(*hFirst.axes, storage=hist.storage.Double())
+        hFirstOut.values(flow=True)[...] = cdf_arr
+
+        helpers.append(hist_to_helper(hFirstOut))
+
+        cdf_arr_second = np.empty(hIn.values(flow=True).shape)
+        if len(axes) == 2:
+            n = n_quantiles[-1]
+
+            # make 2D quantiles
+            if len(hIn.axes[axes[-1]]) % n != 0:
+                raise RuntimeError(
+                    f"Can not make {n} quantiles from axis with {len(hIn.axes[axes[-1]])} bins"
+                )
+
+            for i in range(n):
+                lo = i / n
+                hi = (i + 1) / n
+                if hi == 1:
+                    mask = cdf_arr >= lo
+                else:
+                    mask = (cdf_arr >= lo) & (cdf_arr < hi)
+
+                arr = hIn.values(flow=True).copy()
+                if mask is not None:
+                    arr[:, ~mask] = 0
+                    arr = np.sum(arr, axis=1)
+
+                arr = cdf(arr)[:, np.newaxis, ...]
+                arr = np.broadcast_to(arr, cdf_arr_second.shape)
+                mask_out = np.broadcast_to(mask[np.newaxis, ...], cdf_arr_second.shape)
+                cdf_arr_second = np.where(mask_out, arr, cdf_arr_second)
+
+            hSecondOut = hist.Hist(*hIn.axes, storage=hist.storage.Double())
+            hSecondOut.values(flow=True)[...] = cdf_arr_second
+
+            helpers.append(hist_to_helper(hSecondOut))
+    else:
+        raise NotImplementedError(
+            f"Making quantiles in {len(axes)} dimensions is not implemented."
+        )
+
+    return helpers
+
+
+def make_muon_phi_axis(phi_bins, ax_name="phi", flows=False):
+    # TODO: worth having different axis type (e.g. Regular with
+    # circular=True) depending on the list of edges?
+    if isinstance(phi_bins, int) or len(phi_bins) == 1:
+        nphi = phi_bins if isinstance(phi_bins, int) else int(phi_bins[0])
+        phi_width = 2.0 / nphi
+        phi_edges = [(-1.0 + i * phi_width) * np.pi for i in range(nphi + 1)]
+    else:
+        phi_edges = [x for x in phi_bins]
+
+    phi_axis = hist.axis.Variable(
+        np.array(phi_edges), name=ax_name, underflow=flows, overflow=flows
+    )
+
+    return phi_axis
+
+
+def define_norm_weight_nRecoVtx(
+    df, vtx_axis_edges, vtx_norm_weight, flows_to_unit=False
+):
+    df = df.DefinePerSample(
+        "nRecoVtxEdges",
+        "ROOT::VecOps::RVec<double> res = {"
+        + ",".join([str(x) for x in vtx_axis_edges])
+        + "}; return res;",
+    )
+    df = df.DefinePerSample(
+        "weightVals",
+        "ROOT::VecOps::RVec<double> res = {"
+        + ",".join([str(x) for x in vtx_norm_weight])
+        + "}; return res;",
+    )
+    df = df.Define(
+        "weight_nRecoVtx",
+        f"wrem::get_differential_norm_weight(PV_npvsGood, nRecoVtxEdges, weightVals, {flows_to_unit})",
+    )
+    return df

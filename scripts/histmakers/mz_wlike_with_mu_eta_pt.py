@@ -32,6 +32,9 @@ from wremnants.datasets.dataset_tools import getDatasets
 from wremnants.helicity_utils_polvar import makehelicityWeightHelper_polvar
 from wremnants.histmaker_tools import (
     aggregate_groups,
+    define_norm_weight_nRecoVtx,
+    get_run_lumi_edges,
+    make_muon_phi_axis,
     scale_to_data,
     write_analysis_output,
 )
@@ -95,6 +98,9 @@ parser.add_argument(
 args = parser.parse_args()
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
 isFloatingPOIsTheoryAgnostic = args.theoryAgnostic and not args.poiAsNoi
+
+if args.randomizeDataByRun and not args.addRunAxis:
+    raise ValueError("Options --randomizeDataByRun only works with --addRunAxis.")
 
 if isFloatingPOIsTheoryAgnostic:
     raise ValueError(
@@ -285,8 +291,8 @@ muon_prefiring_helper, muon_prefiring_helper_stat, muon_prefiring_helper_syst = 
     muon_prefiring.make_muon_prefiring_helpers(era=era)
 )
 
-qcdScaleByHelicity_helper = theory_corrections.make_qcd_uncertainty_helper_by_helicity(
-    is_w_like=True
+theory_helpers_procs = theory_corrections.make_theory_helpers(
+    args, corrs=["qcdScale", "alphaS", "pdf"]
 )
 
 # extra axes which can be used to label tensor_axes
@@ -441,7 +447,10 @@ def build_graph(df, dataset):
     isW = dataset.name in common.wprocs
     isZ = dataset.name in common.zprocs
     isWorZ = isW or isZ
-    apply_theory_corr = theory_corrs and dataset.name in corr_helpers
+
+    theory_helpers = None
+    if isWorZ:
+        theory_helpers = theory_helpers_procs[dataset.name[0]]
 
     if dataset.is_data:
         df = df.DefinePerSample("weight", "1.0")
@@ -452,11 +461,66 @@ def build_graph(df, dataset):
     df = df.Define(
         "isEvenEvent", f"event % 2 {'!=' if args.flipEventNumberSplitting else '=='} 0"
     )
-
     weightsum = df.SumAndCount("weight")
 
     axes = nominal_axes
     cols = nominal_cols
+
+    if args.addMuonPhiAxis is not None:
+        axes = [*axes, make_muon_phi_axis(args.addMuonPhiAxis)]
+        cols = [*cols, "trigMuons_phi0"]
+
+    if args.addNvtxAxis is not None:
+        axes = [
+            *axes,
+            hist.axis.Variable(
+                np.array(args.addNvtxAxis),
+                name="nRecoVtx",
+                underflow=False,
+                overflow=False,
+            ),
+        ]
+        cols = [*cols, "PV_npvsGood"]
+
+    if args.addRunAxis:
+        run_edges, lumi_edges = get_run_lumi_edges(args.nRunBins, era)
+        run_bin_centers = [
+            int(0.5 * (run_edges[i + 1] + run_edges[i]))
+            for i in range(len(run_edges) - 1)
+        ]
+        # lumi_fractions = [(lumi_edges[i+1] + lumi_edges[i]) for i in range(len(lumi_edges) - 1)] # [0.25749, 0.22264, 0.24941, 0.27046]
+        axes = [
+            *axes,
+            hist.axis.Variable(
+                np.array(run_edges) + 0.5, name="run", underflow=False, overflow=False
+            ),
+        ]
+        df = df.DefinePerSample(
+            "lumiEdges",
+            "ROOT::VecOps::RVec<double> res = {"
+            + ",".join([str(x) for x in lumi_edges])
+            + "}; return res;",
+        )
+        df = df.DefinePerSample(
+            "runVals",
+            "ROOT::VecOps::RVec<unsigned int> res = {"
+            + ",".join([str(x) for x in run_bin_centers])
+            + "}; return res;",
+        )
+        if dataset.is_data:
+            if args.randomizeDataByRun:
+                df = df.Define(
+                    "run4axis",
+                    "wrem::get_dummy_run_by_lumi_quantile(run, luminosityBlock, event, lumiEdges, runVals)",
+                )
+            else:
+                df = df.Alias("run4axis", "run")
+        else:
+            df = df.Define(
+                "run4axis",
+                "wrem::get_dummy_run_by_lumi_quantile(run, luminosityBlock, event, lumiEdges, runVals)",
+            )
+        cols = [*cols, "run4axis"]
 
     if args.unfolding and isZ:
         df = unfolding_tools.define_gen_level(
@@ -510,7 +574,7 @@ def build_graph(df, dataset):
                     args,
                     dataset.name,
                     corr_helpers,
-                    qcdScaleByHelicity_helper,
+                    theory_helpers,
                     [a for a in unfolding_axes[level] if a.name != "acceptance"],
                     [c for c in unfolding_cols[level] if c != f"{level}_acceptance"],
                     base_name=level,
@@ -656,17 +720,58 @@ def build_graph(df, dataset):
         df = df.Define("weight_vtx", vertex_helper, ["GenVtx_z", "Pileup_nTrueInt"])
 
         if era == "2016PostVFP":
-            df = df.Define(
-                "weight_newMuonPrefiringSF",
-                muon_prefiring_helper,
-                [
-                    "Muon_correctedEta",
-                    "Muon_correctedPt",
-                    "Muon_correctedPhi",
-                    "Muon_correctedCharge",
-                    "Muon_looseId",
-                ],
-            )
+            if args.addRunAxis and not args.randomizeDataByRun:
+                # define helpers for prefiring in each sub era
+                ## TODO: modify main helper to accept era directly as an argument
+                (
+                    muon_prefiring_helper_BG,
+                    muon_prefiring_helper_stat_BG,
+                    muon_prefiring_helper_syst_BG,
+                ) = muon_prefiring.make_muon_prefiring_helpers(era="2016BG")
+                (
+                    muon_prefiring_helper_H,
+                    muon_prefiring_helper_stat_H,
+                    muon_prefiring_helper_syst_H,
+                ) = muon_prefiring.make_muon_prefiring_helpers(era="2016H")
+                #
+                df = df.Define(
+                    "weight_newMuonPrefiringSF_BG",
+                    muon_prefiring_helper_BG,
+                    [
+                        "Muon_correctedEta",
+                        "Muon_correctedPt",
+                        "Muon_correctedPhi",
+                        "Muon_correctedCharge",
+                        "Muon_looseId",
+                    ],
+                )
+                df = df.Define(
+                    "weight_newMuonPrefiringSF_H",
+                    muon_prefiring_helper_H,
+                    [
+                        "Muon_correctedEta",
+                        "Muon_correctedPt",
+                        "Muon_correctedPhi",
+                        "Muon_correctedCharge",
+                        "Muon_looseId",
+                    ],
+                )
+                df = df.Define(
+                    "weight_newMuonPrefiringSF",
+                    "(run4axis > 280385) ? weight_newMuonPrefiringSF_H : weight_newMuonPrefiringSF_BG",
+                )
+            else:
+                df = df.Define(
+                    "weight_newMuonPrefiringSF",
+                    muon_prefiring_helper,
+                    [
+                        "Muon_correctedEta",
+                        "Muon_correctedPt",
+                        "Muon_correctedPhi",
+                        "Muon_correctedCharge",
+                        "Muon_looseId",
+                    ],
+                )
             weight_expr = (
                 "weight_pu*weight_newMuonPrefiringSF*L1PreFiringWeight_ECAL_Nom"
             )
@@ -677,6 +782,11 @@ def build_graph(df, dataset):
 
         if not args.noVertexWeight:
             weight_expr += "*weight_vtx"
+
+        # for tests to split into number of reconstructed vertices
+        if args.addNvtxAxis is not None and args.normWeightNvtx is not None:
+            df = define_norm_weight_nRecoVtx(df, args.addNvtxAxis, args.normWeightNvtx)
+            weight_expr += "*weight_nRecoVtx"
 
         muonVarsForSF = [
             "tnpPt0",
@@ -792,7 +902,7 @@ def build_graph(df, dataset):
         logger.debug(f"Exp weight defined: {weight_expr}")
         df = df.Define("exp_weight", weight_expr)
         df = theory_tools.define_theory_weights_and_corrs(
-            df, dataset.name, corr_helpers, args
+            df, dataset.name, corr_helpers, args, theory_helpers=theory_helpers
         )
 
     results.append(
@@ -805,7 +915,7 @@ def build_graph(df, dataset):
     )
 
     if isZ and args.theoryAgnostic:
-        df = theoryAgnostic_tools.define_helicity_weights(df, is_w_like=True)
+        df = theoryAgnostic_tools.define_helicity_weights(df, is_z=True)
 
     if not args.noRecoil:
         leps_uncorr = [
@@ -905,7 +1015,6 @@ def build_graph(df, dataset):
             ],
         )
         results.append(nominal_bin)
-
         nominal_testIsoMtFakeRegions = df.HistoBoost(
             "nominal_testIsoMtFakeRegions",
             [*axes, axis_isoCat, axis_mtCat],
@@ -1038,11 +1147,16 @@ def build_graph(df, dataset):
         if dataset.is_data:
             df = df.DefinePerSample("nominal_weight_noPUandVtx", "1.0")
             df = df.DefinePerSample("nominal_weight_noVtx", "1.0")
+            df = df.DefinePerSample("nominal_weight_noSF", "1.0")
         else:
             df = df.Define(
                 "nominal_weight_noPUandVtx", "nominal_weight/(weight_pu*weight_vtx)"
             )
             df = df.Define("nominal_weight_noVtx", "nominal_weight/weight_vtx")
+            df = df.Define(
+                "nominal_weight_noSF",
+                "nominal_weight/weight_fullMuonSF_withTrackingReco",
+            )
 
         axis_nRecoVtx = hist.axis.Regular(50, 0.5, 50.5, name="PV_npvsGood")
         axis_fixedGridRhoFastjetAll = hist.axis.Regular(
@@ -1120,6 +1234,8 @@ def build_graph(df, dataset):
 
     nominal = df.HistoBoost("nominal", axes, [*cols, "nominal_weight"])
     results.append(nominal)
+    nominal_noSF = df.HistoBoost("nominal_noSF", axes, [*cols, "nominal_weight_noSF"])
+    results.append(nominal_noSF)
 
     if useTnpMuonVarForSF and not args.onlyMainHistograms and not args.unfolding:
         df = df.Define(
@@ -1273,14 +1389,25 @@ def build_graph(df, dataset):
                 muons="nonTrigMuons",
             )
 
-        df = syst_tools.add_L1Prefire_unc_hists(
-            results,
-            df,
-            axes,
-            cols,
-            helper_stat=muon_prefiring_helper_stat,
-            helper_syst=muon_prefiring_helper_syst,
-        )
+        if era == "2016PostVFP" and args.addRunAxis and not args.randomizeDataByRun:
+            # to simplify the code, use helper with largest uncertainty for all eras when splitting data
+            df = syst_tools.add_L1Prefire_unc_hists(
+                results,
+                df,
+                axes,
+                cols,
+                helper_stat=muon_prefiring_helper_stat_BG,
+                helper_syst=muon_prefiring_helper_syst_BG,
+            )
+        else:
+            df = syst_tools.add_L1Prefire_unc_hists(
+                results,
+                df,
+                axes,
+                cols,
+                helper_stat=muon_prefiring_helper_stat,
+                helper_syst=muon_prefiring_helper_syst,
+            )
 
         # n.b. this is the W analysis so mass weights shouldn't be propagated
         # on the Z samples (but can still use it for dummy muon scale)
@@ -1292,7 +1419,7 @@ def build_graph(df, dataset):
                 args,
                 dataset.name,
                 corr_helpers,
-                qcdScaleByHelicity_helper,
+                theory_helpers,
                 axes,
                 cols,
                 for_wmass=False,

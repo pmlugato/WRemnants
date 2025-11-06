@@ -52,6 +52,10 @@ process_colors = {
     "Prompt": "#E42536",
     "BuToJpsiK": "#f89c20",
     "BuToJpsiPi": "#e42536",
+    "WtoNMu_5": "#409C3D",
+    "WtoNMu_10": "#2BC74D",
+    "WtoNMu_50": "#00FF80",
+    "BSM": "#409C3D",
 }
 
 process_supergroups = {
@@ -87,6 +91,8 @@ process_supergroups = {
 }
 process_supergroups["z_wlike"] = process_supergroups["z_dilepton"]
 process_supergroups["z_lowpu"] = process_supergroups["z_dilepton"]
+process_supergroups["bsm"] = process_supergroups["w_mass"]
+process_supergroups["bsm"]["BSM"] = ["WtoNMu_5", "WtoNMu_10", "WtoNMu_50"]
 
 process_labels = {
     "Data": "Data",
@@ -108,6 +114,9 @@ process_labels = {
     "Fake_e": "Nonprompt (e)",
     "Fake_mu": r"Nonprompt ($\mu$)",
     "Prompt": "Prompt",
+    "WtoNMu_5": r"W$^{\pm}\to\mathrm{N}\mu (5GeV)$",
+    "WtoNMu_10": r"W$^{\pm}\to\mathrm{N}\mu (10GeV)$",
+    "WtoNMu_50": r"W$^{\pm}\to\mathrm{N}\mu (50GeV)$",
 }
 
 axis_labels = {
@@ -125,6 +134,7 @@ axis_labels = {
     "abseta": r"$|\mathit{\eta}^{\mu}|$",
     "absEta": r"$|\mathit{\eta}^{\mu}|$",
     "absEtaGen": r"$|\mathit{\eta}^{\mu}|$",
+    "mtGen": {"label": r"$\mathit{m}_{T}^{\mu+MET}$", "unit": "GeV"},
     "ptll": {"label": r"$\mathit{p}_{\mathrm{T}}^{\mu\mu}$", "unit": "GeV"},
     "yll": r"$\mathit{y}^{\mu\mu}$",
     "absYVGen": r"|$\mathit{Y}^\mathrm{V}$|",
@@ -162,6 +172,9 @@ axis_labels = {
     "dxy": r"$\mathit{d}_\mathrm{xy}$ (cm)",
     "iso": {"label": r"$I$", "unit": "GeV"},
     "relIso": r"$I_\mathrm{rel}$",
+    "run": r"Run range",
+    "nRecoVtx": r"Number of reconstructed vertices",
+    "PV_npvsGood": r"Number of reconstructed vertices",
     # "ewPTll": r"$\mathrm{Post\ FSR}\ p_\mathrm{T}^{\mu\mu}$",
     # "ewMll": r"$\mathrm{Post\ FSR}\ m^{\mu\mu}$",
     # "ewYll": r"$\mathrm{Post\ FSR}\ Y^{\mu\mu}$",
@@ -238,8 +251,6 @@ common_groups = [
     "Total",
     "stat",
     "binByBinStat",
-    "binByBinStatZ",
-    "binByBinStatW",
     "luminosity",
     "recoil",
     "CMS_background",
@@ -258,6 +269,25 @@ nuisance_grouping = {
         "theory",
         "expNoCalib",
         "muonCalibration",
+    ],
+    "splitAi": common_groups
+    + [
+        "angularCoeffs",
+        "angularCoeffs_A0",
+        "angularCoeffs_A1",
+        "angularCoeffs_A2",
+        "angularCoeffs_A3",
+        "angularCoeffs_A4",
+        "angularCoeffs_A5",
+        "angularCoeffs_A6",
+        "angularCoeffs_A7",
+        "pdfCT18Z",
+        "pTModeling",
+        "muon_eff_syst",
+        "muon_eff_stat",
+        "prefire",
+        "muonCalibration",
+        "Fake",
     ],
     "max": common_groups
     + [
@@ -332,6 +362,34 @@ nuisance_grouping = {
         "FakeeShape",
         "FakemuRate",
         "FakemuShape",
+        "binByBinStatDYlowMass",
+        "binByBinStatDiboson",
+        "binByBinStatPhotonInduced",
+        "binByBinStatTop",
+        "binByBinStatWmunu",
+        "binByBinStatWtaunu",
+        "binByBinStatZmumu",
+        "binByBinStatZtautau",
+        "binByBinStatWtoNMu_5",
+        "binByBinStatWtoNMu_10",
+        "binByBinStatWtoNMu_50",
+    ],
+    "unfolding": [
+        "Total",
+        "stat",
+        "binByBinStat",
+        "theory",
+        "expNoLumi",
+        "luminosity",
+    ],
+    "unfolding_prefsr": [
+        "Total",
+        "stat",
+        "binByBinStat",
+        "theory_qcd",
+        "theory_ew",
+        "expNoLumi",
+        "luminosity",
     ],
     "unfolding_max": [
         "Total",
@@ -399,9 +457,17 @@ translate_selection = {
     "qGen": lambda x: rf"$\mathit{{q}}^\mu = {int(x)}$",
     "absYVGen": lambda l, h: rf"${round(l,3)} < |Y| < {round(h,3)}$",
     "helicitySig": lambda x: rf"$\sigma_{{{'UL' if x==-1 else int(x)}}}$",
+    "ai": lambda x: rf"$A_{int(x)}$",
 }
 
 impact_labels = {
+    "WtoNMu_5": "<i>μ</i><sub>W→μN(5GeV)</sub>",
+    "WtoNMu_10": "<i>μ</i><sub>W→μN(10GeV)</sub>",
+    "WtoNMu_50": "<i>μ</i><sub>W→μN(50GeV)</sub>",
+    "massShiftZ100MeV": "<i>m</i><sub>Z</sub>",
+    "massShiftW100MeV": "<i>m</i><sub>W</sub>",
+    "widthZ": "Γ<i>m</i><sub>Z</sub>",
+    "widthW": "Γ<i>m</i><sub>W</sub>",
     "angularCoeffs": "Angular coefficients",
     "QCDscale": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale",
     "QCDscaleZMiNNLO": "<i>μ</i><sub>R </sub> <i>μ</i><sub>F </sub> scale (Z)",
@@ -416,6 +482,17 @@ impact_labels = {
     "binByBinStat": "Bin-by-bin stat.",
     "binByBinStatW": "Bin-by-bin stat. (W)",
     "binByBinStatZ": "Bin-by-bin stat. (Z)",
+    "binByBinStatWmunu": "Bin-by-bin stat. (W→μν)",
+    "binByBinStatWtaunu": "Bin-by-bin stat. (W→τν)",
+    "binByBinStatDYlowMass": "Bin-by-bin stat. (Z→μμ, m<50GeV)",
+    "binByBinStatZmumu": "Bin-by-bin stat. (Z→μμ)",
+    "binByBinStatZtautau": "Bin-by-bin stat. (Z→ττ)",
+    "binByBinStatDiboson": "Bin-by-bin stat. (VV)",
+    "binByBinStatPhotonInduced": "Bin-by-bin stat. (γ-induced)",
+    "binByBinStatTop": "Bin-by-bin stat. (top)",
+    "binByBinStatWtoNMu_5": "Bin-by-bin stat. (BSM)",
+    "binByBinStatWtoNMu_10": "Bin-by-bin stat. (BSM)",
+    "binByBinStatWtoNMu_50": "Bin-by-bin stat. (BSM)",
     "recoil": "recoil",
     "CMS_background": "Bkg.",
     "FakeHighMT": "FakeHighMT",
@@ -434,6 +511,7 @@ impact_labels = {
     "pdfMSHT20NoAlphaS": "PDF",
     "pdfMSHT20AlphaS": "<i>α</i><sub>S</sub> PDF",
     "pdfCT18ZAlphaS": "<i>α</i><sub>S</sub> PDF",
+    "pdfCT18ZNoAlphaS": "PDF",
     "pTModeling": "<i>p</i><sub>T</sub><sup>V</sup> modelling",
     "resum": "Resummation",
     "resumTNP": "Non pert. trans.",
@@ -449,17 +527,17 @@ impact_labels = {
     "ecalPrefire": "L1 ecal prefire",
     "stat": "Data stat.",
     "luminosity": "Luminosity",
-    "theory_ew": "EW",
     "FakeRate": "Fake rate factors",
     "FakeShape": "Fake shape corrections",
     "Fake": "Fakes",
-    "widthW": "W width",
-    "widthZ": "Z width",
     "ZmassAndWidth": "Z mass & width",
     "bcQuarkMass": "b,c quark masses",
     "experiment": "Experiment",
+    "expNoLumi": "Experiment",
     "expNoCalib": "Experiment (excl. calib.)",
     "theory": "Theory",
+    "theory_qcd": "Theory (QCD)",
+    "theory_ew": "Theory (EW)",
     "nlo_ew_virtual": "EW (virtual)",
     "pythia_shower_kt": "Pythia shower <i>k</i><sub>T</sub>",
     "Scale_correction_unc117": "<i>p</i><sub>T</sub><sup>μ</sup> calib. J/ψ stat. (117)",
@@ -579,10 +657,7 @@ systematics_labels = {k: translate_html_to_latex(v) for k, v in impact_labels.it
 
 
 # systematics_labels = {
-#     "massShiftZ100MeV": r"$\Delta m_\mathrm{Z} = \pm 100\mathrm{MeV}$",
-#     "massShiftW100MeV": r"$\Delta m_\mathrm{W} = \pm 100\mathrm{MeV}$",
-#     "widthZ": r"$\Delta \Gamma_\mathrm{Z} = \pm 0.8\mathrm{MeV}$",
-#     "widthW": r"$\Delta \Gamma_\mathrm{W} = \pm 0.6\mathrm{MeV}$",
+
 #     # powhegFOEW variations
 #     "weak_no_ew": "no EW",
 #     "weak_no_ho": "no HO",

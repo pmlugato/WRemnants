@@ -1,7 +1,9 @@
 import collections.abc
+import pickle
 import re
 
 import hist
+import lz4.frame
 import numpy as np
 import ROOT
 
@@ -1099,6 +1101,7 @@ def add_syst_hist(
     addhelicity=False,
     propagateToHelicity=False,
     nhelicity=6,
+    helicity_tensor_name="helicity_moments_tensor",
     storage_type=hist.storage.Double(),
 ):
     """
@@ -1109,6 +1112,12 @@ def add_syst_hist(
         tensor_axes (list): list of axes corresponding to the tensor
         addhelicity (bool): Add the helicity axis to the histogram
         nhelicity (int): Take first nhelicity bins of helicity tensor
+        helicity_tensor_name (str): tensor column name defined in df used to define helicity axis
+          two ways of adding helicity axis
+          1) helicity cross sections (or angular coefficients) differential in variables that are insensitive to polarization (e.g. ptvgen, absyvgen, mvgen, qvgen)
+            -> Reweight bin by bin based on moments (integrating over CS variables) via "helicity_moments_tensor"
+          2) templates corresponding to each helicity cross section differential in relevant quantities that are sensitive to polarization (e.g. cos(theta*), phi*, lepton eta)
+            -> Reweight event by event via "helWeight_tensor"
     """
     if not isinstance(tensor_axes, (list, tuple)):
         tensor_axes = [tensor_axes]
@@ -1121,7 +1130,7 @@ def add_syst_hist(
                     df.HistoBoost(
                         name,
                         axes,
-                        [*cols, "helWeight_tensor"],
+                        [*cols, helicity_tensor_name],
                         tensor_axes=[helicity_utils.axis_helicity_multidim],
                         storage=storage_type,
                     )
@@ -1130,7 +1139,7 @@ def add_syst_hist(
                 # scalar weight
                 df = df.Define(
                     f"{tensor_name}_helicity",
-                    f"auto res = helWeight_tensor; res = {tensor_name}*res; return res;",
+                    f"auto res = {helicity_tensor_name}; res = {tensor_name}*res; return res;",
                 )
                 results.append(
                     df.HistoBoost(
@@ -1148,7 +1157,7 @@ def add_syst_hist(
             df = df.Define(
                 f"{tensor_name}_helicity",
                 helper_helicity,
-                [tensor_name, "helWeight_tensor"],
+                [tensor_name, helicity_tensor_name],
             )
             results.append(
                 df.HistoBoost(
@@ -1261,13 +1270,16 @@ def define_mass_width_sin2theta_weights(df, proc):
 
     if not "massWeight_tensor" in df.GetColumnNames():
         # from -100 to 100 MeV with 10 MeV increment
-        if "MEParamWeight" in df.GetColumnNames():
+        if df.HasColumn("MEParamWeight"):
             df = df.Alias("massWeight_col", "MEParamWeight")
-        else:
+        elif df.HasColumn("LHEReweightingWeight"):
             df = df.Define(
                 "massWeight_col",
                 f"wrem::slice_vec(LHEReweightingWeight,0, {nweights_mass})",
             )
+        else:
+            return df
+
         df = df.Define(
             "massWeight_tensor",
             f"wrem::vec_to_tensor_t<double, {nweights_mass}>(massWeight_col)",
@@ -1283,13 +1295,15 @@ def define_mass_width_sin2theta_weights(df, proc):
             m0, gamma0, massvals, widthvals
         )
 
-        if "MEParamWeightAltSet1" in df.GetColumnNames():
+        if df.HasColumn("MEParamWeightAltSet1"):
             df = df.Alias("widthWeight_col", "MEParamWeightAltSet1")
-        else:
+        elif df.HasColumn("LHEReweightingWeight"):
             df = df.Define(
                 "widthWeight_col",
                 f"wrem::slice_vec(LHEReweightingWeight,{nweights_mass}, {nweights_mass+nweights_width})",
             )
+        else:
+            return df
 
         df = df.Define(
             "massWeight_widthdecor_tensor",
@@ -1311,14 +1325,17 @@ def define_mass_width_sin2theta_weights(df, proc):
         )
 
         if proc in common.zprocs_all:
-            if "MEParamWeightAltSet4" in df.GetColumnNames():
+            if df.HasColumn("MEParamWeightAltSet4"):
                 df = df.Alias("sin2thetaWeight_col", "MEParamWeightAltSet4")
-            else:
+            elif df.HasColumn("LHEReweightingWeight"):
                 logger.warning("sin2theta weights in new format to be defined")
                 df = df.Define(
                     "sin2thetaWeight_col",
-                    f"wrem::slice_vec(LHEReweightingWeight,{nweights_mass+nweights_width}, {nweights_mass+nweights_width+nweights_sin2theta})",
+                    f"wrem::slice_vec(LHEReweightingWeight, {nweights_mass+nweights_width}, {nweights_mass+nweights_width+nweights_sin2theta})",
                 )
+            else:
+                return df
+
             df = df.Define(
                 "sin2thetaWeight_tensor",
                 f"wrem::vec_to_tensor_t<double, {nweights_sin2theta}>(sin2thetaWeight_col)",
@@ -1344,16 +1361,17 @@ def add_massweights_hist(
     add_syst_hist(
         results, df, name, axes, cols, "massWeight_tensor_wnom", mass_axis, **kwargs
     )
-    add_syst_hist(
-        results,
-        df,
-        name_widthdecor,
-        axes,
-        cols,
-        "massWeight_widthdecor_tensor_wnom",
-        mass_axis,
-        **kwargs,
-    )
+    if df.HasColumn("massWeight_widthdecor_tensor_wnom"):
+        add_syst_hist(
+            results,
+            df,
+            name_widthdecor,
+            axes,
+            cols,
+            "massWeight_widthdecor_tensor_wnom",
+            mass_axis,
+            **kwargs,
+        )
 
 
 def massWeightNames(matches=None, proc="", exclude=[]):
@@ -1388,7 +1406,11 @@ def add_widthweights_hist(
     )
 
 
-def widthWeightNames(matches=None, proc=""):
+def widthWeightNames(matches=None, proc="", exclude=[]):
+    if isinstance(exclude, (int, float)):
+        exclude = [
+            exclude,
+        ]
     if proc[0] == "Z":
         widths = (2.49333, 2.49493, 2.4929, 2.4952, 2.4975)
     elif proc[0] == "W":
@@ -1397,7 +1419,11 @@ def widthWeightNames(matches=None, proc=""):
         raise RuntimeError(f"No width found for process {proc}")
     # 0 and 1 are Up, Down from mass uncertainty EW fit (already accounted for in mass variations)
     # 2, 3, and 4 are PDG width Down, Central, Up
-    names = [f"width{proc[0]}{str(width).replace('.','p')}GeV" for width in widths]
+    names = [
+        f"width{proc[0]}{str(width).replace('.','p')}GeV"
+        for width in widths
+        if width not in exclude
+    ]
 
     return [x if not matches or any(y in x for y in matches) else "" for x in names]
 
@@ -1693,6 +1719,62 @@ def add_qcdScaleByHelicityUnc_hist(
     )
 
 
+def add_pdfUncertByHelicity_hist(
+    results, df, helper, pdf_name, axes, cols, base_name="nominal", **kwargs
+):
+    name = Datagroups.histName(base_name, syst=f"{pdf_name}UncertByHelicity")
+    tensorName = f"helicity{pdf_name}Weight_tensor"
+    if tensorName not in df.GetColumnNames():
+        # usually already defined when calculating central PDF weight
+        df = df.Define(
+            tensorName,
+            helper,
+            [
+                "massVgen",
+                "absYVgen",
+                "ptVgen",
+                "chargeVgen",
+                "csSineCosThetaPhigen",
+                "unity",
+            ],
+        )
+    safeTensorName = f"{tensorName}_clamped"
+    df = df.Define(
+        safeTensorName,
+        f"auto res = wrem::clamp_tensor_safe({tensorName}, -theory_weight_truncate, theory_weight_truncate, 1.0); res = nominal_weight*res; return res;",
+    )
+    add_syst_hist(
+        results, df, name, axes, cols, safeTensorName, helper.tensor_axes, **kwargs
+    )
+
+
+def add_pdfAlphaSByHelicity_hist(
+    results, df, helper, axes, cols, base_name="nominal", **kwargs
+):
+    name = Datagroups.histName(base_name, syst="pdfAlphaSByHelicity")
+    tensorName = "helicityAlphaSWeight_tensor"
+    df = df.Define(
+        tensorName,
+        helper,
+        [
+            "massVgen",
+            "absYVgen",
+            "ptVgen",
+            "chargeVgen",
+            "csSineCosThetaPhigen",
+            "unity",
+        ],
+    )
+    safeTensorName = f"{tensorName}_clamped"
+    df = df.Define(
+        safeTensorName,
+        f"auto res = wrem::clamp_tensor_safe({tensorName}, -theory_weight_truncate, theory_weight_truncate, 1.0); res = nominal_weight*res; return res;",
+    )
+    add_syst_hist(
+        results, df, name, axes, cols, safeTensorName, helper.tensor_axes, **kwargs
+    )
+
+
 def add_QCDbkg_jetPt_hist(
     results, df, axes, cols, base_name="nominal", jet_pt=30, **kwargs
 ):
@@ -1903,6 +1985,8 @@ def add_muon_efficiency_unc_hists(
             "tnpUT0",
             "tnpCharge0",
         ]  # passIso0 required only for iso stat variations, added later
+        if not smooth3D:
+            muvars_stat.remove("tnpUT0")
         muon_columns_stat_trig = [f"trigMuons_{v}" for v in muvars_stat]
         muon_columns_stat_nonTrig = [f"nonTrigMuons_{v}" for v in muvars_stat]
 
@@ -1915,6 +1999,8 @@ def add_muon_efficiency_unc_hists(
             "tnpCharge0",
             "passIso0",
         ]
+        if not smooth3D:
+            muvars_syst.remove("tnpUT0")
         muon_columns_syst_trig = [f"trigMuons_{v}" for v in muvars_syst]
         muon_columns_syst_nonTrig = [f"nonTrigMuons_{v}" for v in muvars_syst]
 
@@ -2390,7 +2476,7 @@ def add_theory_hists(
     args,
     dataset_name,
     corr_helpers,
-    qcdScaleByHelicity_helper,
+    theory_helpers,
     axes,
     cols,
     base_name="nominal",
@@ -2420,12 +2506,9 @@ def add_theory_hists(
 
     df = theory_tools.define_scale_tensor(df)
 
-    if (
-        "MEParamWeight" not in df.GetColumnNames()
-        and "LHEReweightingWeight" not in df.GetColumnNames()
-    ):
+    if not df.HasColumn("MEParamWeight") and not df.HasColumn("LHEReweightingWeight"):
         logger.warning(
-            "MEParamWeight not in list of columns, mass, width, and sin2theta weight tensors can not be defined"
+            "'MEParamWeight' and 'LHEReweightingWeight' not in list of columns, mass, width, and sin2theta weight tensors can not be defined"
         )
     else:
         df = define_mass_width_sin2theta_weights(df, dataset_name)
@@ -2457,26 +2540,126 @@ def add_theory_hists(
         )
 
     if for_wmass or isZ:
-        logger.debug(f"Make QCD scale histograms for {dataset_name}")
-        # there is no W backgrounds for the Wlike, make QCD scale histograms only for Z
-        # should probably remove the charge here, because the Z only has a single charge and the pt distribution does not depend on which charged lepton is selected
 
-        if qcdScaleByHelicity_helper is not None:
+        if theory_helpers.get("qcdScale") is not None:
+            logger.debug(f"Make QCD scale histograms for {dataset_name}")
+            # there is no W backgrounds for the Wlike, make QCD scale histograms only for Z
+            # should probably remove the charge here, because the Z only has a single charge and the pt distribution does not depend on which charged lepton is selected
             add_qcdScaleByHelicityUnc_hist(
-                results, df, qcdScaleByHelicity_helper, scale_axes, scale_cols, **info
+                results,
+                df,
+                theory_helpers.get("qcdScale"),
+                scale_axes,
+                scale_cols,
+                **info,
+            )
+        if theory_helpers.get("pdf") is not None:
+            pdf_helpers = theory_helpers.get("pdf")
+            for pdf in args.pdfs:
+                pdf_name = theory_tools.pdfMap[pdf]["name"]
+                if pdf_name not in pdf_helpers.keys():
+                    logger.warning(
+                        f"Did not find PDF uncertainty by helicity histograms for {dataset_name} and PDF set {pdf_name}"
+                    )
+                    continue
+                logger.debug(
+                    f"Make PDF uncertainty by helicity histograms for {dataset_name} and PDF set {pdf_name}"
+                )
+                add_pdfUncertByHelicity_hist(
+                    results, df, pdf_helpers[pdf_name], pdf_name, axes, cols, **info
+                )
+        if theory_helpers.get("alphaS") is not None:
+            logger.debug(
+                f"Make AlphaS uncertainty by helicity histograms for {dataset_name}"
+            )
+            add_pdfAlphaSByHelicity_hist(
+                results, df, theory_helpers.get("alphaS"), axes, cols, **info
             )
 
-        if "MEParamWeight" not in df.GetColumnNames():
-            return df
+        add_breit_wigner_mass_weights_hist(
+            results, df, axes, cols, proc=dataset_name, **info
+        )
+        add_breit_wigner_width_weights_hist(
+            results, df, axes, cols, proc=dataset_name, **info
+        )
+
         # TODO: Should have consistent order here with the scetlib correction function
-        add_massweights_hist(results, df, axes, cols, proc=dataset_name, **info)
-        add_widthweights_hist(results, df, axes, cols, proc=dataset_name, **info)
-        if isZ:
+        if df.HasColumn("massWeight_tensor_wnom"):
+            add_massweights_hist(results, df, axes, cols, proc=dataset_name, **info)
+        if df.HasColumn("widthWeight_tensor_wnom"):
+            add_widthweights_hist(results, df, axes, cols, proc=dataset_name, **info)
+        if isZ and df.HasColumn("sin2thetaWeight_tensor_wnom"):
             add_sin2thetaweights_hist(
                 results, df, axes, cols, proc=dataset_name, **info
             )
 
     return df
+
+
+def add_breit_wigner_mass_weights_hist(
+    results,
+    df,
+    axes,
+    cols,
+    proc="W",
+    base_name="nominal",
+    storage=hist.storage.Double(),
+    **kwargs,
+):
+    label = proc[0] if len(proc) else proc
+    tensorName = f"breitwigner_massWeight{label}_tensor"
+    bwHistName = Datagroups.histName(base_name, syst=f"breitwigner_massWeight{label}")
+    mass_axis = hist.axis.StrCategory(massWeightNames(proc=proc), name="massShift")
+
+    if tensorName not in df.GetColumnNames():
+        logger.warning(
+            f"Breit Wigner mass weights tensor was not found for sample {proc}. Skipping uncertainty hist!"
+        )
+        return
+
+    add_syst_hist(
+        results,
+        df,
+        bwHistName,
+        axes,
+        cols,
+        tensorName,
+        mass_axis,
+        **kwargs,
+    )
+
+
+def add_breit_wigner_width_weights_hist(
+    results,
+    df,
+    axes,
+    cols,
+    proc="W",
+    base_name="nominal",
+    storage=hist.storage.Double(),
+    **kwargs,
+):
+    label = proc[0] if len(proc) else proc
+    tensorName = f"breitwigner_widthWeight{label}_tensor"
+    bwHistName = Datagroups.histName(base_name, syst=f"breitwigner_widthWeight{label}")
+    axis_width = hist.axis.StrCategory(widthWeightNames(proc=proc), name="width")
+
+    if tensorName not in df.GetColumnNames():
+        logger.warning(
+            f"Breit Wigner width weights tensor was not found for sample {proc}. Skipping uncertainty hist!"
+        )
+        return
+
+    add_syst_hist(
+        results,
+        df,
+        bwHistName,
+        axes,
+        cols,
+        tensorName,
+        axis_width,
+        **kwargs,
+    )
 
 
 def add_helicity_hists(
@@ -2504,76 +2687,20 @@ def add_helicity_hists(
     # below logic only valid for specific columns
     if cols == ["massVgen", "absYVgen", "ptVgen", "chargeVgen"]:
 
-        df = df.Define(
-            "helicity_xsecs_scale_lhe_tensor",
-            "wrem::makeHelicityMomentScaleTensor(csSineCosThetaPhilhe, scaleWeights_tensor, nominal_weight)",
-        )
-        lhe_cols = ["massVlhe", "absYVlhe", "ptVlhe", "chargeVlhe"]
-        helicity_xsecs_scale_lhe = df.HistoBoost(
-            f"{base_name}_helicity_xsecs_scale_lhe",
-            axes,
-            [*lhe_cols, "helicity_xsecs_scale_lhe_tensor"],
-            tensor_axes=[axis_helicity, *theory_tools.scale_tensor_axes],
-            storage=storage,
-        )
-        results.append(helicity_xsecs_scale_lhe)
-
-        df = df.Define(
-            "helicity_xsecs_scale_hardProcess_tensor",
-            "wrem::makeHelicityMomentScaleTensor(csSineCosThetaPhihardProcess, scaleWeights_tensor, nominal_weight)",
-        )
-        hardProcess_cols = [
-            "massVhardProcess",
-            "absYVhardProcess",
-            "ptVhardProcess",
-            "chargeVhardProcess",
-        ]
-        helicity_xsecs_scale_hardProcess = df.HistoBoost(
-            f"{base_name}_helicity_xsecs_scale_hardProcess",
-            axes,
-            [*hardProcess_cols, "helicity_xsecs_scale_hardProcess_tensor"],
-            tensor_axes=[axis_helicity, *theory_tools.scale_tensor_axes],
-            storage=storage,
-        )
-        results.append(helicity_xsecs_scale_hardProcess)
-
-        df = df.Define(
-            "helicity_xsecs_scale_postShower_tensor",
-            "wrem::makeHelicityMomentScaleTensor(csSineCosThetaPhipostShower, scaleWeights_tensor, nominal_weight)",
-        )
-        postShower_cols = [
-            "massVpostShower",
-            "absYVpostShower",
-            "ptVpostShower",
-            "chargeVpostShower",
-        ]
-        helicity_xsecs_scale_postShower = df.HistoBoost(
-            f"{base_name}_helicity_xsecs_scale_postShower",
-            axes,
-            [*postShower_cols, "helicity_xsecs_scale_postShower_tensor"],
-            tensor_axes=[axis_helicity, *theory_tools.scale_tensor_axes],
-            storage=storage,
-        )
-        results.append(helicity_xsecs_scale_postShower)
-
-        df = df.Define(
-            "helicity_xsecs_scale_postBeamRemnants_tensor",
-            "wrem::makeHelicityMomentScaleTensor(csSineCosThetaPhipostBeamRemnants, scaleWeights_tensor, nominal_weight)",
-        )
-        postBeamRemnants_cols = [
-            "massVpostBeamRemnants",
-            "absYVpostBeamRemnants",
-            "ptVpostBeamRemnants",
-            "chargeVpostBeamRemnants",
-        ]
-        helicity_xsecs_scale_postBeamRemnants = df.HistoBoost(
-            f"{base_name}_helicity_xsecs_scale_postBeamRemnants",
-            axes,
-            [*postBeamRemnants_cols, "helicity_xsecs_scale_postBeamRemnants_tensor"],
-            tensor_axes=[axis_helicity, *theory_tools.scale_tensor_axes],
-            storage=storage,
-        )
-        results.append(helicity_xsecs_scale_postBeamRemnants)
+        for var in ["lhe", "hardProcess", "postShower", "postBeamRemnants"]:
+            df_var = df.Define(
+                f"helicity_xsecs_scale_{var}_tensor",
+                f"wrem::makeHelicityMomentScaleTensor(csSineCosThetaPhi{var}, scaleWeights_tensor, nominal_weight)",
+            )
+            var_cols = [f"massV{var}", f"absYV{var}", f"ptV{var}", f"chargeV{var}"]
+            helicity_xsecs_scale_var = df_var.HistoBoost(
+                f"{base_name}_helicity_xsecs_scale_{var}",
+                axes,
+                [*var_cols, f"helicity_xsecs_scale_{var}_tensor"],
+                tensor_axes=[axis_helicity, *theory_tools.scale_tensor_axes],
+                storage=storage,
+            )
+            results.append(helicity_xsecs_scale_var)
 
         # these are for theory agnostic gen fit
 
@@ -2616,3 +2743,74 @@ def add_helicity_hists(
         results.append(gen_theoryAgnostic)
 
     return df
+
+
+def scale_hist_up_down(h, scale):
+    hUp = hh.scaleHist(h, scale)
+    hDown = hh.scaleHist(h, 1 / scale)
+
+    hVar = hist.Hist(
+        *[a for a in h.axes],
+        common.down_up_axis,
+        storage=hist.storage.Weight(),
+    )
+    hVar.values(flow=True)[...] = np.stack(
+        [hDown.values(flow=True), hUp.values(flow=True)], axis=-1
+    )
+    hVar.variances(flow=True)[...] = np.stack(
+        [hDown.variances(flow=True), hUp.variances(flow=True)], axis=-1
+    )
+    return hVar
+
+
+def scale_hist_up_down_corr_from_file(h, corr_file=None, corr_hist=None):
+    # FIXME: this might not be thread safe, but it is a test for now
+    with lz4.frame.open(corr_file) as f:
+        corrs = pickle.load(f)
+    boost_corr = corrs[corr_hist]
+
+    hUp = hh.multiplyHists(h, boost_corr)
+    hDown = hh.divideHists(h, boost_corr)
+
+    hVar = hist.Hist(
+        *[a for a in h.axes],
+        common.down_up_axis,
+        storage=hist.storage.Weight(),
+    )
+    hVar.values(flow=True)[...] = np.stack(
+        [hDown.values(flow=True), hUp.values(flow=True)], axis=-1
+    )
+    hVar.variances(flow=True)[...] = np.stack(
+        [hDown.variances(flow=True), hUp.variances(flow=True)], axis=-1
+    )
+    return hVar
+
+
+def correct_bw_xsec(h, h_ref):
+    """
+    Normalize the Breit-Wigner mass variation histograms
+    to the cross section from the MiNNLO mass variation histograms.
+    Assumes that the histograms have been filled with the same mass variations, in the same order.
+    """
+
+    if "massShift" in h.axes.name:
+        var = "massShift"
+    elif "width" in h.axes.name:
+        var = "width"
+
+    h_axis_labels = [n for n in h.axes[var]]
+    h_ref_axis_labels = [n for n in h_ref.axes[var]]
+    if (
+        len(h_axis_labels) != len(h_ref_axis_labels)
+        or h_axis_labels != h_ref_axis_labels
+    ):
+        logger.warning(
+            f"Breit-Wigner variations do not match MiNNLO variations: {h_axis_labels} vs {h_ref_axis_labels}."
+            "Cannot apply correction."
+        )
+        return h
+
+    h_corr = hh.divideHists(h.project(var), h_ref.project(var))
+    h = hh.multiplyHists(h, h_corr)
+
+    return h

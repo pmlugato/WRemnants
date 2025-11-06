@@ -31,6 +31,7 @@ from wremnants import (
 from wremnants.datasets.dataset_tools import getDatasets
 from wremnants.histmaker_tools import (
     aggregate_groups,
+    make_quantile_helper,
     scale_to_data,
     write_analysis_output,
 )
@@ -67,11 +68,6 @@ parser.add_argument(
     help="Apply isolation cut to triggering and not-triggering muon (in this order): -1/1 for failing/passing isolation, 0 for skipping it. If using --useDileptonTriggerSelection, then the sorting is based on the muon charge as -/+",
 )
 parser.add_argument(
-    "--addRunAxis",
-    action="store_true",
-    help="Add axis with slices of luminosity based on run numbers (for data only)",
-)
-parser.add_argument(
     "--flipEventNumberSplitting",
     action="store_true",
     help="Flip even with odd event numbers to consider the positive or negative muon as the W-like muon",
@@ -81,7 +77,41 @@ parser.add_argument(
     action="store_true",
     help="To read efficiency scale factors, use the same muon variables as used to measure them with tag-and-probe (by default the final corrected ones are used)",
 )
-
+parser.add_argument(
+    "--makeCSQuantileHists",
+    action="store_true",
+    help="Make hists with fine binned CS variables for producing quantiles",
+)
+parser.add_argument(
+    "--splitSampleInN",
+    type=int,
+    default=-1,
+    help="Split the sample in N parts, useful for debugging and testing",
+)
+parser.add_argument(
+    "--randomSeedForSplit",
+    type=int,
+    default=12345,
+    help="Random seed for splitting the sample in N parts",
+)
+parser.add_argument(
+    "--jackknifeN",
+    type=int,
+    default=0,
+    help="Number of jackknife samples to use, if > 0, then the sample is split in 2*jackknifeN parts",
+)
+parser.add_argument(
+    "--jackknifeEfficiency",
+    type=float,
+    default=0.5,
+    help="Jackknife efficiency, used to define the size of the sample",
+)
+parser.add_argument(
+    "--randomSeedForJackknife",
+    type=int,
+    default=12345,
+    help="Random seed for jackknifing procedure",
+)
 parser = parsing.set_parser_default(
     parser, "aggregateGroups", ["Diboson", "Top", "Wtaunu", "Wmunu"]
 )
@@ -109,6 +139,7 @@ datasets = getDatasets(
     nanoVersion="v9",
     base_path=args.dataPath,
     extended="msht20an3lo" not in args.pdfs,
+    oneMCfileEveryN=args.oneMCfileEveryN,
     era=era,
 )
 
@@ -117,13 +148,24 @@ mass_min, mass_max = common.get_default_mz_window()
 
 ewMassBins = theory_tools.make_ew_binning(mass=91.1535, width=2.4932, initialStep=0.010)
 
-dilepton_ptV_binning = common.get_dilepton_ptV_binning(args.finePtBinning)
 if args.useTheoryAgnosticBinning:
     theoryAgnostic_axes, _ = differential.get_theoryAgnostic_axes(
         ptV_flow=True, absYV_flow=True, wlike=True
     )
     axis_ptV_thag = theoryAgnostic_axes[0]
     dilepton_ptV_binning = axis_ptV_thag.edges
+else:
+    dilepton_ptV_binning = common.get_dilepton_ptV_binning(args.finePtBinning)
+
+if "yll" in args.axes:
+    # use 10 quantiles in case "yll" is used as nominal axis
+    edges_yll = common.yll_10quantiles_binning
+    edges_absYll = edges_yll[len(edges_yll) // 2 :]
+    axis_yll = hist.axis.Variable(edges_yll, name="yll")
+    axis_absYll = hist.axis.Variable(edges_absYll, name="absYll", underflow=False)
+else:
+    axis_yll = hist.axis.Regular(20, -2.5, 2.5, name="yll")
+    axis_absYll = hist.axis.Regular(10, 0.0, 2.5, name="absYll", underflow=False)
 
 # available axes for dilepton validation plots
 all_axes = {
@@ -158,8 +200,8 @@ all_axes = {
         ],
         name="mll",
     ),
-    "yll": hist.axis.Regular(20, -2.5, 2.5, name="yll"),
-    "absYll": hist.axis.Regular(10, 0.0, 2.5, name="absYll", underflow=False),
+    "yll": axis_yll,
+    "absYll": axis_absYll,
     "ptll": hist.axis.Variable(dilepton_ptV_binning, name="ptll", underflow=False),
     "etaPlus": hist.axis.Variable([-2.4, -1.2, -0.3, 0.3, 1.2, 2.4], name="etaPlus"),
     "etaMinus": hist.axis.Variable([-2.4, -1.2, -0.3, 0.3, 1.2, 2.4], name="etaMinus"),
@@ -200,10 +242,19 @@ all_axes = {
         int(args.pt[0]), args.pt[1], args.pt[2], name="ptMinus"
     ),
     "cosThetaStarll": hist.axis.Regular(
-        20, -1.0, 1.0, name="cosThetaStarll", underflow=False, overflow=False
+        200 if args.makeCSQuantileHists else 20,
+        -1.0,
+        1.0,
+        name="cosThetaStarll",
+        underflow=False,
+        overflow=False,
     ),
     "phiStarll": hist.axis.Regular(
-        20, -math.pi, math.pi, circular=True, name="phiStarll"
+        200 if args.makeCSQuantileHists else 20,
+        -math.pi,
+        math.pi,
+        circular=True,
+        name="phiStarll",
     ),
     # "charge": hist.axis.Regular(2, -2., 2., underflow=False, overflow=False, name = "charge") # categorical axes in python bindings always have an overflow bin, so use a regular
     "massVgen": hist.axis.Variable(ewMassBins, name="massVgen"),
@@ -231,34 +282,6 @@ auxiliary_gen_axes = [
     "ewLogDeltaM",  # ew variables
 ]
 
-if args.unfolding:
-    unfolding_axes = {}
-    unfolding_cols = {}
-    unfolding_selections = {}
-    for level in args.unfoldingLevels:
-        a, c, s = differential.get_dilepton_axes(
-            args.unfoldingAxes,
-            common.get_gen_axes(
-                dilepton_ptV_binning, args.unfoldingInclusive, flow=True
-            ),
-            level,
-            add_out_of_acceptance_axis=args.poiAsNoi,
-        )
-        unfolding_axes[level] = a
-        unfolding_cols[level] = c
-        unfolding_selections[level] = s
-
-        if not args.poiAsNoi:
-            datasets = unfolding_tools.add_out_of_acceptance(datasets, group="Zmumu")
-            if len(args.unfoldingLevels) > 1:
-                logger.warning(
-                    f"Exact unfolding with multiple gen level definitions is not possible, take first one: {args.unfoldingLevels[0]} and continue."
-                )
-                break
-
-    if args.fitresult:
-        unfolding_corr_helper = unfolding_tools.reweight_to_fitresult(args.fitresult)
-
 for a in args.axes:
     if a not in all_axes.keys():
         logger.error(
@@ -269,36 +292,70 @@ nominal_cols = args.axes
 
 if args.csVarsHist:
     # in case CS variables are added to the main histogram, use optimized binning
-    # 8 quantiles
-    all_axes["cosThetaStarll"] = hist.axis.Variable(
-        [-1, -0.56, -0.375, -0.19, 0.0, 0.19, 0.375, 0.56, 1.0],
-        name="cosThetaStarll",
+    # CS variables will be binned in nxn quantiles; quantiles are computed in each bin of args.axes as provided by the quantile_file
+    n_quantiles = 8
+    all_axes["cosThetaStarll_quantile"] = hist.axis.Regular(
+        n_quantiles,
+        0,
+        1,
+        name="cosThetaStarll_quantile",
         underflow=False,
         overflow=False,
     )
-    all_axes["phiStarll"] = hist.axis.Variable(
-        [-math.pi, -2.27, -1.57, -0.87, 0, 0.87, 1.57, 2.27, math.pi],
-        name="phiStarll",
+    all_axes["phiStarll_quantile"] = hist.axis.Regular(
+        n_quantiles,
+        0,
+        1,
+        name="phiStarll_quantile",
         underflow=False,
         overflow=False,
-    )
-    # 10 quantiles
-    all_axes["yll"] = hist.axis.Variable(
-        [-2.5, -1.5, -1.1, -0.7, -0.35, 0, 0.35, 0.7, 1.1, 1.5, 2.5], name="yll"
     )
 
-    nominal_cols += ["cosThetaStarll", "phiStarll"]
+    quantile_file = f"{common.data_dir}/angularCoefficients/mz_dilepton_scetlib_dyturboCorr_maxFiles_m1_alphaSunfoldingBinning_csQuantiles.hdf5"
+    quantile_helper_csVars = make_quantile_helper(
+        quantile_file,
+        ["cosThetaStarll", "phiStarll"],
+        ["ptll", "absYll"],
+        name="nominal_csQuantiles",
+        processes=["ZmumuPostVFP"],
+        n_quantiles=[n_quantiles],
+    )
+
+    nominal_cols += ["cosThetaStarll_quantile", "phiStarll_quantile"]
 
 nominal_axes = [all_axes[a] for a in nominal_cols]
+
+if args.unfolding:
+    add_helicity_axis = "helicitySig" in args.unfoldingAxes
+
+    if args.unfoldingInclusive:
+        cutsmap = {"fiducial": "masswindow"}
+    else:
+        cutsmap = {
+            "pt_min": args.pt[1],
+            "pt_max": args.pt[2],
+            "abseta_max": args.eta[2],
+            "mass_min": mass_min,
+            "mass_max": mass_max,
+        }
+
+    unfolder_z = unfolding_tools.UnfolderZ(
+        reco_axes_edges={a: all_axes[a].edges for a in args.axes},
+        unfolding_axes_names=args.unfoldingAxes,
+        unfolding_levels=args.unfoldingLevels,
+        poi_as_noi=args.poiAsNoi,
+        fitresult=args.fitresult,
+        cutsmap=cutsmap,
+    )
+
+    if not args.poiAsNoi:
+        datasets = unfolding_tools.add_out_of_acceptance(datasets, group="Zmumu")
 
 # define helpers
 muon_prefiring_helper, muon_prefiring_helper_stat, muon_prefiring_helper_syst = (
     muon_prefiring.make_muon_prefiring_helpers(era=era)
 )
-
-qcdScaleByHelicity_helper = theory_corrections.make_qcd_uncertainty_helper_by_helicity(
-    is_w_like=True
-)
+theory_helpers_procs = theory_corrections.make_theory_helpers(args, procs=["Z", "W"])
 
 # extra axes which can be used to label tensor_axes
 if args.binnedScaleFactors:
@@ -396,6 +453,44 @@ bias_helper = muon_calibration.make_muon_bias_helpers(args)
     reverse_variations=args.reweightPixelMultiplicity
 )
 
+if args.nToysMC > 0:
+    seed_data = 2 * args.randomSeedForToys
+    seed_mc = 2 * args.randomSeedForToys + 1
+    toy_helper_data = ROOT.wrem.ToyHelper(
+        args.nToysMC, seed_data, 1, ROOT.ROOT.GetThreadPoolSize()
+    )
+    toy_helper_mc = ROOT.wrem.ToyHelper(
+        args.nToysMC,
+        seed_mc,
+        args.varianceScalingForToys,
+        ROOT.ROOT.GetThreadPoolSize(),
+    )
+    axis_toys = hist.axis.Integer(
+        0, args.nToysMC, underflow=False, overflow=False, name="toys"
+    )
+if args.splitSampleInN > 1:
+    seed_mc_split = 2 * args.randomSeedForSplit + 2
+    rand_helper_mc = ROOT.wrem.RandomUniformHelper(
+        args.splitSampleInN, seed_mc_split, ROOT.ROOT.GetThreadPoolSize()
+    )
+    axis_split = hist.axis.Integer(
+        0,
+        args.splitSampleInN,
+        underflow=False,
+        overflow=False,
+        name="sample_split",
+    )
+if args.jackknifeN > 0:
+    seed_mc_jackknife = 2 * args.randomSeedForJackknife + 1
+    jackknife_helper = ROOT.wrem.JackknifeHelper(
+        args.jackknifeN,
+        args.jackknifeEfficiency,
+        seed_mc_jackknife,
+        ROOT.ROOT.GetThreadPoolSize(),
+    )
+    axis_jackknife = hist.axis.Integer(
+        0, args.jackknifeN, underflow=False, overflow=False, name="jackknife_sample"
+    )
 
 theory_corrs = [*args.theoryCorr, *args.ewTheoryCorr]
 corr_helpers = theory_corrections.load_corr_helpers(
@@ -410,6 +505,10 @@ def build_graph(df, dataset):
     isZ = dataset.name in common.zprocs
     isWorZ = isW or isZ
 
+    theory_helpers = {}
+    if isWorZ:
+        theory_helpers = theory_helpers_procs[dataset.name[0]]
+
     cvh_helper = data_calibration_helper if dataset.is_data else mc_calibration_helper
     jpsi_helper = data_jpsi_crctn_helper if dataset.is_data else mc_jpsi_crctn_helper
     if dataset.is_data:
@@ -421,6 +520,18 @@ def build_graph(df, dataset):
     df = df.Define(
         "isEvenEvent", f"event % 2 {'!=' if args.flipEventNumberSplitting else '=='} 0"
     )
+
+    if args.nToysMC > 0:
+        if dataset.is_data:
+            df = df.Define("toyIdxs", toy_helper_data, ["rdfslot_"])
+        else:
+            df = df.Define("toyIdxs", toy_helper_mc, ["rdfslot_"])
+
+    if args.splitSampleInN > 1 and not dataset.is_data:
+        df = df.Define("sample_n", rand_helper_mc, ["rdfslot_"])
+
+    if args.jackknifeN > 0 and not dataset.is_data:
+        df = df.Define("jackknife_sample", jackknife_helper, ["rdfslot_"])
 
     weightsum = df.SumAndCount("weight")
 
@@ -438,80 +549,29 @@ def build_graph(df, dataset):
         cols = [*cols, "run"]
 
     if args.unfolding and dataset.name == "ZmumuPostVFP":
-        df = unfolding_tools.define_gen_level(
-            df, dataset.name, args.unfoldingLevels, mode=analysis_label
+        df = unfolder_z.add_gen_histograms(
+            args, df, results, dataset, corr_helpers, theory_helpers=theory_helpers
         )
-        cutsmap = {
-            "pt_min": args.pt[1],
-            "pt_max": args.pt[2],
-            "abseta_max": args.eta[2],
-            "mass_min": mass_min,
-            "mass_max": mass_max,
-        }
 
-        if args.unfoldingInclusive:
-            cutsmap = {"fiducial": "masswindow"}
+        if not unfolder_z.poi_as_noi:
+            axes = [
+                *nominal_axes,
+                *unfolder_z.unfolding_axes[unfolder_z.unfolding_levels[-1]],
+            ]
+            cols = [
+                *nominal_cols,
+                *unfolder_z.unfolding_cols[unfolder_z.unfolding_levels[-1]],
+            ]
 
-        if hasattr(dataset, "out_of_acceptance"):
-            # only for exact unfolding
-            df = unfolding_tools.select_fiducial_space(
-                df,
-                args.unfoldingLevels[0],
-                mode=analysis_label,
-                selections=unfolding_selections[args.unfoldingLevels[0]],
-                accept=False,
-                **cutsmap,
-            )
-        else:
-            if args.fitresult:
-                logger.debug("Apply reweighting based on unfolded result")
-                df = df.Define(
-                    "unfoldingWeight_tensor",
-                    unfolding_corr_helper,
-                    [*unfolding_corr_helper.hist.axes.name[:-1], "unity"],
-                )
-                df = df.Define(
-                    "central_weight", "acceptance ? unfoldingWeight_tensor(0) : unity"
-                )
-            for level in args.unfoldingLevels:
-                df = unfolding_tools.select_fiducial_space(
-                    df,
-                    level,
-                    mode=analysis_label,
-                    selections=unfolding_selections[level],
-                    select=not args.poiAsNoi,
-                    accept=True,
-                    **cutsmap,
-                )
-
-                if args.poiAsNoi:
-                    df_xnorm = df.Filter(f"{level}_acceptance")
-                else:
-                    df_xnorm = df
-
-                unfolding_tools.add_xnorm_histograms(
-                    results,
-                    df_xnorm,
-                    args,
-                    dataset.name,
-                    corr_helpers,
-                    qcdScaleByHelicity_helper,
-                    [a for a in unfolding_axes[level] if a.name != "acceptance"],
-                    [c for c in unfolding_cols[level] if c != f"{level}_acceptance"],
-                    add_helicity_axis="helicitySig" in args.unfoldingAxes,
-                    base_name=level,
-                )
-                if not args.poiAsNoi:
-                    axes = [*nominal_axes, *unfolding_axes[level]]
-                    cols = [*nominal_cols, *unfolding_cols[level]]
-                    break
+    if args.xnormOnly:
+        return results, weightsum
 
     if not args.noAuxiliaryHistograms and isZ and len(auxiliary_gen_axes):
         # gen level variables before selection
         df_gen = df
         df_gen = df_gen.DefinePerSample("exp_weight", "1.0")
         df_gen = theory_tools.define_theory_weights_and_corrs(
-            df_gen, dataset.name, corr_helpers, args
+            df_gen, dataset.name, corr_helpers, args, theory_helpers=theory_helpers
         )
 
         for obs in auxiliary_gen_axes:
@@ -526,7 +586,7 @@ def build_graph(df, dataset):
                 args,
                 dataset.name,
                 corr_helpers,
-                qcdScaleByHelicity_helper,
+                theory_helpers,
                 [all_axes[obs]],
                 [obs],
                 base_name=f"gen_{obs}",
@@ -667,6 +727,26 @@ def build_graph(df, dataset):
     df = df.Define("cosThetaStarll", "csSineCosThetaPhill.costheta")
     df = df.Define("phiStarll", "csSineCosThetaPhill.phi()")
 
+    if args.csVarsHist:
+        for c, h, a in (
+            (
+                "phiStarll_quantile",
+                quantile_helper_csVars[0],
+                ["phiStarll", "ptll", "absYll"],
+            ),
+            (
+                "cosThetaStarll_quantile",
+                quantile_helper_csVars[1],
+                ["cosThetaStarll", "phiStarll", "ptll", "absYll"],
+            ),
+        ):
+            if [a for a in h.axes.name] != a:
+                raise RuntimeError(
+                    f"Invalid helper axes: {[a for a in h.axes.name]} != {a}"
+                )
+
+            df = df.Define(c, h, a)
+
     # TODO might need to add an explicit cut on trigMuons_pt0 in case nominal pt range
     # extends below 26 GeV e.g. for calibration test purposes
     df = df.Define("trigMuons_abseta0", "std::fabs(trigMuons_eta0)")
@@ -694,6 +774,9 @@ def build_graph(df, dataset):
     logger.debug(f"Define weights and store nominal histograms")
 
     if dataset.is_data:
+        if args.nToysMC > 0:
+            axes = [*axes, axis_toys]
+            cols = [*cols, "toyIdxs"]
         results.append(df.HistoBoost("nominal", axes, cols))
     else:
         df = df.Define("weight_pu", pileup_helper, ["Pileup_nTrueInt"])
@@ -811,7 +894,7 @@ def build_graph(df, dataset):
         logger.debug(f"Experimental weight defined: {weight_expr}")
         df = df.Define("exp_weight", weight_expr)
         df = theory_tools.define_theory_weights_and_corrs(
-            df, dataset.name, corr_helpers, args
+            df, dataset.name, corr_helpers, args, theory_helpers=theory_helpers
         )
 
         results.append(
@@ -822,6 +905,21 @@ def build_graph(df, dataset):
                 storage=hist.storage.Double(),
             )
         )
+
+        if args.nToysMC > 0 or args.splitSampleInN > 1 or args.jackknifeN > 1:
+            results.append(
+                df.HistoBoost("nominal_asimov", axes, [*cols, "nominal_weight"])
+            )
+        if args.nToysMC > 0:
+            axes = [*axes, axis_toys]
+            cols = [*cols, "toyIdxs"]
+        if args.splitSampleInN > 1:
+            axes = [*axes, axis_split]
+            cols = [*cols, "sample_n"]
+        if args.jackknifeN > 1:
+            axes = [*axes, axis_jackknife]
+            cols = [*cols, "jackknife_sample"]
+
         results.append(df.HistoBoost("nominal", axes, [*cols, "nominal_weight"]))
 
         if isZ:
@@ -837,7 +935,9 @@ def build_graph(df, dataset):
             )
             axis_helicity = helicity_utils.axis_helicity_multidim
 
-            df = theoryAgnostic_tools.define_helicity_weights(df)
+            df_theory_agnostic = theoryAgnostic_tools.define_helicity_weights(
+                df, is_z=True
+            )
             noiAsPoiHistName = Datagroups.histName(
                 "nominal", syst="yieldsTheoryAgnostic"
             )
@@ -845,18 +945,12 @@ def build_graph(df, dataset):
                 f"Creating special histogram '{noiAsPoiHistName}' for theory agnostic to treat POIs as NOIs"
             )
             results.append(
-                df.HistoBoost(
+                df_theory_agnostic.HistoBoost(
                     noiAsPoiHistName,
                     [*axes, *theoryAgnostic_axes],
                     [*cols, *theoryAgnostic_cols, "nominal_weight_helicity"],
                     tensor_axes=[axis_helicity],
                 )
-            )
-
-        if "helicitySig" in getattr(args, "genAxes", []):
-            df = theoryAgnostic_tools.define_helicity_weights(
-                df,
-                filename=f"{common.data_dir}/angularCoefficients/w_z_moments_unfoldingBinning.hdf5",
             )
 
     # histograms for corrections/uncertainties for pixel hit multiplicity
@@ -894,34 +988,24 @@ def build_graph(df, dataset):
     results.append(hNValidPixelHitsNonTrig)
 
     if args.unfolding and args.poiAsNoi and dataset.name == "ZmumuPostVFP":
-        for level in args.unfoldingLevels:
-            noiAsPoiHistName = Datagroups.histName(
-                "nominal", syst=f"{level}_yieldsUnfolding"
-            )
-            logger.debug(
-                f"Creating special histogram '{noiAsPoiHistName}' for unfolding to treat POIs as NOIs"
-            )
-            yield_axes = [*nominal_axes, *unfolding_axes[level]]
-            yield_cols = [*nominal_cols, *unfolding_cols[level]]
-            if "helicitySig" in getattr(args, "genAxes", []):
-                from wremnants.helicity_utils import axis_helicity_multidim
+        unfolder_z.add_poi_as_noi_histograms(
+            df,
+            results,
+            nominal_axes,
+            nominal_cols,
+        )
 
-                results.append(
-                    df.HistoBoost(
-                        noiAsPoiHistName,
-                        yield_axes,
-                        [*yield_cols, "nominal_weight_helicity"],
-                        tensor_axes=[axis_helicity_multidim],
-                    )
-                )
-            else:
-                results.append(
-                    df.HistoBoost(
-                        noiAsPoiHistName,
-                        yield_axes,
-                        [*yield_cols, "nominal_weight"],
-                    )
-                )
+    if args.makeCSQuantileHists:
+        results.append(
+            df.HistoBoost(
+                f"nominal_csQuantiles",
+                [
+                    all_axes[o]
+                    for o in ["ptll", "absYll", "phiStarll", "cosThetaStarll"]
+                ],
+                ["ptll", "absYll", "phiStarll", "cosThetaStarll"],
+            )
+        )
 
     if not args.noAuxiliaryHistograms:
         for obs in [
@@ -950,7 +1034,7 @@ def build_graph(df, dataset):
                         args,
                         dataset.name,
                         corr_helpers,
-                        qcdScaleByHelicity_helper,
+                        theory_helpers,
                         [all_axes[obs]],
                         [obs],
                         base_name=f"nominal_{obs}",
@@ -971,7 +1055,7 @@ def build_graph(df, dataset):
                 args,
                 dataset.name,
                 corr_helpers,
-                qcdScaleByHelicity_helper,
+                theory_helpers,
                 [all_axes[obs]],
                 [obs],
                 base_name=f"nominal_{obs}",
@@ -1145,8 +1229,6 @@ def build_graph(df, dataset):
             helper_syst=muon_prefiring_helper_syst,
         )
 
-        # n.b. this is the W analysis so mass weights shouldn't be propagated
-        # on the Z samples (but can still use it for dummy muon scale)
         if isWorZ:
 
             df = syst_tools.add_theory_hists(
@@ -1155,7 +1237,7 @@ def build_graph(df, dataset):
                 args,
                 dataset.name,
                 corr_helpers,
-                qcdScaleByHelicity_helper,
+                theory_helpers,
                 axes,
                 cols,
                 for_wmass=False,

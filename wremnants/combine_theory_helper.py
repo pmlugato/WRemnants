@@ -41,6 +41,14 @@ class TheoryHelper(object):
         self.datagroups = datagroups
         corr_hists = self.datagroups.args_from_metadata("theoryCorr")
         self.corr_hist_name = (corr_hists[0] + "Corr") if corr_hists else None
+
+        # Special case for dataPtll corr
+        if "data" in self.corr_hist_name and "scetlib_dyturbo" in corr_hists:
+            logger.warning(
+                f"Using uncertainties from scetlib_dyturboCorr for corr {self.corr_hist_name}"
+            )
+            self.corr_hist_name = "scetlib_dyturboCorr"
+
         self.syst_ax = "vars"
         self.corr_hist = None
         self.resumUnc = None
@@ -79,6 +87,7 @@ class TheoryHelper(object):
         minnlo_unc="byHelicityPt",
         minnlo_scale=1.0,
         minnlo_symmetrize="quadratic",
+        from_hels=False,
     ):
 
         self.set_resum_unc_type(resumUnc)
@@ -99,19 +108,28 @@ class TheoryHelper(object):
         self.minnlo_symmetrize = (
             None if minnlo_symmetrize.lower() == "none" else minnlo_symmetrize
         )
+        self.from_hels = from_hels
 
     def add_all_theory_unc(self, helicity_fit_unc=False):
         self.helicity_fit_unc = helicity_fit_unc
         self.add_nonpert_unc(model=self.np_model)
         self.add_resum_unc(scale=self.tnp_scale)
+        if "nnlojet" in self.corr_hist_name:
+            self.add_stat_unc()
         # additional uncertainty for effect of shower and intrinsic kt on angular coeffs
         self.add_helicity_shower_kt_uncertainty()
 
-        self.add_pdf_uncertainty(operation=self.pdf_operation, scale=self.scale_pdf_unc)
-        try:
-            self.add_quark_mass_vars()
-        except ValueError as e:
-            logger.warning(e)
+        self.add_pdf_uncertainty(
+            operation=self.pdf_operation,
+            scale=self.scale_pdf_unc,
+        )
+        if (
+            self.datagroups.args_from_metadata("pdfs")[0] != "herapdf20"
+        ):  # already includes mb,mc effects
+            try:
+                self.add_quark_mass_vars()
+            except ValueError as e:
+                logger.warning(e)
 
     def set_minnlo_unc(self, minnloUnc):
         self.minnlo_unc = minnloUnc
@@ -187,19 +205,20 @@ class TheoryHelper(object):
                             scale=self.minnlo_scale,
                             symmetrize=self.minnlo_symmetrize,
                         )
-        elif self.resumUnc == "scale":
-            # two sets of nuisances, one binned in ~10% quantiles, and one inclusive in pt
-            # to avoid underestimating the correlated part of the uncertainty
-            self.add_scetlib_dyturbo_scale_uncertainty(
-                extra_name="fine",
-                rebin_pt=common.ptV_binning[::2],
-                transition=self.transitionUnc,
-            )
+        elif "scale" in self.resumUnc:
             self.add_scetlib_dyturbo_scale_uncertainty(
                 extra_name="inclusive",
                 rebin_pt=[common.ptV_binning[0], common.ptV_binning[-1]],
                 transition=self.transitionUnc,
             )
+            if "binned" in self.resumUnc:
+                # Add unc binned in ~10% quantiles, but keep one inclusive in pt
+                # to avoid underestimating the correlated part of the uncertainty
+                self.add_scetlib_dyturbo_scale_uncertainty(
+                    extra_name="fine",
+                    rebin_pt=common.ptV_binning[::2],
+                    transition=self.transitionUnc,
+                )
 
         if self.minnlo_unc and self.minnlo_unc not in ["none", None]:
             # sigma_-1 uncertainty is covered by scetlib-dyturbo uncertainties if they are used
@@ -355,7 +374,14 @@ class TheoryHelper(object):
                 preOpArgs=preop_args,
                 symmetrize=symmetrize,
                 processes=[sample_group],
-                groups=[group_name, "QCDscale", "angularCoeffs", "theory"],
+                groups=[
+                    group_name,
+                    "QCDscale",
+                    "angularCoeffs",
+                    "theory",
+                    "theory_qcd",
+                ],
+                splitGroup={f"angularCoeffs_A{i}": f".*helicity_{i}" for i in range(8)},
                 systAxes=syst_axes,
                 labelsByAxis=syst_ax_labels,
                 skipEntries=skip_entries,
@@ -380,7 +406,7 @@ class TheoryHelper(object):
             passToFakes=self.propagate_to_fakes,
             systAxes=[self.syst_ax],
             preOp=op,
-            groups=["helicity_shower_kt", "angularCoeffs", "theory"],
+            groups=["helicity_shower_kt", "angularCoeffs", "theory", "theory_qcd"],
             name="helicity_shower_kt",
             mirror=True,
         )
@@ -414,7 +440,7 @@ class TheoryHelper(object):
 
             # skip nominal
             skip_entries = []
-            skip_entries.append({"vars": "pdf0"})
+            skip_entries.append({"vars": ["pdf0", "central"]})
 
             # choose the correct variations depending on whether transition variations are included
             if transition:
@@ -432,7 +458,12 @@ class TheoryHelper(object):
             format_with_values = ["edges", "center"]
 
             def preop_func(h, *args, **kwargs):
-                hsel = h[{"vars": ["pdf0"] + sel_vars}]
+                hsel = h[
+                    {
+                        "vars": ["pdf0" if "pdf0" in h.axes["vars"] else "central"]
+                        + sel_vars
+                    }
+                ]
                 func = (
                     syst_tools.gen_hist_to_variations
                     if pt_ax == "ptVgenAlt"
@@ -451,7 +482,13 @@ class TheoryHelper(object):
             self.datagroups.addSystematic(
                 self.scale_hist_name,
                 processes=[sample_group],
-                groups=["resumTransitionFOScale", "resum", "pTModeling", "theory"],
+                groups=[
+                    "resumTransitionFOScale",
+                    "resum",
+                    "pTModeling",
+                    "theory",
+                    "theory_qcd",
+                ],
                 systAxes=[pt_ax, "vars"],
                 symmetrize="quadratic",
                 passToFakes=self.propagate_to_fakes,
@@ -466,6 +503,30 @@ class TheoryHelper(object):
 
     def set_propagate_to_fakes(self, to_fakes):
         self.propagate_to_fakes = to_fakes
+
+    def add_stat_unc(self):
+        processes = ["signal_samples"]
+        logger.debug(
+            f"Adding theory-correction statistical uncertainties from syst entries"
+        )
+
+        self.datagroups.addSystematic(
+            histname=self.corr_hist_name,
+            processes=processes,
+            groups=["theory"],
+            systAxes=[self.syst_ax],
+            passToFakes=self.propagate_to_fakes,
+            preOp=lambda h: h[
+                {
+                    self.syst_ax: [
+                        v
+                        for v in self.corr_hist.axes[self.syst_ax]
+                        if "per_bin_stat_unc_theory_corr" in v
+                    ]
+                }
+            ],
+            name="theoryCorrStat",
+        )
 
     def add_resum_tnp_unc(self, magnitude, scale=1):
         syst_ax = self.corr_hist.axes[self.syst_ax]
@@ -482,8 +543,6 @@ class TheoryHelper(object):
                 "Up or down variation missing in TNP histogram. Will use mirroring"
             )
             self.mirror_tnp = True
-
-        central_var = syst_ax[0]
 
         tnp_magnitudes = ["2.5", "0.5", "1."]
         name_replace = [(f"-{x}", "Down") for x in tnp_magnitudes] + [
@@ -502,16 +561,16 @@ class TheoryHelper(object):
         self.datagroups.addSystematic(
             self.corr_hist_name,
             processes=processes,
-            groups=["resumTNP", "resum", "pTModeling", "theory"],
+            groups=["resumTNP", "resum", "pTModeling", "theory", "theory_qcd"],
             systAxes=["vars"],
             passToFakes=self.propagate_to_fakes,
             systNameReplace=name_replace,
-            preOp=lambda h: h[{self.syst_ax: [central_var, *self.tnp_nuisances]}],
+            preOp=lambda h: h[
+                {self.syst_ax: [h.axes[self.syst_ax][0], *self.tnp_nuisances]}
+            ],
             mirror=self.mirror_tnp,
             scale=scale,
-            skipEntries=[
-                {self.syst_ax: central_var},
-            ],
+            skipEntries=[{self.syst_ax: ["central", "pdf0"]}],
             name=f"resumTNP",
             baseName=f"resumTNP_",
         )
@@ -591,7 +650,7 @@ class TheoryHelper(object):
             systAxes=[self.syst_ax],
             preOp=lambda h: h[{self.syst_ax: var_vals}],
             outNames=var_names,
-            groups=["resumNonpert", "resum", "pTModeling", "theory"],
+            groups=["resumNonpert", "resum", "pTModeling", "theory", "theory_qcd"],
             name="scetlibNP",
         )
 
@@ -621,7 +680,7 @@ class TheoryHelper(object):
         self.datagroups.addSystematic(
             theory_hist,
             processes=self.samples,
-            groups=["resumScale", "resum", "pTModeling", "theory"],
+            groups=["resumScale", "resum", "pTModeling", "theory", "theory_qcd"],
             passToFakes=self.propagate_to_fakes,
             # skipEntries=[{syst_ax: x} for x in both_exclude + tnp_nuisances], # FIXME
             systAxes=["downUpVar"],  # Is added by the preOpMap
@@ -642,7 +701,7 @@ class TheoryHelper(object):
         self.datagroups.addSystematic(
             theory_hist,
             processes=self.samples,
-            groups=["resumScale", "resum", "pTModeling", "theory"],
+            groups=["resumScale", "resum", "pTModeling", "theory", "theory_qcd"],
             passToFakes=self.propagate_to_fakes,
             systAxes=["vars"],
             preOpMap={
@@ -704,7 +763,7 @@ class TheoryHelper(object):
             self.datagroups.addSystematic(
                 self.corr_hist_name,
                 processes=["single_v_samples"],
-                groups=["resumNonpert", "resum", "pTModeling", "theory"],
+                groups=["resumNonpert", "resum", "pTModeling", "theory", "theory_qcd"],
                 systAxes=[self.syst_ax],
                 passToFakes=self.propagate_to_fakes,
                 preOp=operation,
@@ -738,8 +797,6 @@ class TheoryHelper(object):
             for k in to_remove:
                 np_map.pop(k)
 
-        central_var = self.np_hist.axes[self.syst_ax][0]
-
         for label, vals in np_map.items():
             if not all(label + v in self.np_hist.axes[self.syst_ax] for v in vals):
                 tmpvals = [
@@ -766,7 +823,7 @@ class TheoryHelper(object):
             else ["chargeVgenNP", self.syst_ax]
         )
         operation = lambda h, entries: syst_tools.hist_to_variations(
-            h[{self.syst_ax: [central_var, *entries]}],
+            h[{self.syst_ax: [h.axes[self.syst_ax][0], *entries]}],
             gen_axes=gen_axes,
             sum_axes=sum_axes,
         )
@@ -780,7 +837,13 @@ class TheoryHelper(object):
                 self.datagroups.addSystematic(
                     self.np_hist_name,
                     processes=[sample_group],
-                    groups=["resumNonpert", "resum", "pTModeling", "theory"],
+                    groups=[
+                        "resumNonpert",
+                        "resum",
+                        "pTModeling",
+                        "theory",
+                        "theory_qcd",
+                    ],
                     systAxes=syst_axes,
                     passToFakes=self.propagate_to_fakes,
                     preOp=operation,
@@ -790,7 +853,7 @@ class TheoryHelper(object):
                         (entries[1], f"{rename}Up"),
                         (entries[0], f"{rename}Down"),
                     ],
-                    skipEntries=[{self.syst_ax: central_var}],
+                    skipEntries=[{self.syst_ax: ["central", "pdf0"]}],
                     name=rename,
                 )
 
@@ -798,11 +861,19 @@ class TheoryHelper(object):
         pdf = self.datagroups.args_from_metadata("pdfs")[0]
         pdfInfo = theory_tools.pdf_info_map("ZmumuPostVFP", pdf)
         pdfName = pdfInfo["name"]
-        scale = scale if scale != -1.0 else pdfInfo["inflationFactor"]
-        pdf_hist = pdfName
-        pdf_corr_hist = (
-            f"scetlib_dyturbo{pdf.upper().replace('AN3LO', 'an3lo')}VarsCorr"
+        scale = (
+            scale
+            if scale != -1.0
+            else theory_tools.pdf_inflation_factor(pdfInfo, self.args.noi)
         )
+        if self.from_hels:
+            pdf_hist = f"{pdfName}UncertByHelicity"
+            pdf_corr_hist = f"{pdfName}UncertByHelicity"
+        else:
+            pdf_hist = pdfName
+            pdf_corr_hist = (
+                f"scetlib_dyturbo{pdf.upper().replace('AN3LO', 'an3lo')}VarsCorr"
+            )
         symmetrize = "quadratic"
 
         if self.pdf_from_corr:
@@ -827,7 +898,7 @@ class TheoryHelper(object):
         pdf_args = dict(
             processes=processes,
             mirror=True if symHessian else False,
-            groups=[pdfName, f"{pdfName}NoAlphaS", "theory"],
+            groups=[pdfName, f"{pdfName}NoAlphaS", "theory", "theory_qcd"],
             passToFakes=self.propagate_to_fakes,
             preOpMap=operation,
             scale=pdfInfo.get("scale", 1) * scale,
@@ -848,40 +919,55 @@ class TheoryHelper(object):
                 pdf_hist, skipEntries=[{pdf_ax: "^pdf0[a-z]*"}], **pdf_args
             )
             if pdfName == "pdfHERAPDF20":
+
                 self.datagroups.addSystematic(
-                    pdf_hist + "ext",
-                    skipEntries=[{pdf_ax: "^pdf0[a-z]*"}],
-                    processes=processes,
-                    mirror=True,
-                    groups=[pdfName, f"{pdfName}NoAlphaS", "theory"],
-                    passToFakes=self.propagate_to_fakes,
-                    preOpMap=operation,
-                    scale=pdfInfo.get("scale", 1) * scale,
-                    symmetrize=symmetrize,
-                    systAxes=[pdf_ax],
+                    pdf_hist.replace("pdfHERAPDF20", "pdfHERAPDF20ext"),
+                    skipEntries=[
+                        {pdf_ax: "^pdf(0|[6-8])[a-z]*"}
+                    ],  # exclude 0, 6 and above
+                    **pdf_args,
+                )
+
+                tmp_pdf_args = pdf_args.copy()
+                tmp_pdf_args["mirror"] = True
+                self.datagroups.addSystematic(
+                    pdf_hist.replace("pdfHERAPDF20", "pdfHERAPDF20ext"),
+                    skipEntries=[
+                        {pdf_ax: "^(?!pdf[6-8][a-z]*)"}
+                    ],  # exclude everything but 6-8
+                    **tmp_pdf_args,
                 )
 
     def add_pdf_alphas_variation(self, noi=False, scale=-1.0):
         pdf = self.datagroups.args_from_metadata("pdfs")[0]
         pdfInfo = theory_tools.pdf_info_map("ZmumuPostVFP", pdf)
         pdfName = pdfInfo["name"]
-        scale = scale if scale != -1.0 else pdfInfo["inflationFactor"]
+        scale = (
+            scale
+            if scale != -1.0
+            else theory_tools.pdf_inflation_factor(pdfInfo, self.args.noi)
+        )
         pdf_hist = pdfName
         pdf_corr_hist = (
             f"scetlib_dyturbo{pdf.upper().replace('AN3LO', 'an3lo')}VarsCorr"
+            if self.corr_hist_name == "scetlib_dyturboCorr"
+            else self.corr_hist_name.replace("Corr", "VarsCorr")
         )
         symmetrize = "average" if noi else "quadratic"
         asRange = pdfInfo["alphasRange"]
-        asname = (
-            f"{pdfName}alphaS{asRange}"
-            if not self.as_from_corr
-            else pdf_corr_hist.replace("Vars", "_pdfas")
-        )
         as_replace = (
             [("as", "pdfAlphaS")] + [("0116", "Down"), ("0120", "Up")]
             if asRange == "002"
             else [("0117", "Down"), ("0119", "Up")]
         )
+        if self.from_hels:
+            asname = "pdfAlphaSByHelicity"
+        else:
+            asname = (
+                f"{pdfName}alphaS{asRange}"
+                if not self.as_from_corr
+                else pdf_corr_hist.replace("Vars", "_pdfas")
+            )
         as_args = dict(
             histname=asname,
             processes=["single_v_samples"],
@@ -895,7 +981,7 @@ class TheoryHelper(object):
             passToFakes=self.propagate_to_fakes,
         )
         if not noi:
-            as_args["groups"].extend([f"{pdfName}AlphaS", "theory"])
+            as_args["groups"].extend([f"{pdfName}AlphaS", "theory", "theory_qcd"])
         if self.as_from_corr:
             as_args["outNames"] = ["", "pdfAlphaSDown", "pdfAlphaSUp"]
         else:
@@ -939,7 +1025,13 @@ class TheoryHelper(object):
             self.datagroups.addSystematic(
                 self.corr_hist_name,
                 processes=[sample_group],
-                groups=["resumTransitionFOScale", "resum", "pTModeling", "theory"],
+                groups=[
+                    "resumTransitionFOScale",
+                    "resum",
+                    "pTModeling",
+                    "theory",
+                    "theory_qcd",
+                ],
                 systAxes=["vars"],
                 symmetrize="quadratic",
                 passToFakes=self.propagate_to_fakes,
@@ -982,9 +1074,13 @@ class TheoryHelper(object):
                 "In order to take the mb(c) mass unc. from SCETlib+DYTurbo, you need to include those corr files and use MSHT20 as central PDF"
             )
 
-        bhist = (
-            "pdfMSHT20mbrange" if from_minnlo else "scetlib_dyturboMSHT20mbrangeCorr"
-        )
+        if from_minnlo:
+            if self.from_hels:
+                bhist = "pdfMSHT20mbrangeUncertByHelicity"
+            else:
+                bhist = "pdfMSHT20mbrange"
+        else:
+            bhist = "scetlib_dyturboMSHT20mbrangeCorr"
         syst_ax = "pdfVar" if from_minnlo else "vars"
 
         self.datagroups.addSystematic(
@@ -992,7 +1088,7 @@ class TheoryHelper(object):
             processes=self.samples,
             systAxes=[syst_ax],
             symmetrize="quadratic",
-            groups=["bcQuarkMass", "pTModeling", "theory"],
+            groups=["bcQuarkMass", "pTModeling", "theory", "theory_qcd"],
             passToFakes=self.propagate_to_fakes,
             outNames=[
                 "",
@@ -1007,7 +1103,7 @@ class TheoryHelper(object):
             processes=self.samples,
             systAxes=[syst_ax],
             symmetrize="quadratic",
-            groups=["bcQuarkMass", "pTModeling", "theory"],
+            groups=["bcQuarkMass", "pTModeling", "theory", "theory_qcd"],
             passToFakes=self.propagate_to_fakes,
             outNames=[
                 "",
