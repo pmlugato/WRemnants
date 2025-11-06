@@ -390,9 +390,15 @@ class Datagroups(object):
         self.nominalName = name
 
     def processScaleFactor(self, proc):
+        logger.debug("entered processScaleFactor")
         if proc.is_data or proc.xsec is None:
             return 1
-        return self.lumi * 1000 * proc.xsec / proc.weight_sum
+        gen_filter_eff = (
+            self.results[proc.name]["gen_filter_eff"]
+            if "gen_filter_eff" in self.results[proc.name]
+            else 1
+        )
+        return self.lumi * 1000 * proc.xsec * gen_filter_eff / proc.weight_sum
 
     def getMetaInfo(self):
         if "meta_info" not in self.results and "meta_data" not in self.results:
@@ -500,9 +506,6 @@ class Datagroups(object):
                     f"Group {procName} not known. Defined groups are {list(self.groups.keys())}."
                 )
             group = self.groups[procName]
-
-            logger.debug(type(group))
-            logger.debug(group)
 
             group.hists[label] = None
 
