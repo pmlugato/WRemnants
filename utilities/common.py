@@ -109,6 +109,8 @@ calib_filepaths = {
     "mc_resofile": f"{calib_dir}/sigmaMC_LBL_JYZ.root",
     "data_resofile": f"{calib_dir}/sigmaDATA_LBL_JYZ.root",
     "tflite_file": f"{calib_dir}/muon_response.tflite",
+    # "tflite_file": f"/ceph/submit/data/user/p/pmlugato/mz/calibration/kaon_response.tflite",
+    # "tflite_file": f"/ceph/submit/data/user/p/pmlugato/mz/calibration/kaon_response_debug.tflite",
     # 'tflite_file': f"{calib_dir}/muon_response_nosmearing.tflite"
 }
 closure_filepaths = {
