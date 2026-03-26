@@ -40,6 +40,17 @@ dataDict = {
         "lumijson": lumijson,
         "auxiliary": True,
     },
+    "Charmonium_2016PostVFP_customNano": {
+        "filepaths": [
+            "{BASE_PATH}/Charmonium+Run2016F-21Feb2020_UL2016-v1+MINIAOD",
+            "{BASE_PATH}/Charmonium+Run2016G-21Feb2020_UL2016-v1+MINIAOD",
+            "{BASE_PATH}/Charmonium+Run2016H-21Feb2020_UL2016-v1+MINIAOD",
+        ],
+        "group": "Data",
+        "lumicsv": lumicsv,
+        "lumijson": lumijson,
+        "auxiliary": True,
+    },
     "Zmumu_2016PostVFP": {
         "filepaths": [
             "{BASE_PATH}/DYJetsToMuMu_H2ErratumFix_PDFExt_TuneCP5_13TeV-powhegMiNNLO-pythia8-photos/NanoV9MCPostVFP_{NANO_PROD_TAG}",
@@ -317,6 +328,17 @@ dataDict = {
         ],
         "xsec": 25000.0,  # guessed on data vs. MC
         "group": "JPsi",
+        "auxiliary": True,
+    },
+    "BuToJpsiK_2016PostVFP": {
+        "filepaths": [
+            "{BASE_PATH}/BuToJpsiK_BMuonFilter_SoftQCDnonD_TuneCP5_13TeV-pythia8-evtgen+RunIISummer20UL16MiniAOD-106X_mcRun2_asymptotic_v13-v1+MINIAODSIM"
+        ],
+        "xsec": 1.219e7
+        * 1.02e-3
+        * 5.961e-2,  # B production xsec * BR(B --> Jpsi + K) * BR(Jpsi --> mumu)
+        "group": "BuToJpsiK",
+        # "das_name": "/BuToJpsiK_BMuonFilter_SoftQCDnonD_TuneCP5_13TeV-pythia8-evtgen/RunIISummer20UL17MiniAODv2-106X_mc2017_realistic_v9-v1/MINIAODSIM",
         "auxiliary": True,
     },
 }
