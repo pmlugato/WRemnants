@@ -76,7 +76,7 @@ def parse_args():
     parser.add_argument(
         "--ptAxis",
         default="bkmm_kaon_pt",
-        help="Name of the kaon-pt axis to be summed over.",
+        help="Name of the kaon-pt axis kept in the tensor.",
     )
     parser.add_argument(
         "--etaAxis",
@@ -164,11 +164,41 @@ def parse_args():
         action="store_true",
         help="Print debug summaries for variation templates.",
     )
+    parser.add_argument(
+        "--etaBins",
+        type=int,
+        default=7,
+        help="Rebin the eta axis to this many bins before writing. Set to the nominal axis size to disable eta rebinning.",
+    )
+    parser.add_argument(
+        "--massBins",
+        type=int,
+        default=10,
+        help="Rebin the mass axis to this many bins before writing. Set to the nominal axis size to disable mass rebinning.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    # The plotting helpers use snake_case attribute names, while this script
+    # follows the repo CLI convention of camelCase options.
+    args.charge_axis = args.chargeAxis
+    args.curvature_axis = args.curvatureAxis
+    args.debug_variation = args.debugVariation
+    args.eta_axis = args.etaAxis
+    args.overlay_bin_variations = args.overlayBinVariations
+    args.plot_curvature_response = args.plotCurvatureResponse
+    args.plot_curvature_scale = args.plotCurvatureScale
+    args.plot_output = args.plotOutput
+    args.plot_variation_scale = args.plotVariationScale
+    args.systematic_axis = args.systematicAxis
+    args.systematic_labels = tuple(args.systematicLabels)
+    args.tensor_output = args.outfolder
+    args.variation_axis = args.variationAxis
+    args.variation_down_index = args.variationDownIndex
+    args.variation_up_index = args.variationUpIndex
+
     outname = os.path.splitext(os.path.basename(__file__))[0]
     if args.postfix:
         outname += f"_{args.postfix}"
@@ -182,11 +212,14 @@ def main():
     print(variation_hist)
 
     n_pt_bins = signal_hist.axes[args.ptAxis].size
-    n_mass_bins = 10
-    rebinning = {
-        args.etaAxis: 7,
-        args.massAxis: n_mass_bins,
-    }
+    rebinning = {}
+    if args.etaBins is not None and signal_hist.axes[args.etaAxis].size != args.etaBins:
+        rebinning[args.etaAxis] = args.etaBins
+    if (
+        args.massBins is not None
+        and signal_hist.axes[args.massAxis].size != args.massBins
+    ):
+        rebinning[args.massAxis] = args.massBins
     for axis, bins in rebinning.items():
         print(f"Rebinning {axis} into {bins} bins")
 
@@ -259,7 +292,11 @@ def main():
     writer = tensorwriter.TensorWriter(systematic_type=args.systematicType)
     writer.add_channel(signal_hist.axes, name=args.channel)
     writer.add_data(data_hist, channel=args.channel)
-    writer.add_process(signal_hist, args.signalProcess, args.channel, signal=True)
+    # This calibration tensor already floats the signal yield independently in every
+    # fitted (eta, pt, charge) bin below. Marking the same process as a Rabbit
+    # "signal" would add a redundant global signal-strength POI on top of those
+    # bin-wise yields, which makes the explicit-fit Hessian singular.
+    writer.add_process(signal_hist, args.signalProcess, args.channel, signal=False)
     for proc, h in background_hists.items():
         writer.add_process(h, proc, args.channel)
     # artificial background
@@ -410,20 +447,24 @@ def main():
 
             up_hist = signal_hist.copy()
             down_hist = signal_hist.copy()
-            for charge_idx in range(n_charge_bins):
-                up_hist.values()[..., charge_idx] = up_variation.values()[
-                    ..., charge_idx
-                ]
-                down_hist.values()[..., charge_idx] = down_variation.values()[
-                    ..., charge_idx
-                ]
 
-                up_vars = up_variation.variances()
-                down_vars = down_variation.variances()
-                if up_vars is not None:
-                    up_hist.variances()[..., charge_idx] = up_vars[..., charge_idx]
-                if down_vars is not None:
-                    down_hist.variances()[..., charge_idx] = down_vars[..., charge_idx]
+            # Each A/e/M nuisance is defined for one eta bin. The selected
+            # variation slice only carries that eta bin, so keep the nominal
+            # template elsewhere and replace only the targeted eta slice.
+            eta_target = [slice(None)] * up_hist.values().ndim
+            eta_axis_idx = up_hist.axes.name.index(args.etaAxis)
+            eta_target[eta_axis_idx] = eta_idx
+            eta_target = tuple(eta_target)
+
+            up_hist.values()[eta_target] = up_variation.values()[eta_target]
+            down_hist.values()[eta_target] = down_variation.values()[eta_target]
+
+            up_vars = up_variation.variances()
+            down_vars = down_variation.variances()
+            if up_vars is not None:
+                up_hist.variances()[eta_target] = up_vars[eta_target]
+            if down_vars is not None:
+                down_hist.variances()[eta_target] = down_vars[eta_target]
 
             writer.add_systematic(
                 [up_hist, down_hist],

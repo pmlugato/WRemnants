@@ -9,12 +9,30 @@ from wremnants.utilities.io_tools import base_io
 from wums import boostHistHelpers as hh
 
 
+def _resolve_dataset_key(results, requested):
+    if requested in results:
+        return requested
+
+    matches = [key for key in results if key.startswith(requested)]
+    if len(matches) == 1:
+        return matches[0]
+
+    contains_matches = [key for key in results if requested in key]
+    if len(contains_matches) == 1:
+        return contains_matches[0]
+
+    available = ", ".join(sorted(results.keys()))
+    raise KeyError(f"Dataset '{requested}' was not found. Available keys: {available}")
+
+
 def load_histogram(_filename: str, _dataset: str):
     h5file = h5py.File(_filename, "r")
     results = base_io.load_results_h5py(h5file)
 
-    h = results[_dataset]["output"]["nominal_HistToFit"].get()
-    hvar = results[_dataset]["output"]["nominal_muonScaleSyst_responseWeights"].get()
+    dataset_key = _resolve_dataset_key(results, _dataset)
+
+    h = results[dataset_key]["output"]["nominal_HistToFit"].get()
+    hvar = results[dataset_key]["output"]["nominal_muonScaleSyst_responseWeights"].get()
 
     combined = None
     for proc in [

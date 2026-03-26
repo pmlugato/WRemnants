@@ -26,6 +26,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--includeKaonScaleVariations",
+    "--include-kaon-scale-variations",
     action="store_true",
     help="uncertainty hists for parameterized model",
 )
@@ -48,6 +49,30 @@ parser.add_argument(
     "--csVarsHist", action="store_true", help="Add CS variables to dilepton hist"
 )
 parser.add_argument("--axes", type=str, nargs="*", default=[], help="")
+parser.add_argument(
+    "--jpsiFixedAUnc",
+    type=float,
+    default=None,
+    help="If set, override the J/Psi covariance diagonal A uncertainty in every eta bin with this fixed value.",
+)
+parser.add_argument(
+    "--jpsiFixedEUnc",
+    type=float,
+    default=None,
+    help="If set, override the J/Psi covariance diagonal e uncertainty in every eta bin with this fixed value.",
+)
+parser.add_argument(
+    "--jpsiFixedMUnc",
+    type=float,
+    default=None,
+    help="If set, override the J/Psi covariance diagonal M uncertainty in every eta bin with this fixed value.",
+)
+parser.add_argument(
+    "--fitPtQuantiles",
+    type=int,
+    default=None,
+    help="If set, replace the fitted kaon-pT axis with eta- and charge-conditional quantile bins of this size.",
+)
 
 parser = parsing.set_parser_default(
     parser, "aggregateGroups", ["Diboson", "Top", "Wtaunu", "Wmunu"]
@@ -76,6 +101,23 @@ datasets = getDatasets(
     mc_tags=[""],
 )
 
+if args.fitPtQuantiles is not None:
+    reference_dataset = next(
+        (
+            d
+            for d in datasets
+            if (not d.is_data)
+            and (d.name == f"BuToJpsiK_{args.era}" or d.name.startswith("BuToJpsiK_"))
+        ),
+        None,
+    )
+    if reference_dataset is None:
+        raise RuntimeError(
+            "--fitPtQuantiles requires a non-data BuToJpsiK dataset in the filtered inputs."
+        )
+else:
+    reference_dataset = None
+
 calib_filepaths = common.calib_filepaths
 
 (
@@ -94,6 +136,9 @@ calib_filepaths = common.calib_filepaths
     make_uncertainty_helper=True,
     include_covariance=False,
     central=True,
+    fixed_A_unc=args.jpsiFixedAUnc,
+    fixed_e_unc=args.jpsiFixedEUnc,
+    fixed_M_unc=args.jpsiFixedMUnc,
 )
 
 logger.debug(
@@ -109,20 +154,6 @@ logger.debug(f"\n\n diff_weights_helper is None: {diff_weights_helper is None}")
 logger.debug(f"\n\n data_jpsi_crctn_helper is None: {data_jpsi_crctn_helper is None}")
 logger.debug(f"\n\n mc_jpsi_crctn_helper is None: {mc_jpsi_crctn_helper is None}")
 
-
-for a in args.axes:
-    if a not in all_butojpsik_axes.keys():
-        logger.error(
-            f" {a} is not a known axes! Supported axes choices are {list(all_butojpsik_axes.keys())}"
-        )
-
-nominal_cols = args.axes
-nominal_axes = [all_butojpsik_axes[a] for a in nominal_cols]
-if args.allaxes:
-    nominal_cols = list(all_butojpsik_axes.keys())
-    nominal_axes = [all_butojpsik_axes[a] for a in all_butojpsik_axes]
-hist_names = set()
-
 # global so when event loop run the sumandcount pointers remain and get updated
 cutflows = {}
 signal_gen_filter_stats = {}
@@ -131,72 +162,20 @@ smearing_weights_procs = []
 nominal_cols_gen_smeared = None  # for unc helper, not used for smearingWeightsSplines
 cols_gen_smeared = None  # for unc helper, not used for smearingWeightsSplines
 isW = False
+fit_pt_quantile_hists = None
 
 
-def build_graph(df, dataset):
-    logger.info(f"build graph for dataset: {dataset.name}")
-    results = []
-    cutflow = {}
+def get_trigger_name():
+    if args.era == "2018":
+        # DoubleMu4_JpsiTrk_Displaced has the largest validated 2018 yield.
+        return "DoubleMu4_JpsiTrk_Displaced"
+    return "DoubleMu4_PsiPrimeTrk_Displaced"
 
-    storage_type = hist.storage.Double()
 
-    if dataset.is_data:
-        df = df.DefinePerSample("weight", "1.0")
-    else:
-        # df = df.Define("weight", "std::copysign(1.0, genWeight)")
-        df = df.Define("weight", "genWeight")
-        df = df.Define(
-            "nominal_weight", "static_cast<double>(weight)"
-        )  # stupid for now, for unc helpers later
-
-    df = df.DefinePerSample("unity", "1.0")
-
-    if dataset.name == "signalBuToJpsiK_2018":
-        total_evt_count = (
-            df.Count()
-        )  # matches evtcount in graph_builder otherwise complains
-        gen_weight_before = df.Sum("genWeight")
-        df = df.Filter("Any(bkmm_gen_pdgId != 0)", "require gen-matched candidate")
-        gen_weight_after = df.Sum("genWeight")
-        filtered_evt_count = df.Count()
-        weightsum_sum = df.Sum("weight")
-        weightsum = (weightsum_sum, total_evt_count)
-        signal_gen_filter_stats[dataset.name] = (
-            gen_weight_after,
-            gen_weight_before,
-            filtered_evt_count,
-        )
-    else:
-        weightsum = df.SumAndCount("weight")
-
-    cutflow["Total"] = weightsum[0]
-    if args.selectionHists:
-        for var in nominal_cols:
-            # if "gen" in str(var) and dataset.is_data:
-            #    results.append(df.HistoBoost(hist_name, ))
-            hist_name = f"nominal_{var}_total"
-            results.append(df.HistoBoost(hist_name, [all_butojpsik_axes[var]], [var]))
-            hist_names.add(hist_name)
-
-    df, cutflow_trigger = btojpsik_selections.define_jpsi_triggers(
-        df, trigger_name="DoubleMu4_3_Jpsi"
-    )
-    # cutflow_trigger = None
-    if cutflow_trigger:
-        cutflow["HLT"] = cutflow_trigger[0]
-        if args.selectionHists:
-            for var in nominal_cols:
-                # if "gen" in str(var) and dataset.is_data:
-                #    results.append(df.HistoBoost(hist_name, ))
-                hist_name = f"nominal_{var}_hlt"
-                results.append(
-                    df.HistoBoost(hist_name, [all_butojpsik_axes[var]], [var])
-                )
-                hist_names.add(hist_name)
-
+def get_bkmm_selections():
     # selections (og was BPH-21-006)
     # TODO: shouldn't have to write the numbers twice smh but don't feel like changing right now
-    bkmm_selections = [
+    return [
         (
             "dimuon cand neutral",
             lambda d: btojpsik_selections.select_opposite_sign_dimuon(d),
@@ -252,8 +231,211 @@ def build_graph(df, dataset):
         ),  # NOTE: this doesn't touch kaon so fine to use...
     ]
 
+
+def build_fit_pt_quantile_hists(dataset):
+    logger.info(
+        "Building common HistToFit pT quantiles from reference dataset %s.",
+        dataset.name,
+    )
+
+    df = ROOT.ROOT.RDataFrame("Events", dataset.filepaths)
+
+    if dataset.is_data:
+        df = df.DefinePerSample("weight", "1.0")
+    else:
+        df = df.Define("weight", "genWeight")
+        df = df.Define("nominal_weight", "static_cast<double>(weight)")
+
+    df = df.DefinePerSample("unity", "1.0")
+
+    df, _ = btojpsik_selections.define_jpsi_triggers(
+        df, trigger_name=get_trigger_name()
+    )
+    df, _, _ = btojpsik_selections.bkmm_selections(
+        df, dataset.name, get_bkmm_selections()
+    )
+
+    needs_gen_match = (
+        not dataset.is_data
+        and dataset.name != "signalBuToJpsiK_2018"
+        and not args.checkingSignalStats
+    )
+    df = btojpsik_selections.select_only_passing_bkmm_candidates(
+        df,
+        signal=dataset.name == "signalBuToJpsiK_2018",
+        select_best=True,
+        gen_match_nonsignal=needs_gen_match,
+        gen_filter_stats=None,
+        dataset_name=None,
+    )
+
+    jpsi_helper = data_jpsi_crctn_helper if dataset.is_data else mc_jpsi_crctn_helper
+    reco_sel_GF = "bkmm_kaon_stuff"
+    df = df.Define(
+        "kaon_jpsiCorrectedPt",
+        jpsi_helper,
+        ["bkmm_jpsimc_kaon1pt", "bkmm_jpsimc_kaon1eta", "bkmm_kaon_charge"],
+    )
+    df = df.Alias(f"{reco_sel_GF}_recoPt", "kaon_jpsiCorrectedPt")
+    df = df.Alias(f"{reco_sel_GF}_recoEta", "bkmm_jpsimc_kaon1eta")
+    df = df.Alias(f"{reco_sel_GF}_recoCharge", "bkmm_kaon_charge")
+    df = df.Define(
+        f"{reco_sel_GF}_recoPt_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoPt[0])",
+    )
+    df = df.Define(
+        f"{reco_sel_GF}_recoEta_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoEta[0])",
+    )
+    df = df.Define(
+        f"{reco_sel_GF}_recoCharge_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoCharge[0])",
+    )
+
+    return narf.histutils.build_quantile_hists(
+        df,
+        [
+            f"{reco_sel_GF}_recoEta_scalar",
+            f"{reco_sel_GF}_recoCharge_scalar",
+            f"{reco_sel_GF}_recoPt_scalar",
+        ],
+        [
+            all_butojpsik_axes["bkmm_kaon_stuff_recoEta"],
+            all_butojpsik_axes["bkmm_kaon_stuff_recoCharge"],
+        ],
+        [
+            hist.axis.Regular(
+                args.fitPtQuantiles,
+                0.0,
+                1.0,
+                name="bkmm_kaon_pt_quantile",
+                underflow=False,
+                overflow=False,
+            )
+        ],
+    )
+
+
+def configure_fit_histogram(df, reco_sel_GF):
+    fit_mass_col = "bkmm_jpsimc_mass_scalar"
+    fit_pt_col = f"{reco_sel_GF}_recoPt_scalar"
+    fit_eta_col = f"{reco_sel_GF}_recoEta_scalar"
+    fit_charge_col = f"{reco_sel_GF}_recoCharge_scalar"
+
+    fit_mass_axis = all_butojpsik_axes["bkmm_jpsimc_mass"]
+    fit_pt_axis = all_butojpsik_axes["bkmm_kaon_stuff_recoPt"]
+    fit_eta_axis = all_butojpsik_axes["bkmm_kaon_stuff_recoEta"]
+    fit_charge_axis = all_butojpsik_axes["bkmm_kaon_stuff_recoCharge"]
+
+    if args.fitPtQuantiles is not None:
+        if args.fitPtQuantiles < 2:
+            raise ValueError("--fitPtQuantiles must be at least 2.")
+
+        quantile_cols = [fit_eta_col, fit_charge_col, fit_pt_col]
+        if fit_pt_quantile_hists is None:
+            raise RuntimeError("fit_pt_quantile_hists was not initialized.")
+        df, _, _ = narf.histutils.define_quantile_ints(
+            df, cols=quantile_cols, quantile_hists=fit_pt_quantile_hists
+        )
+        fit_pt_col = f"{fit_pt_col}_iquant"
+        fit_pt_axis = hist.axis.Integer(
+            0,
+            args.fitPtQuantiles,
+            name="bkmm_kaon_pt",
+            underflow=False,
+            overflow=False,
+        )
+        logger.info(
+            "Using %s eta- and charge-conditional pT quantile bins for HistToFit.",
+            args.fitPtQuantiles,
+        )
+
+    fitcols = [fit_mass_col, fit_pt_col, fit_eta_col, fit_charge_col]
+    fitaxes = [fit_mass_axis, fit_pt_axis, fit_eta_axis, fit_charge_axis]
+    return df, fitaxes, fitcols
+
+
+if reference_dataset is not None:
+    fit_pt_quantile_hists = build_fit_pt_quantile_hists(reference_dataset)
+
+
+for a in args.axes:
+    if a not in all_butojpsik_axes.keys():
+        logger.error(
+            f" {a} is not a known axes! Supported axes choices are {list(all_butojpsik_axes.keys())}"
+        )
+
+nominal_cols = args.axes
+nominal_axes = [all_butojpsik_axes[a] for a in nominal_cols]
+if args.allaxes:
+    nominal_cols = list(all_butojpsik_axes.keys())
+    nominal_axes = [all_butojpsik_axes[a] for a in all_butojpsik_axes]
+hist_names = set()
+
+
+def build_graph(df, dataset):
+    logger.info(f"build graph for dataset: {dataset.name}")
+    results = []
+    cutflow = {}
+
+    storage_type = hist.storage.Double()
+
+    if dataset.is_data:
+        df = df.DefinePerSample("weight", "1.0")
+    else:
+        # df = df.Define("weight", "std::copysign(1.0, genWeight)")
+        df = df.Define("weight", "genWeight")
+        df = df.Define(
+            "nominal_weight", "static_cast<double>(weight)"
+        )  # stupid for now, for unc helpers later
+
+    df = df.DefinePerSample("unity", "1.0")
+
+    if dataset.name == "signalBuToJpsiK_2018":
+        total_evt_count = (
+            df.Count()
+        )  # matches evtcount in graph_builder otherwise complains
+        gen_weight_before = df.Sum("genWeight")
+        df = df.Filter("Any(bkmm_gen_pdgId != 0)", "require gen-matched candidate")
+        gen_weight_after = df.Sum("genWeight")
+        filtered_evt_count = df.Count()
+        weightsum_sum = df.Sum("weight")
+        weightsum = (weightsum_sum, total_evt_count)
+        signal_gen_filter_stats[dataset.name] = (
+            gen_weight_after,
+            gen_weight_before,
+            filtered_evt_count,
+        )
+    else:
+        weightsum = df.SumAndCount("weight")
+
+    cutflow["Total"] = weightsum[0]
+    if args.selectionHists:
+        for var in nominal_cols:
+            # if "gen" in str(var) and dataset.is_data:
+            #    results.append(df.HistoBoost(hist_name, ))
+            hist_name = f"nominal_{var}_total"
+            results.append(df.HistoBoost(hist_name, [all_butojpsik_axes[var]], [var]))
+            hist_names.add(hist_name)
+
+    df, cutflow_trigger = btojpsik_selections.define_jpsi_triggers(
+        df, trigger_name=get_trigger_name()
+    )
+    # cutflow_trigger = None
+    if cutflow_trigger:
+        cutflow["HLT"] = cutflow_trigger[0]
+        if args.selectionHists:
+            for var in nominal_cols:
+                # if "gen" in str(var) and dataset.is_data:
+                #    results.append(df.HistoBoost(hist_name, ))
+                hist_name = f"nominal_{var}_hlt"
+                results.append(
+                    df.HistoBoost(hist_name, [all_butojpsik_axes[var]], [var])
+                )
+                hist_names.add(hist_name)
+
     df, cutflow_bkmm, dfs_per_cut = btojpsik_selections.bkmm_selections(
-        df, dataset.name, bkmm_selections
+        df, dataset.name, get_bkmm_selections()
     )
 
     for i, (selection, action) in enumerate(cutflow_bkmm.items()):
@@ -330,6 +512,21 @@ def build_graph(df, dataset):
     df = df.Alias(f"{reco_sel_GF}_recoPt", "kaon_jpsiCorrectedPt")
     df = df.Alias(f"{reco_sel_GF}_recoEta", "bkmm_jpsimc_kaon1eta")
     df = df.Alias(f"{reco_sel_GF}_recoCharge", "bkmm_kaon_charge")
+    df = df.Define(
+        "bkmm_jpsimc_mass_scalar", "static_cast<double>(bkmm_jpsimc_mass[0])"
+    )
+    df = df.Define(
+        f"{reco_sel_GF}_recoPt_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoPt[0])",
+    )
+    df = df.Define(
+        f"{reco_sel_GF}_recoEta_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoEta[0])",
+    )
+    df = df.Define(
+        f"{reco_sel_GF}_recoCharge_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoCharge[0])",
+    )
     has_gen_kinematics = not dataset.is_data and (
         dataset.name == "signalBuToJpsiK_2018" or needs_gen_match
     )
@@ -351,11 +548,7 @@ def build_graph(df, dataset):
         df.HistoBoost(f"nominal", [all_butojpsik_axes[final_var]], [final_var])
     )
 
-    fitcols = ["bkmm_jpsimc_mass"]
-    fitcols.append(f"{reco_sel_GF}_recoPt")
-    fitcols.append(f"{reco_sel_GF}_recoEta")
-    fitcols.append(f"{reco_sel_GF}_recoCharge")
-    fitaxes = [all_butojpsik_axes[a] for a in fitcols]
+    df, fitaxes, fitcols = configure_fit_histogram(df, reco_sel_GF)
 
     if has_gen_kinematics:
         input_kinematics = [
@@ -443,21 +636,21 @@ write_analysis_output(
 
 if args.cutflow:
 
-    eras = ["2018A", "2018B", "2018C", "2018D"]
-
     aggregated_cutflows = {}
     for dataset_name, result in resultdict.items():
         if "cutflow" not in result:
             continue
 
         agg_name = dataset_name
-        for era in eras:
-            if dataset_name == f"Charmonium_{era}":
-                agg_name = "Charmonium_2018"
-                break
-        if dataset_name == "signalBuToJpsiK_2018":
+        if dataset_name.startswith("Charmonium_2018"):
+            agg_name = "Charmonium_2018"
+        elif dataset_name.startswith("Charmonium_2016"):
+            agg_name = "Charmonium_2016"
+        elif dataset_name == "signalBuToJpsiK_2018":
             agg_name = "signalBuToJpsiK"
-        elif dataset_name == "BuToJpsiK_2018":
+        elif dataset_name.startswith("BuToJpsiK_2018"):
+            agg_name = "BuToJpsiK"
+        elif dataset_name.startswith("BuToJpsiK_2016"):
             agg_name = "BuToJpsiK"
         elif dataset_name == "BuToJpsiPi_2018":
             agg_name = "BuToJpsiPi"
@@ -468,65 +661,98 @@ if args.cutflow:
             for cut_name, value in result["cutflow"].items():
                 aggregated_cutflows[agg_name][cut_name] += value
 
-    # construct cutflow table
-    data_cutflow = aggregated_cutflows.get("Charmonium_2018", {})
-    signal_cutflow = aggregated_cutflows.get("signalBuToJpsiK", {})
-    bjk_cutflow = aggregated_cutflows.get("BuToJpsiK", {})
+    is_2016 = args.era.startswith("2016")
+    if is_2016:
+        data_cutflow = aggregated_cutflows.get("Charmonium_2016", {})
+        bjk_cutflow = aggregated_cutflows.get("BuToJpsiK", {})
+        cut_names = []
+        seen = set()
+        for name in data_cutflow.keys():
+            cut_names.append(name)
+            seen.add(name)
+        for name in bjk_cutflow.keys():
+            if name not in seen:
+                cut_names.append(name)
+                seen.add(name)
 
-    cut_names = list(data_cutflow.keys())
+        table_data = []
+        for cut_name in cut_names:
+            data_val = data_cutflow.get(cut_name, 0)
+            bjk_val = bjk_cutflow.get(cut_name, 0)
+            table_data.append([cut_name, f"{data_val:.2e}", f"{bjk_val:.2e}"])
+        col_labels = ["Selection", "Data", "B->Jpsi+K"]
+    else:
+        data_cutflow = aggregated_cutflows.get("Charmonium_2018", {})
+        signal_cutflow = aggregated_cutflows.get("signalBuToJpsiK", {})
+        bjk_cutflow = aggregated_cutflows.get("BuToJpsiK", {})
+        cut_names = list(data_cutflow.keys())
 
-    table_data = []
-    for cut_name in cut_names:
-        data_val = data_cutflow.get(cut_name, 0)
-        signal_val = signal_cutflow.get(cut_name, 0)
-        bjk_val = bjk_cutflow.get(cut_name, 0)
-        ratio = data_val / signal_val if signal_val != 0 else 0
-        ratio2 = bjk_val / signal_val if signal_val != 0 else 0
-        table_data.append(
-            [
-                cut_name,
-                f"{data_val:.2e}",
-                f"{signal_val:.2e}",
-                f"{bjk_val:.2e}",
-                f"{ratio:.3f}",
-                f"{ratio2:.3f}",
-            ]
-        )
-
-    fig, ax = plt.subplots(figsize=(8, len(cut_names) * 0.4))
-    ax.axis("off")
-
-    table = ax.table(
-        cellText=table_data,
-        colLabels=[
+        table_data = []
+        for cut_name in cut_names:
+            data_val = data_cutflow.get(cut_name, 0)
+            signal_val = signal_cutflow.get(cut_name, 0)
+            bjk_val = bjk_cutflow.get(cut_name, 0)
+            ratio = data_val / signal_val if signal_val != 0 else 0
+            ratio2 = bjk_val / signal_val if signal_val != 0 else 0
+            table_data.append(
+                [
+                    cut_name,
+                    f"{data_val:.2e}",
+                    f"{signal_val:.2e}",
+                    f"{bjk_val:.2e}",
+                    f"{ratio:.3f}",
+                    f"{ratio2:.3f}",
+                ]
+            )
+        col_labels = [
             "Selection",
             "Data",
             "Signal",
             "B->Jpsi+K",
             "Data/Signal",
             "B->Jpsi+K/Signal",
-        ],
-        loc="center",
-    )
+        ]
 
-    if args.saveCutflow:
-        os.makedirs(args.saveCutflow, exist_ok=True)
-        cutflow_postfix = args.cutflowName if args.cutflowName else args.postfix
-        cutflow_path = f"{args.saveCutflow}/cutflow_{cutflow_postfix}.png"
-        plt.savefig(cutflow_path, bbox_inches="tight", dpi=300)
-        logger.info(f"Table saved as {cutflow_path}")
-    else:
-        print("\nCutflow Table:")
-        print(
-            f"{'Selection':<30} {'Data':>15} {'Signal':>15} {'B->Jpsi+K':>15} {'Data/Signal':>10} {'B->Jpsi+K/Signal':>10}"
+    if not table_data:
+        logger.warning(
+            f"Cutflow plotting skipped for era {args.era} because no cutflow entries were found."
         )
-        print("-" * 75)
-        for row in table_data:
-            print(
-                f"{row[0]:<30} {row[1]:>15} {row[2]:>15} {row[3]:>15} {row[4]:>10} {row[5]:>10}"
-            )
-        print()
-    plt.close()
+    else:
+        fig, ax = plt.subplots(figsize=(8, max(1, len(cut_names)) * 0.4))
+        ax.axis("off")
+
+        table = ax.table(
+            cellText=table_data,
+            colLabels=col_labels,
+            loc="center",
+        )
+
+        if args.saveCutflow:
+            os.makedirs(args.saveCutflow, exist_ok=True)
+            cutflow_postfix = args.cutflowName if args.cutflowName else args.postfix
+            cutflow_path = f"{args.saveCutflow}/cutflow_{cutflow_postfix}.png"
+            plt.savefig(cutflow_path, bbox_inches="tight", dpi=300)
+            logger.info(f"Table saved as {cutflow_path}")
+        else:
+            if is_2016:
+                print("\nCutflow Table:")
+                print(f"{'Selection':<30} {'Data':>15} {'B->Jpsi+K':>15}")
+                print("-" * 60)
+                for row in table_data:
+                    print(f"{row[0]:<30} {row[1]:>15} {row[2]:>15}")
+                print()
+            else:
+                print("\nCutflow Table:")
+                print(
+                    f"{'Selection':<30} {'Data':>15} {'Signal':>15} {'B->Jpsi+K':>15} {'Data/Signal':>10} {'B->Jpsi+K/Signal':>10}"
+                )
+                print("-" * 75)
+                for row in table_data:
+                    print(
+                        f"{row[0]:<30} {row[1]:>15} {row[2]:>15} {row[3]:>15} {row[4]:>10} {row[5]:>10}"
+                    )
+                print()
+        plt.close()
 
 
 print(

@@ -15,6 +15,17 @@ data_dir = common.data_dir
 
 
 def define_jpsi_triggers(df, trigger_name="", cutflow={}):
+    # for ~tighter than nominal selections...
+    # 2016
+    # Dimuon16_Jpsi: 1.39e+05
+    # Dimuon20_Jpsi 1.46e+05
+    # DoubleMu4_3_Jpsi_Displaced: 2.06e+05
+    # DoubleMu4_JpsiTrk_Displaced: 5.55e+05
+    # DoubleMu4_PsiPrimeTrk_Displaced: 5.37e+02
+    # 2018
+    # Dimuon25_Jpsi: 2.90e+05
+    # DoubleMu4_3_Jpsi: 2.87e+05
+    # DoubleMu4_JpsiTrk_Displaced: 1.79e+06
     if trigger_name == "":
         logger.error("no trigger name provided, cannot filter DataFrame")
         return df, None
