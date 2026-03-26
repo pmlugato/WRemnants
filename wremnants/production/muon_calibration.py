@@ -78,6 +78,9 @@ def make_jpsi_crctn_helpers(
     central=False,
     central_eta_min=-1.4,
     central_eta_max=1.4,
+    fixed_A_unc=None,
+    fixed_e_unc=None,
+    fixed_M_unc=None,
 ):
     if muon_corr_mc in ["idealMC_massfit", "idealMC_lbltruth_massfit"]:
         mc_corrfile = calib_filepaths["mc_corrfile"][muon_corr_mc]
@@ -104,6 +107,9 @@ def make_jpsi_crctn_helpers(
                 central=central,
                 central_eta_min=central_eta_min,
                 central_eta_max=central_eta_max,
+                fixed_A_unc=fixed_A_unc,
+                fixed_e_unc=fixed_e_unc,
+                fixed_M_unc=fixed_M_unc,
             )
             if mc_corrfile
             else None
@@ -119,6 +125,9 @@ def make_jpsi_crctn_helpers(
                 central=central,
                 central_eta_min=central_eta_min,
                 central_eta_max=central_eta_max,
+                fixed_A_unc=fixed_A_unc,
+                fixed_e_unc=fixed_e_unc,
+                fixed_M_unc=fixed_M_unc,
             )
             if data_corrfile
             else None
@@ -543,6 +552,9 @@ def make_jpsi_crctn_unc_helper(
     central=False,
     central_eta_min=-1.4,
     central_eta_max=1.4,
+    fixed_A_unc=None,
+    fixed_e_unc=None,
+    fixed_M_unc=None,
 ):
 
     f = ROOT.TFile.Open(filepath_correction)
@@ -591,17 +603,35 @@ def make_jpsi_crctn_unc_helper(
         nvars = neta * n_scale_params
 
         variances_ref = np.stack([A.variances(), e.variances(), M.variances()], axis=-1)
-        variances = np.reshape(np.diag(cov), (neta_orig, nparmscov))[:, :n_scale_params]
+        variances = np.reshape(np.diag(cov), (neta_orig, nparmscov))[
+            :, :n_scale_params
+        ].copy()
+
+        fixed_uncs = [fixed_A_unc, fixed_e_unc, fixed_M_unc]
+        for iparm, fixed_unc in enumerate(fixed_uncs):
+            if fixed_unc is not None:
+                variances[:, iparm] = fixed_unc**2
+
         if central:
             variances = variances[start_idx:end_idx, :]
 
-        if not np.all(np.isclose(variances, variances_ref, atol=0.0)):
+        variances_ref_to_check = variances_ref.copy()
+        for iparm, fixed_unc in enumerate(fixed_uncs):
+            if fixed_unc is not None:
+                variances_ref_to_check[:, iparm] = fixed_unc**2
+
+        if not np.all(np.isclose(variances, variances_ref_to_check, atol=0.0)):
             raise ValueError(
                 "Covariance matrix is not consistent with parameter uncertainties or parameters are not in the expected order."
             )
 
         cov = np.reshape(cov, (neta_orig, nparmscov, neta_orig, nparmscov))
         cov = cov[:, :n_scale_params, :, :n_scale_params]
+
+        for iparm, fixed_unc in enumerate(fixed_uncs):
+            if fixed_unc is not None:
+                diag_idx = np.arange(neta_orig)
+                cov[diag_idx, iparm, diag_idx, iparm] = fixed_unc**2
 
         if central:
             cov = cov[start_idx:end_idx, :, start_idx:end_idx, :]
@@ -625,6 +655,17 @@ def make_jpsi_crctn_unc_helper(
         A_unc = np.sqrt(A.variances()) * scale_A
         e_unc = np.sqrt(e.variances()) * scale_e
         M_unc = np.sqrt(M.variances()) * scale_M
+
+        if fixed_A_unc is not None:
+            A_unc[...] = fixed_A_unc
+        if fixed_e_unc is not None:
+            e_unc[...] = fixed_e_unc
+        if fixed_M_unc is not None:
+            M_unc[...] = fixed_M_unc
+
+        print("A unc", A_unc)
+        print("e unc", e_unc)
+        print("M unc", M_unc)
 
         uncs = np.stack([A_unc, e_unc, M_unc], axis=-1)
 
