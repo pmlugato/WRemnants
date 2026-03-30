@@ -34,6 +34,12 @@ parser.add_argument(
     help="pT cutoff for input histograms to make_response_maps.py",
 )
 parser.add_argument(
+    "--ptQuantiles",
+    type=int,
+    default=None,
+    help="If set, replace the fixed 1 GeV genPt bins with a common selected-signal genPt quantile axis of this size.",
+)
+parser.add_argument(
     "--testHelpers", action="store_true", help="test diff weights helper"
 )
 
@@ -50,6 +56,148 @@ args = parser.parse_args()
 
 era = args.era
 
+
+def get_bkmm_response_selections():
+    return [
+        (
+            "kaon pT < 8",
+            lambda d: btojpsik_selections.select_kaon_pt(d, 8),
+        ),
+    ]
+
+
+def get_reference_dataset(datasets):
+    if args.ptQuantiles is None:
+        return None
+
+    return next(
+        (
+            d
+            for d in datasets
+            if (not d.is_data)
+            and (d.name == f"BuToJpsiK_{args.era}" or d.name.startswith("BuToJpsiK_"))
+        ),
+        None,
+    )
+
+
+def build_gen_pt_quantile_axis(dataset, n_quantiles):
+    if n_quantiles < 2:
+        raise ValueError("--ptQuantiles must be at least 2.")
+
+    logger.info(
+        "Building common genPt quantiles from reference dataset %s.", dataset.name
+    )
+    df = ROOT.ROOT.RDataFrame("Events", dataset.filepaths)
+    df = df.Define("weight", "std::copysign(1.0, genWeight)")
+
+    df, _ = btojpsik_selections.define_jpsi_triggers(
+        df, trigger_name="DoubleMu4_3_Jpsi"
+    )
+    df, _, _ = btojpsik_selections.bkmm_selections(
+        df, dataset.name, get_bkmm_response_selections()
+    )
+    df = btojpsik_selections.select_only_passing_bkmm_candidates(
+        df,
+        signal=dataset.name == "signalBuToJpsiK_2018",
+        select_best=True,
+        gen_match_nonsignal=not dataset.is_data
+        and dataset.name != "signalBuToJpsiK_2018",
+    )
+
+    reco_sel_GF = "selKaon"
+    df = df.Alias(f"{reco_sel_GF}_genPt", "temp_kaon_genPt")
+    df = df.Define(
+        f"{reco_sel_GF}_genPt_scalar",
+        f"static_cast<double>({reco_sel_GF}_genPt[0])",
+    )
+    df = df.Filter(
+        f"{reco_sel_GF}_genPt_scalar >= 1.0 && {reco_sel_GF}_genPt_scalar < 8.0",
+        "restrict genPt quantiles to the response-map support",
+    )
+
+    quantile_hists = narf.histutils.build_quantile_hists(
+        df,
+        [f"{reco_sel_GF}_genPt_scalar"],
+        [],
+        [
+            hist.axis.Regular(
+                n_quantiles,
+                0.0,
+                1.0,
+                name="genPt_quantile",
+                underflow=False,
+                overflow=False,
+            )
+        ],
+    )
+    quantile_maxima = np.asarray(quantile_hists[0].values(flow=False), dtype=float)
+    if quantile_maxima.size != n_quantiles:
+        raise RuntimeError(
+            f"Expected {n_quantiles} genPt quantile maxima, found {quantile_maxima.size}."
+        )
+
+    axis_edges = [1.0, *quantile_maxima[:-1].tolist(), 8.0]
+    deduped_edges = []
+    for edge in axis_edges:
+        edge = float(edge)
+        if not deduped_edges or edge > deduped_edges[-1]:
+            deduped_edges.append(edge)
+
+    if len(deduped_edges) < 3:
+        raise RuntimeError(
+            f"Quantile binning collapsed to fewer than two genPt bins: {deduped_edges}."
+        )
+    if len(deduped_edges) != len(axis_edges):
+        logger.warning(
+            "Collapsed duplicate genPt quantile edges from %s to %s.",
+            axis_edges,
+            deduped_edges,
+        )
+
+    logger.info(
+        "Using common selected-signal genPt quantile edges %s (raw maxima %s).",
+        deduped_edges,
+        quantile_maxima.tolist(),
+    )
+    return hist.axis.Variable(deduped_edges, name="genPt")
+
+
+def make_gen_pt_axis(pt_cutoff, pt_quantiles, reference_dataset):
+    base_edges = np.arange(1.0, 9.0, 1.0)
+    if pt_cutoff is not None and pt_cutoff >= 0.0 and pt_quantiles is not None:
+        raise ValueError("Use at most one of --ptCutoff and --ptQuantiles.")
+
+    if pt_quantiles is not None:
+        if reference_dataset is None:
+            raise RuntimeError(
+                "--ptQuantiles requires a non-data BuToJpsiK dataset in the filtered inputs."
+            )
+        return build_gen_pt_quantile_axis(reference_dataset, pt_quantiles)
+
+    if pt_cutoff is None or pt_cutoff < 0.0:
+        return hist.axis.Regular(7, 1.0, 8.0, name="genPt")
+
+    cutoff = float(pt_cutoff)
+    if cutoff <= base_edges[0] or cutoff >= base_edges[-1]:
+        raise ValueError("--ptCutoff must be between 1 and 8 GeV.")
+    if not np.any(np.isclose(base_edges, cutoff)):
+        raise ValueError(
+            f"--ptCutoff={cutoff} does not match an existing response-bin edge {base_edges.tolist()}."
+        )
+
+    merged_edges = base_edges[base_edges <= cutoff].tolist()
+    if merged_edges[-1] != base_edges[-1]:
+        merged_edges.append(float(base_edges[-1]))
+
+    logger.info(
+        "Using support-merged genPt response bins with edges %s (tail merged above %.1f GeV).",
+        merged_edges,
+        cutoff,
+    )
+    return hist.axis.Variable(merged_edges, name="genPt")
+
+
 datasets = getDatasets(
     maxFiles=args.maxFiles,
     filt=args.filterProcs,
@@ -60,7 +208,8 @@ datasets = getDatasets(
     era=era,
 )
 
-axis_genPt = hist.axis.Regular(7, 1.0, 8.0, name="genPt")
+reference_dataset = get_reference_dataset(datasets)
+axis_genPt = make_gen_pt_axis(args.ptCutoff, args.ptQuantiles, reference_dataset)
 axis_genEta = hist.axis.Regular(28, -1.4, 1.4, name="genEta")
 axis_genCharge = hist.axis.Regular(
     2, -2.0, 2.0, underflow=False, overflow=False, name="genCharge"
@@ -272,58 +421,9 @@ def build_graph(df, dataset):
         df, trigger_name="DoubleMu4_3_Jpsi"
     )
 
-    bkmm_selections = [
-        # (
-        #    "dimuon cand neutral",
-        #    lambda d: btojpsik_selections.select_opposite_sign_dimuon(d),
-        # ),
-        # (
-        #    "muon |eta| < 1.4",
-        #    lambda d: btojpsik_selections.select_muon_eta(d, 1.4),
-        # ),
-        # (
-        #    "muon pT > 4",
-        #    lambda d: btojpsik_selections.select_muon_pt(d, 4),
-        # ),
-        # (
-        #    "muon softMVA > 0.45",
-        #    lambda d: btojpsik_selections.select_muon_softmva(d, 0.45),
-        # ),
-        # (
-        #    "dimuon pT > 7",
-        #    lambda d: btojpsik_selections.select_dimuon_pt(d, 7.0),
-        # ),
-        # (
-        #    "dimuon alphaBS < 0.4",
-        #    lambda d: btojpsik_selections.select_dimuon_alphabs(d, 0.4),
-        # ),  # og 0.4
-        # (
-        #    "dimuon vtx prob > 0.1",
-        #    lambda d: btojpsik_selections.select_dimuon_vtx_prob(d, 0.1),
-        # ),  # og 0.1
-        # (
-        #    "dimuon sl3d > 4",
-        #    lambda d: btojpsik_selections.select_dimuon_sl3d(d, 4),
-        # ),  # og 4
-        # (
-        #    "bkmm vtx prob > 0.3",
-        #    lambda d: btojpsik_selections.select_bkmm_vtx_prob(d, 0.3),
-        # ),  # og 0.025
-        # (
-        #    "bkmm mass window",
-        #    lambda d: btojpsik_selections.select_bkmm_mass_window(d, 5.3, 0.1),
-        # ),  # og 5.4, 0.5
-        (
-            "kaon pT < 8",
-            lambda d: btojpsik_selections.select_kaon_pt(d, 8),
-        ),
-        # (
-        #   "bkmm bmm bdt output > 0.10",
-        #    lambda d: btojpsik_selections.select_bkmm_bmm_bdt(d, 0.10)
-        # ) # NOTE: this doesn't touch kaon
-    ]
-
-    df, _, _ = btojpsik_selections.bkmm_selections(df, dataset.name, bkmm_selections)
+    df, _, _ = btojpsik_selections.bkmm_selections(
+        df, dataset.name, get_bkmm_response_selections()
+    )
 
     df = btojpsik_selections.select_only_passing_bkmm_candidates(
         df,

@@ -1,3 +1,4 @@
+import json
 import os
 
 import hist
@@ -72,6 +73,13 @@ parser.add_argument(
     type=int,
     default=None,
     help="If set, replace the fitted kaon-pT axis with eta- and charge-conditional quantile bins of this size.",
+)
+parser.add_argument(
+    "--excludeEventJson",
+    "--exclude-event-json",
+    type=str,
+    default=None,
+    help="Optional JSON file listing (run, luminosityBlock, event) triplets to veto before histogram filling. Supports a flat event list, an {events: [...]} payload, or the anchor-outlier JSON detail format used in the Cooper study.",
 )
 
 parser = parsing.set_parser_default(
@@ -163,6 +171,58 @@ nominal_cols_gen_smeared = None  # for unc helper, not used for smearingWeightsS
 cols_gen_smeared = None  # for unc helper, not used for smearingWeightsSplines
 isW = False
 fit_pt_quantile_hists = None
+excluded_event_triples = None
+
+
+def load_excluded_event_triples(path):
+    if path is None:
+        return None
+
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    triples = set()
+
+    def maybe_add(record):
+        if not isinstance(record, dict):
+            return
+        if all(key in record for key in ("run", "luminosityBlock", "event")):
+            triples.add(
+                (
+                    int(record["run"]),
+                    int(record["luminosityBlock"]),
+                    int(record["event"]),
+                )
+            )
+
+    if isinstance(payload, list):
+        for record in payload:
+            maybe_add(record)
+    elif isinstance(payload, dict):
+        for record in payload.get("events", []):
+            maybe_add(record)
+        for detail in payload.get("details", []):
+            for record in detail.get("top_events_by_alt_excursion", []):
+                maybe_add(record)
+    else:
+        raise ValueError(f"Unsupported event-veto JSON structure in {path}")
+
+    logger.info("Loaded %d event veto triplets from %s.", len(triples), path)
+    return sorted(triples)
+
+
+def make_event_veto_weight_expr():
+    if not excluded_event_triples:
+        return None
+
+    veto_terms = [
+        f"(run == {run} && luminosityBlock == {lumi} && event == {event})"
+        for run, lumi, event in excluded_event_triples
+    ]
+    return "(" + " || ".join(veto_terms) + ") ? 0.0 : 1.0"
+
+
+excluded_event_triples = load_excluded_event_triples(args.excludeEventJson)
 
 
 def get_trigger_name():
@@ -392,20 +452,24 @@ def build_graph(df, dataset):
     df = df.DefinePerSample("unity", "1.0")
 
     if dataset.name == "signalBuToJpsiK_2018":
-        total_evt_count = (
-            df.Count()
-        )  # matches evtcount in graph_builder otherwise complains
-        gen_weight_before = df.Sum("genWeight")
-        df = df.Filter("Any(bkmm_gen_pdgId != 0)", "require gen-matched candidate")
-        gen_weight_after = df.Sum("genWeight")
-        filtered_evt_count = df.Count()
-        weightsum_sum = df.Sum("weight")
-        weightsum = (weightsum_sum, total_evt_count)
-        signal_gen_filter_stats[dataset.name] = (
-            gen_weight_after,
-            gen_weight_before,
-            filtered_evt_count,
-        )
+        if excluded_event_triples:
+            df = df.Filter("Any(bkmm_gen_pdgId != 0)", "require gen-matched candidate")
+            weightsum = df.SumAndCount("weight")
+        else:
+            total_evt_count = (
+                df.Count()
+            )  # matches evtcount in graph_builder otherwise complains
+            gen_weight_before = df.Sum("genWeight")
+            df = df.Filter("Any(bkmm_gen_pdgId != 0)", "require gen-matched candidate")
+            gen_weight_after = df.Sum("genWeight")
+            filtered_evt_count = df.Count()
+            weightsum_sum = df.Sum("weight")
+            weightsum = (weightsum_sum, total_evt_count)
+            signal_gen_filter_stats[dataset.name] = (
+                gen_weight_after,
+                gen_weight_before,
+                filtered_evt_count,
+            )
     else:
         weightsum = df.SumAndCount("weight")
 
@@ -478,6 +542,12 @@ def build_graph(df, dataset):
             hist_name = f"nominal_{var}_onecand"
             results.append(df.HistoBoost(hist_name, [all_butojpsik_axes[var]], [var]))
             hist_names.add(hist_name)
+
+    if excluded_event_triples:
+        veto_weight_expr = make_event_veto_weight_expr()
+        df = df.Define("event_veto_weight", veto_weight_expr)
+        if not dataset.is_data:
+            df = df.Redefine("nominal_weight", "nominal_weight * event_veto_weight")
 
     ###
 
@@ -594,7 +664,10 @@ def build_graph(df, dataset):
 
     if args.includeKaonScaleVariations:
         hist_name = "nominal_HistToFit"
-        results.append(df.HistoBoost(hist_name, fitaxes, fitcols))
+        fit_hist_cols = (
+            [*fitcols, "event_veto_weight"] if excluded_event_triples else fitcols
+        )
+        results.append(df.HistoBoost(hist_name, fitaxes, fit_hist_cols))
 
     cutflows[dataset.name] = cutflow
 

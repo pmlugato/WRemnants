@@ -1,6 +1,8 @@
 import argparse
 import os
 
+import numpy as np
+
 from rabbit import tensorwriter
 from wremnants.postprocessing.rabbit_btojpsik_helpers import (
     _reorder_hist_axes,
@@ -49,6 +51,18 @@ def parse_args():
         type=float,
         default=None,
         help="Optional lnN uncertainty applied to the signal normalization.",
+    )
+    parser.add_argument(
+        "--flatBkgSeed",
+        default="dataResidual",
+        choices=["dataResidual", "fixedFraction"],
+        help="How to seed the artificial flat background normalization in each (eta, pt, charge) bin.",
+    )
+    parser.add_argument(
+        "--flatBkgFraction",
+        type=float,
+        default=0.40,
+        help="Flat-background fraction relative to the signal yield when --flatBkgSeed fixedFraction is used.",
     )
 
     parser.add_argument(
@@ -266,27 +280,45 @@ def main():
 
     assert_matching_axes(background_hists, signal_hist, label="Background")
 
-    # add an artificial flat background
-    total_yield = signal_hist.values().sum()
-    bkg_yield = total_yield * 0.40
+    n_eta_bins = signal_hist.axes[args.etaAxis].size
+    n_charge_bins = signal_hist.axes[args.chargeAxis].size
+
     bkg_hist = signal_hist.copy()
-    bkg_hist.values()[...] = bkg_yield / bkg_hist.size
+    bkg_hist.values()[...] = 0.0
     if bkg_hist.variances() is not None:
-        # poisson
-        # bkg_hist.variances()[...] = bkg_hist.values()
-        # no statistical uncertainty for flat background
         bkg_hist.variances()[...] = 0.0
 
-    # combine artificial background with signal MC for "data"
-    # data_hist = hist.Hist(*signal_hist.axes, storage=hist.storage.Weight())
-    # data_hist.values()[...] = signal_hist.values() + bkg_hist.values()
-    # sig_vars = signal_hist.variances()
-    # bkg_vars = bkg_hist.variances()
-    # if sig_vars is not None and bkg_vars is not None:
-    #    data_hist.variances()[...] = sig_vars + bkg_vars
-    # else:
-    #    # poisson
-    #    data_hist.variances()[...] = data_hist.values()
+    mass_axis_idx = signal_hist.axes.name.index(args.massAxis)
+    mass_bins = signal_hist.axes[args.massAxis].size
+    floor_yield = 1e-6
+
+    for icharge in range(n_charge_bins):
+        for ipt in range(n_pt_bins):
+            for ieta in range(n_eta_bins):
+                sel = {
+                    args.chargeAxis: icharge,
+                    args.ptAxis: ipt,
+                    args.etaAxis: ieta,
+                }
+                signal_yield = signal_hist[sel].values().sum()
+                data_yield = data_hist[sel].values().sum()
+
+                if args.flatBkgSeed == "dataResidual":
+                    seed_yield = max(data_yield - signal_yield, 0.0)
+                else:
+                    seed_yield = args.flatBkgFraction * signal_yield
+
+                if seed_yield <= 0.0:
+                    continue
+
+                target = [slice(None)] * bkg_hist.values().ndim
+                target[signal_hist.axes.name.index(args.chargeAxis)] = icharge
+                target[signal_hist.axes.name.index(args.ptAxis)] = ipt
+                target[signal_hist.axes.name.index(args.etaAxis)] = ieta
+                target[mass_axis_idx] = slice(None)
+                target = tuple(target)
+
+                bkg_hist.values()[target] = max(seed_yield / mass_bins, floor_yield)
 
     # tensor writer now
     writer = tensorwriter.TensorWriter(systematic_type=args.systematicType)
@@ -334,18 +366,17 @@ def main():
         args.signalProcess: new_sig_basis,
         "flatBkg": new_bkg_basis,
     }
-    # unc = 1.5
     unc = 0.1
     for proc, nominal_hist in procs.items():
         basis_hist = basis_by_proc[proc]
-        # if proc == args.signalProcess:
-        #    continue
         for icharge in range(n_charge_bins):
             for ipt in range(n_pt_bins):
                 for ieta in range(n_eta_bins):
 
                     mask = {"etaVar": ieta, "ptVar": ipt, "chargeVar": icharge}
                     bin = basis_hist[mask]
+                    if not np.any(bin.values()):
+                        continue
 
                     syst_name = f"norm_{proc}_eta{ieta}_pt{ipt}_charge{icharge}"
 
