@@ -9,6 +9,8 @@ from wremnants.postprocessing.rabbit_btojpsik_helpers import (
     _resolve_plot_labels,
     assert_matching_axes,
     collapse_axes,
+    evaluate_exp_plus_constant,
+    fit_exp_plus_constant_seed,
     load_histogram,
     plot_curvature_response,
     plot_variation_projection,
@@ -56,13 +58,37 @@ def parse_args():
         "--flatBkgSeed",
         default="dataResidual",
         choices=["dataResidual", "fixedFraction"],
-        help="How to seed the artificial flat background normalization in each (eta, pt, charge) bin.",
+        help="How to seed the artificial background normalization in each (eta, pt, charge) bin.",
     )
     parser.add_argument(
         "--flatBkgFraction",
         type=float,
         default=0.40,
         help="Flat-background fraction relative to the signal yield when --flatBkgSeed fixedFraction is used.",
+    )
+    parser.add_argument(
+        "--bkgModel",
+        default="flat",
+        choices=["exp", "flat", "exp_poi"],
+        help="Background model. 'flat': legacy constant background with per-bin NOIs. "
+        "'exp': A*exp(-B*x)+C with per-bin NOIs (deprecated). "
+        "'exp_poi': single all-ones bkgExp process; shape exp(lnAmpl+slope*x) "
+        "handled entirely by AxisExpModel POIs (no flatBkg process).",
+    )
+    parser.add_argument(
+        "--signalNormPOI",
+        action="store_true",
+        help="Signal per-bin yields are handled by AxisNormModel (or another "
+        "POI model) instead of template-morph NOIs. When set, per-bin signal "
+        "norm systematics are NOT added to the tensor and the signal process "
+        "is marked signal=True; A/e/M systematics are still added as NOIs.",
+    )
+    parser.add_argument(
+        "--bkgPOI",
+        action="store_true",
+        help="Write a single all-ones 'background' process whose shape and "
+        "amplitude are fully owned by a POI model (e.g. AxisExpModel or "
+        "AxisBernsteinModel). No background NOIs are added to the tensor.",
     )
 
     parser.add_argument(
@@ -181,7 +207,7 @@ def parse_args():
     parser.add_argument(
         "--etaBins",
         type=int,
-        default=7,
+        default=None,
         help="Rebin the eta axis to this many bins before writing. Set to the nominal axis size to disable eta rebinning.",
     )
     parser.add_argument(
@@ -220,10 +246,6 @@ def main():
     signal_hist, data_hist, variation_hist = load_histogram(
         args.infile, args.datasetSignal
     )
-
-    print(signal_hist)
-    print(data_hist)
-    print(variation_hist)
 
     n_pt_bins = signal_hist.axes[args.ptAxis].size
     rebinning = {}
@@ -288,9 +310,51 @@ def main():
     if bkg_hist.variances() is not None:
         bkg_hist.variances()[...] = 0.0
 
+    bkg_exp_hist = None
+    bkg_const_hist = None
+    if args.bkgModel == "exp":
+        bkg_exp_hist = signal_hist.copy()
+        bkg_exp_hist.values()[...] = 0.0
+        if bkg_exp_hist.variances() is not None:
+            bkg_exp_hist.variances()[...] = 0.0
+
+        bkg_const_hist = signal_hist.copy()
+        bkg_const_hist.values()[...] = 0.0
+        if bkg_const_hist.variances() is not None:
+            bkg_const_hist.variances()[...] = 0.0
+
+    # exp_poi mode: single all-ones template; shape owned by AxisExpModel POIs
+    bkg_exp_poi_hist = None
+    if args.bkgModel == "exp_poi":
+        bkg_exp_poi_hist = signal_hist.copy()
+        bkg_exp_poi_hist.values()[...] = 1.0
+        if bkg_exp_poi_hist.variances() is not None:
+            bkg_exp_poi_hist.variances()[...] = 0.0
+
+    # --bkgPOI: generic all-ones template; shape owned by AxisExpModel/AxisBernsteinModel
+    bkg_poi_hist = None
+    if args.bkgPOI:
+        bkg_poi_hist = signal_hist.copy()
+        bkg_poi_hist.values()[...] = 1.0
+        if bkg_poi_hist.variances() is not None:
+            bkg_poi_hist.variances()[...] = 0.0
+
     mass_axis_idx = signal_hist.axes.name.index(args.massAxis)
     mass_bins = signal_hist.axes[args.massAxis].size
+    mass_coordinate = np.asarray(signal_hist.axes[args.massAxis].centers, dtype=float)
+    mass_coordinate = mass_coordinate - mass_coordinate[0]
+    mass_span = max(float(mass_coordinate[-1]), 1e-6)
     floor_yield = 1e-6
+    # These background coefficients are free fit parameters, so use small local
+    # finite-difference steps to define their tensor directions rather than a
+    # full-component jump as the nominal prefit variation.
+    bkg_amp_step_fraction = 0.10
+
+    bkg_seed_A = np.zeros((n_charge_bins, n_pt_bins, n_eta_bins), dtype=float)
+    bkg_seed_C = np.zeros((n_charge_bins, n_pt_bins, n_eta_bins), dtype=float)
+    bkg_seed_total = np.zeros((n_charge_bins, n_pt_bins, n_eta_bins), dtype=float)
+
+    background_process = "flatBkg" if args.bkgModel == "flat" else "expBkg"
 
     for icharge in range(n_charge_bins):
         for ipt in range(n_pt_bins):
@@ -300,13 +364,19 @@ def main():
                     args.ptAxis: ipt,
                     args.etaAxis: ieta,
                 }
-                signal_yield = signal_hist[sel].values().sum()
-                data_yield = data_hist[sel].values().sum()
+                signal_slice = signal_hist[sel]
+                data_slice = data_hist[sel]
+                signal_yield = signal_slice.values().sum()
+                data_yield = data_slice.values().sum()
+                residual_spectrum = np.clip(
+                    data_slice.values() - signal_slice.values(), 0.0, None
+                )
 
                 if args.flatBkgSeed == "dataResidual":
-                    seed_yield = max(data_yield - signal_yield, 0.0)
+                    seed_yield = float(np.sum(residual_spectrum))
                 else:
                     seed_yield = args.flatBkgFraction * signal_yield
+                    residual_spectrum = None
 
                 if seed_yield <= 0.0:
                     continue
@@ -318,21 +388,87 @@ def main():
                 target[mass_axis_idx] = slice(None)
                 target = tuple(target)
 
-                bkg_hist.values()[target] = max(seed_yield / mass_bins, floor_yield)
+                if args.bkgModel == "flat":
+                    model_values = np.full(
+                        mass_bins, seed_yield / mass_bins, dtype=float
+                    )
+                    seed_A = 0.0
+                    seed_B = 0.0
+                    seed_C = float(seed_yield / mass_bins)
+                elif args.bkgModel == "exp_poi" or args.bkgPOI:
+                    # All-ones templates; shape is owned by POI models.
+                    continue
+                else:
+                    if (
+                        residual_spectrum is not None
+                        and np.sum(residual_spectrum) > 0.0
+                    ):
+                        fit = fit_exp_plus_constant_seed(
+                            residual_spectrum, mass_coordinate, floor=floor_yield
+                        )
+                        seed_A = float(fit["A"])
+                        seed_B = max(float(fit["B"]), 0.5 / mass_span)
+                        seed_C = float(fit["C"])
+                    else:
+                        seed_B = 0.5 / mass_span
+                        seed_A = 0.7 * seed_yield
+                        seed_C = 0.3 * seed_yield / mass_bins
+                    component_floor = max(0.1 * seed_yield / mass_bins, floor_yield)
+                    exp_component = evaluate_exp_plus_constant(
+                        mass_coordinate,
+                        max(seed_A, component_floor),
+                        seed_B,
+                        0.0,
+                        floor=floor_yield,
+                    )
+                    const_component = np.full(
+                        mass_bins, max(seed_C, component_floor), dtype=float
+                    )
+                    component_scale = seed_yield / (
+                        np.sum(exp_component) + np.sum(const_component)
+                    )
+                    exp_component = np.clip(
+                        exp_component * component_scale, floor_yield, None
+                    )
+                    const_component = np.clip(
+                        const_component * component_scale, floor_yield, None
+                    )
+                    model_values = exp_component + const_component
+                    bkg_exp_hist.values()[target] = exp_component
+                    bkg_const_hist.values()[target] = const_component
+                    seed_A = float(max(seed_A, component_floor) * component_scale)
+                    seed_C = float(max(seed_C, component_floor) * component_scale)
+
+                model_values = np.clip(model_values, floor_yield, None)
+                bkg_hist.values()[target] = model_values
+                bkg_seed_A[icharge, ipt, ieta] = seed_A
+                bkg_seed_C[icharge, ipt, ieta] = seed_C
+                bkg_seed_total[icharge, ipt, ieta] = float(np.sum(model_values))
 
     # tensor writer now
     writer = tensorwriter.TensorWriter(systematic_type=args.systematicType)
     writer.add_channel(signal_hist.axes, name=args.channel)
     writer.add_data(data_hist, channel=args.channel)
-    # This calibration tensor already floats the signal yield independently in every
-    # fitted (eta, pt, charge) bin below. Marking the same process as a Rabbit
-    # "signal" would add a redundant global signal-strength POI on top of those
-    # bin-wise yields, which makes the explicit-fit Hessian singular.
-    writer.add_process(signal_hist, args.signalProcess, args.channel, signal=False)
+    # When --signalNormPOI is set, per-bin yields are handled by AxisNormModel
+    # and no template-morph NOIs are added below, so signal=True is safe.
+    # Without --signalNormPOI the legacy NOI path is used and signal=False
+    # prevents a redundant global signal-strength POI.
+    writer.add_process(
+        signal_hist, args.signalProcess, args.channel, signal=args.signalNormPOI
+    )
     for proc, h in background_hists.items():
         writer.add_process(h, proc, args.channel)
     # artificial background
-    writer.add_process(bkg_hist, "flatBkg", args.channel)
+    if args.bkgPOI:
+        writer.add_process(bkg_poi_hist, "background", args.channel)
+    elif args.bkgModel == "flat":
+        writer.add_process(bkg_hist, background_process, args.channel)
+    elif args.bkgModel == "exp_poi":
+        writer.add_process(bkg_exp_poi_hist, "bkgExp", args.channel)
+    else:
+        # exp model: separate exp/const processes with per-bin systematics
+        writer.add_process(bkg_exp_hist, "bkgExp", args.channel)
+        writer.add_process(bkg_const_hist, "bkgConst", args.channel)
 
     # if args.signalNormUncertainty is not None:
     #    writer.add_norm_systematic(
@@ -345,27 +481,47 @@ def main():
     n_eta_bins = signal_hist.axes[args.etaAxis].size
     n_charge_bins = signal_hist.axes[args.chargeAxis].size
 
-    # free float yields in bins of pt eta charge
-    new_sig_basis = hh.expand_hist_by_duplicate_axes(
-        signal_hist,
-        [args.chargeAxis, args.ptAxis, args.etaAxis],
-        ["chargeVar", "ptVar", "etaVar"],
-        put_trailing=True,
-        flow=False,
-    )
-    new_bkg_basis = hh.expand_hist_by_duplicate_axes(
-        bkg_hist,
-        [args.chargeAxis, args.ptAxis, args.etaAxis],
-        ["chargeVar", "ptVar", "etaVar"],
-        put_trailing=True,
-        flow=False,
-    )
-
-    procs = {args.signalProcess: signal_hist, "flatBkg": bkg_hist}
-    basis_by_proc = {
-        args.signalProcess: new_sig_basis,
-        "flatBkg": new_bkg_basis,
-    }
+    # Free-float yields in bins of pt eta charge.
+    # When --signalNormPOI is set, per-bin norms for both signal and flat
+    # background are handled by AxisNormModel and NOT added as template-morph
+    # systematics here.
+    procs = {}
+    basis_by_proc = {}
+    if not args.signalNormPOI:
+        new_sig_basis = hh.expand_hist_by_duplicate_axes(
+            signal_hist,
+            [args.chargeAxis, args.ptAxis, args.etaAxis],
+            ["chargeVar", "ptVar", "etaVar"],
+            put_trailing=True,
+            flow=False,
+        )
+        procs[args.signalProcess] = signal_hist
+        basis_by_proc[args.signalProcess] = new_sig_basis
+    if args.bkgModel == "flat" and not args.signalNormPOI and not args.bkgPOI:
+        new_bkg_basis = hh.expand_hist_by_duplicate_axes(
+            bkg_hist,
+            [args.chargeAxis, args.ptAxis, args.etaAxis],
+            ["chargeVar", "ptVar", "etaVar"],
+            put_trailing=True,
+            flow=False,
+        )
+        procs[background_process] = bkg_hist
+        basis_by_proc[background_process] = new_bkg_basis
+    elif args.bkgModel == "exp":
+        new_bkg_exp_basis = hh.expand_hist_by_duplicate_axes(
+            bkg_exp_hist,
+            [args.chargeAxis, args.ptAxis, args.etaAxis],
+            ["chargeVar", "ptVar", "etaVar"],
+            put_trailing=True,
+            flow=False,
+        )
+        new_bkg_const_basis = hh.expand_hist_by_duplicate_axes(
+            bkg_const_hist,
+            [args.chargeAxis, args.ptAxis, args.etaAxis],
+            ["chargeVar", "ptVar", "etaVar"],
+            put_trailing=True,
+            flow=False,
+        )
     unc = 0.1
     for proc, nominal_hist in procs.items():
         basis_hist = basis_by_proc[proc]
@@ -387,6 +543,94 @@ def main():
                         up_hist,
                         name=syst_name,
                         process=proc,
+                        channel=args.channel,
+                        constrained=False,
+                        noi=True,
+                    )
+
+    if args.bkgModel == "exp":
+        charge_axis_idx = bkg_hist.axes.name.index(args.chargeAxis)
+        pt_axis_idx = bkg_hist.axes.name.index(args.ptAxis)
+        eta_axis_idx = bkg_hist.axes.name.index(args.etaAxis)
+
+        def make_component_variation(hist_template, values, target):
+            variation_hist = hist_template.copy()
+            variation_hist.values()[target] = np.clip(values, floor_yield, None)
+            if variation_hist.variances() is not None:
+                variation_hist.variances()[target] = 0.0
+            return variation_hist
+
+        for icharge in range(n_charge_bins):
+            for ipt in range(n_pt_bins):
+                for ieta in range(n_eta_bins):
+                    seed_yield = bkg_seed_total[icharge, ipt, ieta]
+                    if seed_yield <= 0.0:
+                        continue
+
+                    target = [slice(None)] * bkg_hist.values().ndim
+                    target[charge_axis_idx] = icharge
+                    target[pt_axis_idx] = ipt
+                    target[eta_axis_idx] = ieta
+                    target[mass_axis_idx] = slice(None)
+                    target = tuple(target)
+
+                    seed_A = bkg_seed_A[icharge, ipt, ieta]
+                    seed_C = bkg_seed_C[icharge, ipt, ieta]
+                    exp_nominal = np.asarray(bkg_exp_hist.values()[target], dtype=float)
+                    const_nominal = np.asarray(
+                        bkg_const_hist.values()[target], dtype=float
+                    )
+
+                    writer.add_systematic(
+                        [
+                            make_component_variation(
+                                bkg_exp_hist,
+                                np.clip(
+                                    exp_nominal * (1.0 + bkg_amp_step_fraction),
+                                    floor_yield,
+                                    None,
+                                ),
+                                target,
+                            ),
+                            make_component_variation(
+                                bkg_exp_hist,
+                                np.clip(
+                                    exp_nominal * (1.0 - bkg_amp_step_fraction),
+                                    floor_yield,
+                                    None,
+                                ),
+                                target,
+                            ),
+                        ],
+                        name=f"bkgA_eta{ieta}_pt{ipt}_charge{icharge}",
+                        process="bkgExp",
+                        channel=args.channel,
+                        constrained=False,
+                        noi=True,
+                    )
+                    writer.add_systematic(
+                        [
+                            make_component_variation(
+                                bkg_const_hist,
+                                np.clip(
+                                    const_nominal * (1.0 + bkg_amp_step_fraction),
+                                    floor_yield,
+                                    None,
+                                ),
+                                target,
+                            ),
+                            make_component_variation(
+                                bkg_const_hist,
+                                np.clip(
+                                    const_nominal * (1.0 - bkg_amp_step_fraction),
+                                    floor_yield,
+                                    None,
+                                ),
+                                target,
+                            ),
+                        ],
+                        name=f"bkgC_eta{ieta}_pt{ipt}_charge{icharge}",
+                        process="bkgConst",
                         channel=args.channel,
                         constrained=False,
                         noi=True,
@@ -440,6 +684,7 @@ def main():
             bin_axis=args.binPlotVariation,
         )
 
+    # A/e/M variations — always added as template-morph NOIs.
     for eta_idx in range(n_eta_bins):
         for label in labels:
             offset = labels.index(label)
@@ -479,9 +724,6 @@ def main():
             up_hist = signal_hist.copy()
             down_hist = signal_hist.copy()
 
-            # Each A/e/M nuisance is defined for one eta bin. The selected
-            # variation slice only carries that eta bin, so keep the nominal
-            # template elsewhere and replace only the targeted eta slice.
             eta_target = [slice(None)] * up_hist.values().ndim
             eta_axis_idx = up_hist.axes.name.index(args.etaAxis)
             eta_target[eta_axis_idx] = eta_idx
@@ -505,28 +747,12 @@ def main():
                 constrained=False,
                 noi=True,
             )
-        # up_hist.values()[..., charge_idx] = up_variation.values()[..., charge_idx]
-        # down_hist.values()[..., charge_idx] = down_variation.values()[..., charge_idx]
-    #
-    # up_vars = up_variation.variances()
-    # down_vars = down_variation.variances()
-    # up_hist_vars = up_hist.variances()
-    # down_hist_vars = down_hist.variances()
-    #
-    # if up_vars is not None and up_hist_vars is not None:
-    #    up_hist_vars[..., charge_idx] = up_vars[..., charge_idx]
-    # if down_vars is not None and down_hist_vars is not None:
-    #    down_hist_vars[..., charge_idx] = down_vars[..., charge_idx]
-    #
-    # writer.add_systematic(
-    #    [up_hist, down_hist],
-    #    name=f"{label}_eta{eta_idx}",
-    #    process=args.signalProcess,
-    #    channel=args.channel,
-    #    constrained=False,
-    # )
 
-    writer.write(args.outfolder, outname)
+    meta_data_dict = {}
+    if args.signalNormPOI:
+        meta_data_dict["signal_process"] = args.signalProcess
+
+    writer.write(args.outfolder, outname, meta_data_dict=meta_data_dict)
 
 
 if __name__ == "__main__":

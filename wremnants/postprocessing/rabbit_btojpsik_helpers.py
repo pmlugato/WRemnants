@@ -69,6 +69,87 @@ def rebin_histogram(h: hist.Hist, rebinning):
     return result
 
 
+def evaluate_exp_plus_constant(x, amplitude, slope, offset, floor=None):
+    values = amplitude * np.exp(-slope * x) + offset
+    if floor is not None:
+        values = np.clip(values, floor, None)
+    return values
+
+
+def fit_exp_plus_constant_seed(values, x, floor=1e-9, c_scan_points=128):
+    values = np.clip(np.asarray(values, dtype=float), 0.0, None)
+    x = np.asarray(x, dtype=float)
+
+    total = float(np.sum(values))
+    if total <= 0.0:
+        return {
+            "A": 0.0,
+            "B": 0.0,
+            "C": 0.0,
+            "model": np.zeros_like(values),
+            "quality": "empty",
+        }
+
+    if values.size == 1 or np.allclose(values, values[0]):
+        const = max(float(np.mean(values)), floor)
+        return {
+            "A": 0.0,
+            "B": 0.0,
+            "C": const,
+            "model": np.full_like(values, const),
+            "quality": "constant",
+        }
+
+    vmax = float(np.max(values))
+    vmin = float(np.min(values))
+    upper_c = max(0.0, 0.99 * vmin)
+    if upper_c > 0.0:
+        c_candidates = np.linspace(0.0, upper_c, c_scan_points)
+    else:
+        c_candidates = np.array([0.0], dtype=float)
+
+    threshold = max(floor, 1e-4 * vmax)
+    best = None
+
+    for offset in c_candidates:
+        shifted = values - offset
+        mask = shifted > threshold
+        if np.count_nonzero(mask) < 2:
+            continue
+
+        design = np.column_stack((np.ones(np.count_nonzero(mask)), -x[mask]))
+        coeffs, _, _, _ = np.linalg.lstsq(design, np.log(shifted[mask]), rcond=None)
+        log_amplitude, slope = coeffs
+
+        amplitude = float(np.exp(log_amplitude))
+        slope = max(float(slope), 0.0)
+        model = evaluate_exp_plus_constant(x, amplitude, slope, offset, floor=floor)
+        sse = float(np.square(model - values).sum())
+
+        if best is None or sse < best["sse"]:
+            best = {
+                "A": amplitude,
+                "B": slope,
+                "C": float(offset),
+                "model": model,
+                "sse": sse,
+            }
+
+    if best is None:
+        const = max(total / max(values.size, 1), floor)
+        return {
+            "A": 0.0,
+            "B": 0.0,
+            "C": const,
+            "model": np.full_like(values, const),
+            "quality": "fallback",
+        }
+
+    best["quality"] = "fitted"
+    best.pop("sse", None)
+    return best
+
+
 def rebin_variation_unc_axis(
     variation_hist: hist.Hist,
     eta_axis_name: str,
