@@ -104,6 +104,7 @@ def make_jpsi_crctn_helpers(
     central_eta_min=-1.4,
     central_eta_max=1.4,
     smearing=True,
+    fit_muon_scale=False,
 ):
     if muon_corr_mc in ["idealMC_massfit", "idealMC_lbltruth_massfit"]:
         mc_corrfile = calib_filepaths["mc_corrfile"][muon_corr_mc]
@@ -116,9 +117,19 @@ def make_jpsi_crctn_helpers(
         data_corrfile = calib_filepaths["data_corrfile"][muon_corr_data]
     else:
         data_corrfile = None
-    mc_helper = make_jpsi_crctn_helper(filepath=mc_corrfile) if mc_corrfile else None
+    mc_helper = (
+        make_jpsi_crctn_helper(
+            filepath=mc_corrfile, fit_muon_scale=fit_muon_scale
+        )
+        if mc_corrfile
+        else None
+    )
     data_helper = (
-        make_jpsi_crctn_helper(filepath=data_corrfile) if data_corrfile else None
+        make_jpsi_crctn_helper(
+            filepath=data_corrfile, fit_muon_scale=fit_muon_scale
+        )
+        if data_corrfile
+        else None
     )
 
     if make_uncertainty_helper:
@@ -131,6 +142,7 @@ def make_jpsi_crctn_helpers(
                 central_eta_min=central_eta_min,
                 central_eta_max=central_eta_max,
                 smearing=smearing,
+                fit_muon_scale=fit_muon_scale,
             )
             if mc_corrfile
             else None
@@ -147,6 +159,7 @@ def make_jpsi_crctn_helpers(
                 central_eta_min=central_eta_min,
                 central_eta_max=central_eta_max,
                 smearing=smearing,
+                fit_muon_scale=fit_muon_scale,
             )
             if data_corrfile
             else None
@@ -329,6 +342,9 @@ def make_muon_smearing_helpers(
     filenamemc=f"{data_dir}/calibration/resolutionMC_LBL_JZ_deltaphim_Apr3.root",
     override_d=None,
     dummy_vars=False,
+    parameter_variations=False,
+    fit_muon_resolution=False,
+    resolution_prefit_uncertainties=(1e-5, 1e-5, 1e-9, 1e-2),
     smearing=True,
     scale_var_method="onnxReweight",
     onnx_path=None,
@@ -337,6 +353,8 @@ def make_muon_smearing_helpers(
     is_onnx = scale_var_method == "onnxReweight"
     if is_onnx and onnx_path is None:
         onnx_path = default_shift_smear_reweight_onnx(smearing=smearing)
+    if dummy_vars and parameter_variations:
+        raise ValueError("dummy_vars and parameter_variations are mutually exclusive")
     # this helper smears muon pT to match the resolution in data
 
     def load_res(filename):
@@ -397,9 +415,6 @@ def make_muon_smearing_helpers(
     hnomw[{"data_mc": "mc", "res_parm": "b"}] = bmc.view()
     hnomw[{"data_mc": "mc", "res_parm": "d"}] = dmc.view()
 
-    hnom = hist.Hist(*hnomw.axes)
-    hnom[...] = hnomw.values()
-
     def check_variances(h, cov):
         variances = np.diag(cov.values())
         variances = np.reshape(variances, (neta, -1))
@@ -419,13 +434,40 @@ def make_muon_smearing_helpers(
     check_variances(hnomwdata, covdata)
     check_variances(hnomwmc, covmc)
 
-    dcov = covdata.values() + covmc.values()
-    nvar = dcov.shape[0]
+    if fit_muon_resolution:
+        hnomw[{"data_mc": "data"}].values()[...] = hnomw[
+            {"data_mc": "mc"}
+        ].values()
 
-    e, v = np.linalg.eigh(dcov)
+    hnomwdata = hnomw[{"data_mc": "data"}]
+    hnomwmc = hnomw[{"data_mc": "mc"}]
 
-    dparms = np.sqrt(e[None, :]) * v
-    dparms = np.reshape(dparms, (neta, -1, nvar))
+    if parameter_variations:
+        axis_res_parm_variation = hist.axis.StrCategory(
+            ["a", "b", "c", "d"], name="res_parm_variation"
+        )
+        nvar = neta * axis_res_parm_variation.size
+        dparms = np.zeros((neta, axis_res_parm.size, nvar), dtype=np.float64)
+        prefit_unc = dict(zip(axis_res_parm_variation, resolution_prefit_uncertainties))
+        ivar = 0
+        for ieta in range(neta):
+            for parm in axis_res_parm_variation:
+                iparm = axis_res_parm.index(parm)
+                if fit_muon_resolution:
+                    dparms[ieta, iparm, ivar] = prefit_unc[parm]
+                else:
+                    unc_data = hnomwdata[{"res_parm": parm}].variances()[ieta]
+                    unc_mc = hnomwmc[{"res_parm": parm}].variances()[ieta]
+                    dparms[ieta, iparm, ivar] = np.sqrt(unc_data + unc_mc)
+                ivar += 1
+    else:
+        dcov = covdata.values() + covmc.values()
+        nvar = dcov.shape[0]
+
+        e, v = np.linalg.eigh(dcov)
+
+        dparms = np.sqrt(e[None, :]) * v
+        dparms = np.reshape(dparms, (neta, -1, nvar))
 
     if dummy_vars:
         # replace eigenvector variations with dummy variations (intended to be used to e.g. determine the resolution corrections in-situ)
@@ -444,10 +486,14 @@ def make_muon_smearing_helpers(
     hvar = hist.Hist(axis_res_eta, axis_res_parm, axis_res_var)
     hvar[...] = hnomwdata.values()[..., None]
 
-    for iparm, parm in enumerate(axis_res_parm_reduced):
+    varied_parms = axis_res_parm if parameter_variations else axis_res_parm_reduced
+    for iparm, parm in enumerate(varied_parms):
         hvar[{"res_parm": parm}] = (
             hvar[{"res_parm": parm}].values() + dparms[:, iparm, :]
         )
+
+    hnom = hist.Hist(*hnomw.axes)
+    hnom[...] = hnomw.values()
 
     hnom = narf.hist_to_pyroot_boost(hnom, tensor_rank=2)
     hvar = narf.hist_to_pyroot_boost(hvar, tensor_rank=2)
@@ -591,7 +637,7 @@ def make_smearing_grad_helper(
     return smearinggradhelper
 
 
-def make_jpsi_crctn_helper(filepath):
+def make_jpsi_crctn_helper(filepath, fit_muon_scale=False):
     f = uproot.open(filepath)
 
     # TODO: convert variable axis to regular if the bin width is uniform
@@ -605,7 +651,12 @@ def make_jpsi_crctn_helper(filepath):
             3, 0, 3, underflow=False, overflow=False, name="param"
         )
         hist_comb = hist.Hist(*A.axes, axis_param, storage=hist.storage.Double())
-        hist_comb.view()[...] = np.stack([x.values() for x in [A, e, M]], axis=-1)
+        if fit_muon_scale:
+            hist_comb.view()[...] = 0.0
+        else:
+            hist_comb.view()[...] = np.stack(
+                [x.values() for x in [A, e, M]], axis=-1
+            )
 
     hist_comb_cpp = narf.hist_to_pyroot_boost(hist_comb, tensor_rank=1)
     jpsi_crctn_helper = ROOT.wrem.JpsiCorrectionsRVecHelper[
@@ -618,10 +669,11 @@ def _define_muon_source_for_onnx_helper(df, reco_sel_GF):
     """Define ``{reco_sel_GF}_muon_source`` — an ``RVec<int>`` of
     ``Muon_genPartFlav`` values for the gen-matched reco muons,
     needed by the ONNX-reweight helpers (Jpsi scale and resolution
-    uncertainty) as the per-muon class tag. The C++ helper applies
-    the post-mapping rule (``genPartFlav == 15 -> 15, else 1``) and
-    the ORT graph remaps the {1, 15, 443} integer codes to the
-    compact {-1, 0, +1} representation the network was trained on.
+    uncertainty) as the per-muon class tag. The C++ helper preserves
+    15 for tau-decay muons, preserves 443 for J/psi legs, and maps
+    everything else to 1 for prompt W/Z-like muons. The ORT graph remaps
+    the {1, 15, 443} integer codes to the compact {-1, 0, +1}
+    representation the network was trained on.
 
     Guarded against multiple definition since both
     ``add_resolution_uncertainty`` and ``add_jpsi_crctn_stats_unc_hists``
@@ -656,12 +708,12 @@ def _is_onnx_reweight_helper(helper):
     return any(name.startswith(p) for p in _ONNX_REWEIGHT_HELPER_PREFIXES)
 
 
-def jpsi_style_cols(df, helper, reco_sel_GF, response_weight_col):
-    """Return ``(df, cols)`` for calling a J/psi-style scale-uncertainty
-    helper (any of ``JpsiCorrectionsUncHelperSplines``, the new
-    ``JpsiCorrectionsUncReweightHelper``, the Z non-closure
-    parametrized / binned helpers (Splines / analytic / Reweight
-    variants) -- anything that takes a per-muon kinematic batch).
+def muon_reweight_helper_cols(df, helper, reco_sel_GF, response_weight_col):
+    """Return ``(df, cols)`` for calling a per-muon reweight helper
+    (any of ``JpsiCorrectionsUncHelperSplines``, the new
+    ``JpsiCorrectionsUncReweightHelper``, the Z non-closure parametrized
+    / binned helpers (Splines / analytic / Reweight variants) -- anything
+    that takes a per-muon kinematic batch).
 
     For ONNX-backed helpers returns the 9-element list (kinematics +
     ``muon_source``) and defines the muon_source column on demand.
@@ -716,6 +768,7 @@ def make_jpsi_crctn_unc_helper(
     smearing=True,
     onnx_path=None,
     onnx_nslots=None,
+    fit_muon_scale=False,
 ):
     if onnx_path is None:
         onnx_path = default_shift_smear_reweight_onnx(smearing=smearing)
@@ -775,6 +828,12 @@ def make_jpsi_crctn_unc_helper(
                 "Covariance matrix is not consistent with parameter uncertainties or parameters are not in the expected order."
             )
 
+        if fit_muon_scale:
+            prefit_widths = ([1e-3, 1e-2, 1e-4] + [1.0] * nparmscov)[
+                :nparmscov
+            ]
+            cov = np.diag(np.tile(prefit_widths, neta_orig)) ** 2
+
         cov = np.reshape(cov, (neta_orig, nparmscov, neta_orig, nparmscov))
         cov = cov[:, :n_scale_params, :, :n_scale_params]
 
@@ -797,9 +856,14 @@ def make_jpsi_crctn_unc_helper(
         )
         nvars = neta * n_scale_params
 
-        A_unc = np.sqrt(A.variances()) * scale_A
-        e_unc = np.sqrt(e.variances()) * scale_e
-        M_unc = np.sqrt(M.variances()) * scale_M
+        if fit_muon_scale:
+            A_unc = np.full(neta, 1e-3) * scale_A
+            e_unc = np.full(neta, 1e-2) * scale_e
+            M_unc = np.full(neta, 1e-4) * scale_M
+        else:
+            A_unc = np.sqrt(A.variances()) * scale_A
+            e_unc = np.sqrt(e.variances()) * scale_e
+            M_unc = np.sqrt(M.variances()) * scale_M
 
         uncs = np.stack([A_unc, e_unc, M_unc], axis=-1)
 
@@ -834,8 +898,8 @@ def make_jpsi_crctn_unc_helper(
     elif scale_var_method in ("smearingWeightsSplines", "onnxReweight"):
         # Both routes share the same boost-histogram input and the same
         # ``out_tensor_t`` shape; only the per-muon evaluation differs.
-        # See ``_make_jpsi_style_unc_helper``.
-        helper = _make_jpsi_style_unc_helper(
+        # See ``_make_muon_reweight_unc_helper``.
+        helper = _make_muon_reweight_unc_helper(
             hist_scale_params_unc_cpp,
             scale_var_method,
             onnx_path,
@@ -895,13 +959,13 @@ def make_dummy_closure_uncertainty_helper(neta=24, etalow=-2.4, etahigh=2.4):
     return helper
 
 
-def _make_jpsi_style_unc_helper(
+def _make_muon_reweight_unc_helper(
     hist_scale_params_unc_cpp,
     scale_var_method,
     onnx_path,
     onnx_nslots,
 ):
-    """Instantiate a J/psi-style scale-uncertainty helper from a packed
+    """Instantiate a per-muon scale-uncertainty helper from a packed
     ``[eta × scale_params × unc]`` boost histogram.
 
     Closure-uncertainty and J/psi-stats-uncertainty share this final
@@ -1011,7 +1075,7 @@ def make_closure_uncertainty_helper(
         hist_scale_params_unc, tensor_rank=2
     )
 
-    helper = _make_jpsi_style_unc_helper(
+    helper = _make_muon_reweight_unc_helper(
         hist_scale_params_unc_cpp,
         scale_var_method,
         onnx_path,
@@ -1052,7 +1116,7 @@ def make_uniform_closure_uncertainty_helper(
         hist_scale_params_unc, tensor_rank=2
     )
 
-    helper = _make_jpsi_style_unc_helper(
+    helper = _make_muon_reweight_unc_helper(
         hist_scale_params_unc_cpp,
         scale_var_method,
         onnx_path,
@@ -1576,6 +1640,7 @@ def add_jpsi_crctn_stats_unc_hists(
             jpsi_unc_helper = make_jpsi_crctn_unc_helper(
                 calib_filepaths["data_corrfile"][args.muonCorrData],
                 scale_var_method="smearingWeightsGaus",
+                fit_muon_scale=getattr(args, "fitMuonScaleAndResolution", False),
             )
         df = df.Define(
             "muonScaleSyst_responseWeights_tensor_gaus",
@@ -1614,8 +1679,9 @@ def add_jpsi_crctn_stats_unc_hists(
             jpsi_unc_helper = make_jpsi_crctn_unc_helper(
                 calib_filepaths["data_corrfile"][args.muonCorrData],
                 scale_var_method="smearingWeightsSplines",
+                fit_muon_scale=getattr(args, "fitMuonScaleAndResolution", False),
             )
-        df, splines_cols = jpsi_style_cols(
+        df, splines_cols = muon_reweight_helper_cols(
             df,
             jpsi_unc_helper,
             reco_sel_GF,
@@ -1644,8 +1710,9 @@ def add_jpsi_crctn_stats_unc_hists(
                 calib_filepaths["data_corrfile"][args.muonCorrData],
                 scale_var_method="onnxReweight",
                 smearing=not getattr(args, "noSmearing", False),
+                fit_muon_scale=getattr(args, "fitMuonScaleAndResolution", False),
             )
-        df, onnx_cols = jpsi_style_cols(
+        df, onnx_cols = muon_reweight_helper_cols(
             df,
             jpsi_unc_helper,
             reco_sel_GF,
@@ -1674,6 +1741,7 @@ def add_jpsi_crctn_stats_unc_hists(
                 calib_filepaths["data_corrfile"][args.muonCorrData],
                 isW=isW,
                 scale_var_method="massWeights",
+                fit_muon_scale=getattr(args, "fitMuonScaleAndResolution", False),
             )  # need to make a new massweights helper due to different nweights for Z and W
         df = df.Define(
             "muonScaleSyst_responseWeights_tensor_massWeights",
@@ -1742,7 +1810,7 @@ def add_jpsi_crctn_Z_non_closure_hists(
     if _is_onnx_reweight_helper(
         z_non_closure_parametrized_helper
     ) or _is_onnx_reweight_helper(z_non_closure_binned_helper):
-        df, input_kinematics = jpsi_style_cols(
+        df, input_kinematics = muon_reweight_helper_cols(
             df,
             z_non_closure_parametrized_helper or z_non_closure_binned_helper,
             reco_sel_GF,

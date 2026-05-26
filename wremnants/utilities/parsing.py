@@ -429,6 +429,11 @@ def common_parser(analysis_label=""):
             help="method to generate nominal muon scale variation histograms",
         )
         parser.add_argument(
+            "--fitMuonScaleAndResolution",
+            action="store_true",
+            help="Use fixed prefit widths and zero central J/psi massfit corrections for muon scale and resolution",
+        )
+        parser.add_argument(
             "--dummyMuScaleVar",
             action="store_true",
             help="Use a dummy 1e-4 variation on the muon scale instead of reading from the calibration file",

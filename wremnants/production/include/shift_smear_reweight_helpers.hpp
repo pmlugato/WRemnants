@@ -63,13 +63,11 @@ constexpr std::size_t F = 3;
 constexpr std::size_t NCond = 6;
 
 // Pre-helper map: ``Muon_genPartFlav`` per-row to the integer code
-// the model expects. The training schema uses 1 for prompt W/Z and
-// 15 for τ-decay; any other ``genPartFlav`` value (0, 3, 4, 5...) is
-// mapped to 1 (treated as the prompt class). The 443 sentinel for
-// J/ψ legs is not produced by this helper — the wremnants helpers
-// run on W/Z analysis MC.
+// the model expects. The training schema uses 1 for prompt W/Z,
+// 15 for τ-decay, and 443 for J/ψ legs; any other ``genPartFlav`` value
+// (0, 3, 4, 5...) is mapped to 1 (treated as the prompt class).
 inline int muon_source_from_gen_part_flav(int gen_part_flav) {
-  return (gen_part_flav == 15) ? 15 : 1;
+  return (gen_part_flav == 15) ? 15 : ((gen_part_flav == 443) ? 443 : 1);
 }
 
 // Build the per-muon (y_raw, c_raw) pair from kinematics. ``q_*`` is
@@ -499,9 +497,9 @@ private:
 // The Splines and analytic variants take different column lists (the
 // Splines ones consume the ``response_weight`` column, the analytic
 // ones take genQops / recoQops / covs); the ONNX variants here align
-// with the J/psi-style ONNX column list (no ``response_weight``;
+// with the per-muon ONNX reweight column list (no ``response_weight``;
 // kinematics + ``muon_source``), so the histmaker call sites can share
-// the same column-list builder for every J/psi-style ONNX helper.
+// the same column-list builder for every per-muon ONNX reweight helper.
 
 namespace shift_smear_reweight {
 
