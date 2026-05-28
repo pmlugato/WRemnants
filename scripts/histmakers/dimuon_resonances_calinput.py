@@ -18,6 +18,16 @@ parser.add_argument(
     help="Resonance for selection",
     default="upsilon",
 )
+parser.add_argument(
+    "--mcTriggerCut",
+    default="1.",
+    help="Additional cuts to apply to MC"
+)
+parser.add_argument(
+    "--dataTriggerCut",
+    default="1.",
+    help="Additional cuts to apply to data"
+)
 parser = parsing.set_parser_default(parser, "theoryCorr", [])
 
 args = parser.parse_args()
@@ -173,6 +183,13 @@ def build_graph(df, dataset):
     if not dataset.is_data:
         df = df.Filter(
             "Jpsigen_mass > 0.0 && Muplusgen_pt > 0.0 && Muminusgen_pt > 0.0"
+        )
+        df = df.Filter(
+            args.mcTriggerCut
+        )
+    else:
+        df = df.Filter(
+            args.dataTriggerCut
         )
 
     hist_name = f"{cfg['name']}_{'data' if dataset.is_data else 'mc'}"
