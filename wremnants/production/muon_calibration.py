@@ -105,6 +105,7 @@ def make_jpsi_crctn_helpers(
     central_eta_max=1.4,
     smearing=True,
     fit_muon_scale=False,
+    variation_eta_bins=None,
 ):
     if muon_corr_mc in ["idealMC_massfit", "idealMC_lbltruth_massfit"]:
         mc_corrfile = calib_filepaths["mc_corrfile"][muon_corr_mc]
@@ -118,16 +119,12 @@ def make_jpsi_crctn_helpers(
     else:
         data_corrfile = None
     mc_helper = (
-        make_jpsi_crctn_helper(
-            filepath=mc_corrfile, fit_muon_scale=fit_muon_scale
-        )
+        make_jpsi_crctn_helper(filepath=mc_corrfile, fit_muon_scale=fit_muon_scale)
         if mc_corrfile
         else None
     )
     data_helper = (
-        make_jpsi_crctn_helper(
-            filepath=data_corrfile, fit_muon_scale=fit_muon_scale
-        )
+        make_jpsi_crctn_helper(filepath=data_corrfile, fit_muon_scale=fit_muon_scale)
         if data_corrfile
         else None
     )
@@ -143,6 +140,7 @@ def make_jpsi_crctn_helpers(
                 central_eta_max=central_eta_max,
                 smearing=smearing,
                 fit_muon_scale=fit_muon_scale,
+                variation_eta_bins=variation_eta_bins,
             )
             if mc_corrfile
             else None
@@ -160,6 +158,7 @@ def make_jpsi_crctn_helpers(
                 central_eta_max=central_eta_max,
                 smearing=smearing,
                 fit_muon_scale=fit_muon_scale,
+                variation_eta_bins=variation_eta_bins,
             )
             if data_corrfile
             else None
@@ -349,6 +348,7 @@ def make_muon_smearing_helpers(
     scale_var_method="onnxReweight",
     onnx_path=None,
     onnx_nslots=None,
+    variation_eta_bins=None,
 ):
     is_onnx = scale_var_method == "onnxReweight"
     if is_onnx and onnx_path is None:
@@ -399,6 +399,14 @@ def make_muon_smearing_helpers(
     axis_data_mc = hist.axis.StrCategory(["data", "mc"], name="data_mc")
 
     neta = axis_res_eta.size
+    if variation_eta_bins is None:
+        variation_eta_bins = neta
+    if neta % variation_eta_bins:
+        raise ValueError(
+            f"Resolution eta bins ({neta}) must be divisible by variation eta bins "
+            f"({variation_eta_bins})"
+        )
+    eta_rebin_factor = neta // variation_eta_bins
     nparmsreduced = axis_res_parm_reduced.size
 
     hnomw = hist.Hist(
@@ -435,9 +443,7 @@ def make_muon_smearing_helpers(
     check_variances(hnomwmc, covmc)
 
     if fit_muon_resolution:
-        hnomw[{"data_mc": "data"}].values()[...] = hnomw[
-            {"data_mc": "mc"}
-        ].values()
+        hnomw[{"data_mc": "data"}].values()[...] = hnomw[{"data_mc": "mc"}].values()
 
     hnomwdata = hnomw[{"data_mc": "data"}]
     hnomwmc = hnomw[{"data_mc": "mc"}]
@@ -446,20 +452,21 @@ def make_muon_smearing_helpers(
         axis_res_parm_variation = hist.axis.StrCategory(
             ["a", "b", "c", "d"], name="res_parm_variation"
         )
-        nvar = neta * axis_res_parm_variation.size
+        nvar = variation_eta_bins * axis_res_parm_variation.size
         dparms = np.zeros((neta, axis_res_parm.size, nvar), dtype=np.float64)
         prefit_unc = dict(zip(axis_res_parm_variation, resolution_prefit_uncertainties))
         ivar = 0
         for ieta in range(neta):
-            for parm in axis_res_parm_variation:
+            variation_ieta = ieta // eta_rebin_factor
+            for ivar_parm, parm in enumerate(axis_res_parm_variation):
                 iparm = axis_res_parm.index(parm)
+                ivar = variation_ieta * axis_res_parm_variation.size + ivar_parm
                 if fit_muon_resolution:
                     dparms[ieta, iparm, ivar] = prefit_unc[parm]
                 else:
                     unc_data = hnomwdata[{"res_parm": parm}].variances()[ieta]
                     unc_mc = hnomwmc[{"res_parm": parm}].variances()[ieta]
                     dparms[ieta, iparm, ivar] = np.sqrt(unc_data + unc_mc)
-                ivar += 1
     else:
         dcov = covdata.values() + covmc.values()
         nvar = dcov.shape[0]
@@ -654,9 +661,7 @@ def make_jpsi_crctn_helper(filepath, fit_muon_scale=False):
         if fit_muon_scale:
             hist_comb.view()[...] = 0.0
         else:
-            hist_comb.view()[...] = np.stack(
-                [x.values() for x in [A, e, M]], axis=-1
-            )
+            hist_comb.view()[...] = np.stack([x.values() for x in [A, e, M]], axis=-1)
 
     hist_comb_cpp = narf.hist_to_pyroot_boost(hist_comb, tensor_rank=1)
     jpsi_crctn_helper = ROOT.wrem.JpsiCorrectionsRVecHelper[
@@ -769,6 +774,7 @@ def make_jpsi_crctn_unc_helper(
     onnx_path=None,
     onnx_nslots=None,
     fit_muon_scale=False,
+    variation_eta_bins=None,
 ):
     if onnx_path is None:
         onnx_path = default_shift_smear_reweight_onnx(smearing=smearing)
@@ -811,11 +817,23 @@ def make_jpsi_crctn_unc_helper(
 
     axis_eta = A.axes["scale_eta"]
     neta = axis_eta.size
+    if variation_eta_bins is None:
+        variation_eta_bins = neta
+    if neta % variation_eta_bins:
+        raise ValueError(
+            f"Scale eta bins ({neta}) must be divisible by variation eta bins "
+            f"({variation_eta_bins})"
+        )
+    eta_rebin_factor = neta // variation_eta_bins
     n_scale_params = 3
 
     if include_covariance:
         cov = cov.values()
         nparmscov = cov.shape[0] // neta_orig
+        if variation_eta_bins != neta:
+            raise ValueError(
+                "Reduced variation eta binning is only supported without covariance"
+            )
         nvars = neta * n_scale_params
 
         variances_ref = np.stack([A.variances(), e.variances(), M.variances()], axis=-1)
@@ -829,9 +847,7 @@ def make_jpsi_crctn_unc_helper(
             )
 
         if fit_muon_scale:
-            prefit_widths = ([1e-3, 1e-2, 1e-4] + [1.0] * nparmscov)[
-                :nparmscov
-            ]
+            prefit_widths = ([1e-3, 1e-2, 1e-4] + [1.0] * nparmscov)[:nparmscov]
             cov = np.diag(np.tile(prefit_widths, neta_orig)) ** 2
 
         cov = np.reshape(cov, (neta_orig, nparmscov, neta_orig, nparmscov))
@@ -854,7 +870,7 @@ def make_jpsi_crctn_unc_helper(
         logger.debug(
             f"Ignoring correlations and assigning a variation to each (A, e, M) for each eta bin (no eigen decomposition)"
         )
-        nvars = neta * n_scale_params
+        nvars = variation_eta_bins * n_scale_params
 
         if fit_muon_scale:
             A_unc = np.full(neta, 1e-3) * scale_A
@@ -871,9 +887,10 @@ def make_jpsi_crctn_unc_helper(
 
         ivar = 0
         for ieta in range(neta):
+            variation_ieta = ieta // eta_rebin_factor
             for iparm in range(n_scale_params):
+                ivar = variation_ieta * n_scale_params + iparm
                 var_mat[ieta, iparm, ivar] = uncs[ieta, iparm]
-                ivar += 1
 
     axis_scale_params = hist.axis.Integer(
         0, n_scale_params, underflow=False, overflow=False, name="scale_params"
