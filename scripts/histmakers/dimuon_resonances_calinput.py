@@ -279,7 +279,7 @@ def build_graph(df, dataset):
             .Define("pixel_charge", "ROOT::VecOps::RVec<int>{1, -1}")
             .Define(
                 "pixel_nvalidpixel",
-                "ROOT::VecOps::RVec<int>{Muplus_nvalidpixel, Muminus_nvalidpixel}",
+                "ROOT::VecOps::RVec<int>{int(Muplus_nvalidpixel), int(Muminus_nvalidpixel)}",
             )
             .Define(
                 "scale_recoPt",
