@@ -19,18 +19,22 @@ parser.add_argument(
     default="upsilon",
 )
 parser.add_argument(
-    "--mcTriggerCut",
-    default="1.",
-    help="Additional cuts to apply to MC"
-)
-parser.add_argument(
-    "--dataTriggerCut",
-    default="1.",
-    help="Additional cuts to apply to data"
+    "--etaBins",
+    type=int,
+    default=None,
+    help="Override the number of bins for each reconstructed muon eta axis",
 )
 parser = parsing.set_parser_default(parser, "theoryCorr", [])
 
 args = parser.parse_args()
+
+if args.etaBins is not None and args.etaBins <= 0:
+    raise ValueError("--etaBins must be a positive integer")
+if args.etaBins is not None and not args.fitMuonScaleAndResolution:
+    raise ValueError(
+        "--etaBins currently requires --fitMuonScaleAndResolution so scale "
+        "uncertainties can be correlated across the requested eta groups"
+    )
 
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
 
@@ -63,6 +67,7 @@ diff_weights_helper = (
     include_covariance=not args.fitMuonScaleAndResolution,
     smearing=not args.noSmearing,
     fit_muon_scale=args.fitMuonScaleAndResolution,
+    variation_eta_bins=args.etaBins,
 )
 
 if data_jpsi_crctn_unc_helper is None:
@@ -77,8 +82,15 @@ _smearing_helper, smearing_uncertainty_helper = (
         scale_var_method=args.muonScaleVariation,
         parameter_variations=True,
         fit_muon_resolution=args.fitMuonScaleAndResolution,
+        variation_eta_bins=args.etaBins,
     )
 )
+
+(
+    _pixel_multiplicity_helper,
+    pixel_multiplicity_uncertainty_helper,
+    pixel_multiplicity_uncertainty_helper_stat,
+) = muon_calibration.make_pixel_multiplicity_helpers()
 
 
 local_resonance_files = {
@@ -99,6 +111,32 @@ local_resonance_files = {
     },
 }
 
+trigger_channels = {
+    "jpsi": [
+        {
+            "label": "dimuon20_jpsi",
+            "cut": "HLT_Dimuon20_Jpsi",
+            "mc": local_resonance_files["jpsi"]["mc"],
+            "layer_corrected": True,
+        },
+        {
+            "label": "doublemu4_jpsitrk_displaced",
+            "cut": "HLT_DoubleMu4_JpsiTrk_Displaced",
+            "mc": ["/scratch/submit/cms/emanca/BuToJpsiK_BMuonFilter_v2_BPH.root"],
+            "layer_corrected": False,
+        },
+    ],
+    # Temporary placeholder until the dedicated Upsilon configuration is available.
+    "upsilon": [
+        {
+            "label": "inclusive",
+            "cut": "1.",
+            "mc": local_resonance_files["upsilon"]["mc"],
+            "layer_corrected": True,
+        },
+    ],
+}
+
 
 def limited_files(files):
     if args.maxFiles is not None and args.maxFiles > 0:
@@ -106,91 +144,111 @@ def limited_files(files):
     return files
 
 
-datasets = [
-    narf.Dataset(
-        name=f"{args.resonance}_data",
-        filepaths=limited_files(local_resonance_files[args.resonance]["data"]),
-        is_data=True,
-        group="Data",
-    ),
-    narf.Dataset(
-        name=f"{args.resonance}_mc",
-        filepaths=limited_files(local_resonance_files[args.resonance]["mc"]),
-        is_data=False,
-        xsec=1.0,
-        group=args.resonance.upper(),
-    ),
-]
+def bool_filter(expression):
+    return f"static_cast<bool>({expression})"
+
+
+datasets = []
+dataset_channels = {}
+for channel in trigger_channels[args.resonance]:
+    for sample_type in ["data", "mc"]:
+        dataset_name = f"{args.resonance}_{sample_type}_{channel['label']}"
+        dataset_channels[dataset_name] = channel
+        datasets.append(
+            narf.Dataset(
+                name=dataset_name,
+                filepaths=limited_files(
+                    local_resonance_files[args.resonance]["data"]
+                    if sample_type == "data"
+                    else channel["mc"]
+                ),
+                is_data=sample_type == "data",
+                xsec=None if sample_type == "data" else 1.0,
+                group="Data" if sample_type == "data" else args.resonance.upper(),
+            )
+        )
 
 
 resonance_options = {
     "jpsi": {
         "name": "JPsi",
-        "eta_axis": hist.axis.Regular(24, -2.4, 2.4, name="eta1"),
-        "eta2_axis": hist.axis.Regular(24, -2.4, 2.4, name="eta2"),
+        "default_eta_bins": 24,
+        "eta_range": (-2.4, 2.4),
         "pt_axis": hist.axis.Variable([4.2, 7.0, 10.5, 15.0, 25.0], name="pt1"),
         "pt2_axis": hist.axis.Variable([4.2, 7.0, 10.5, 15.0, 25.0], name="pt2"),
         "mass_axis": hist.axis.Regular(25, 2.92, 3.28, name="mass"),
-        "selection": (
-            "Mupluscor_pt > 1.0 && Muminuscor_pt > 1.0 && "
-            "Mupluscor_pt < 100.0 && Muminuscor_pt < 100.0 && "
-            "std::fabs(Mupluscor_eta) < 2.4 && std::fabs(Muminuscor_eta) < 2.4 && "
-            "Jpsicor_mass > 2.8 && Jpsicor_mass < 3.35"
-        ),
+        "mass_range": (2.8, 3.35),
     },
     "upsilon": {
         "name": "Y",
-        "eta_axis": hist.axis.Regular(8, -0.8, 0.8, name="eta1"),
-        "eta2_axis": hist.axis.Regular(8, -0.8, 0.8, name="eta2"),
+        "default_eta_bins": 8,
+        "eta_range": (-0.8, 0.8),
         "pt_axis": hist.axis.Variable([4.2, 6.0, 7.9, 10.3, 25.0], name="pt1"),
         "pt2_axis": hist.axis.Variable([4.2, 6.0, 7.9, 10.3, 25.0], name="pt2"),
         "mass_axis": hist.axis.Regular(25, 9.0, 9.7, name="mass"),
-        "selection": (
-            "Mupluscor_pt > 1.0 && Muminuscor_pt > 1.0 && "
-            "Mupluscor_pt < 100.0 && Muminuscor_pt < 100.0 && "
-            "std::fabs(Mupluscor_eta) < 0.8 && std::fabs(Muminuscor_eta) < 0.8 && "
-            "Jpsicor_mass > 8.8 && Jpsicor_mass < 9.6"
-        ),
+        "mass_range": (8.8, 9.6),
     },
 }
 
 cfg = resonance_options[args.resonance]
+eta_bins = args.etaBins or cfg["default_eta_bins"]
+eta_min, eta_max = cfg["eta_range"]
 calibration_axes = [
-    cfg["eta_axis"],
-    cfg["eta2_axis"],
+    hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta1"),
+    hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta2"),
     cfg["pt_axis"],
     cfg["pt2_axis"],
     cfg["mass_axis"],
 ]
-calibration_cols = [
-    "Mupluscor_eta",
-    "Muminuscor_eta",
-    "Mupluscor_pt",
-    "Muminuscor_pt",
-    "Jpsicor_mass",
-]
+
+
+def reco_columns(channel):
+    suffix = "cor" if channel["layer_corrected"] else ""
+    return {
+        "plus_pt": f"Muplus{suffix}_pt",
+        "minus_pt": f"Muminus{suffix}_pt",
+        "plus_eta": f"Muplus{suffix}_eta",
+        "minus_eta": f"Muminus{suffix}_eta",
+        "plus_phi": f"Muplus{suffix}_phi",
+        "minus_phi": f"Muminus{suffix}_phi",
+        "mass": f"Jpsi{suffix}_mass",
+    }
+
+
+def reco_selection(cols):
+    mass_min, mass_max = cfg["mass_range"]
+    return (
+        f"{cols['plus_pt']} > 1.0 && {cols['minus_pt']} > 1.0 && "
+        f"{cols['plus_pt']} < 100.0 && {cols['minus_pt']} < 100.0 && "
+        f"std::fabs({cols['plus_eta']}) < {eta_max} && "
+        f"std::fabs({cols['minus_eta']}) < {eta_max} && "
+        f"{cols['mass']} > {mass_min} && {cols['mass']} < {mass_max}"
+    )
 
 
 def build_graph(df, dataset):
     logger.info(f"build graph for dataset: {dataset.name}")
 
     results = []
+    channel = dataset_channels[dataset.name]
+    reco_cols = reco_columns(channel)
+    calibration_cols = [
+        reco_cols["plus_eta"],
+        reco_cols["minus_eta"],
+        reco_cols["plus_pt"],
+        reco_cols["minus_pt"],
+        reco_cols["mass"],
+    ]
 
     df = df.DefinePerSample("weight", "1.0")
     weightsum = df.SumAndCount("weight")
 
-    df = df.Filter(cfg["selection"])
+    df = df.Filter(reco_selection(reco_cols))
     if not dataset.is_data:
         df = df.Filter(
             "Jpsigen_mass > 0.0 && Muplusgen_pt > 0.0 && Muminusgen_pt > 0.0"
         )
-        df = df.Filter(
-            args.mcTriggerCut
-        )
-    else:
-        df = df.Filter(
-            args.dataTriggerCut
-        )
+    df = df.Filter(bool_filter(channel["cut"]))
 
     hist_name = f"{cfg['name']}_{'data' if dataset.is_data else 'mc'}"
     results.append(
@@ -204,17 +262,36 @@ def build_graph(df, dataset):
     if not dataset.is_data:
         df = (
             df.Define("nominal_weight", "weight")
+            # The calInput ntuples have no per-leg trigger matching; both selected
+            # paths are dimuon triggers, so both candidates use the triggering map.
+            .DefinePerSample(
+                "pixel_triggerCat",
+                "ROOT::VecOps::RVec<wrem::TriggerCat>{wrem::TriggerCat::triggering, wrem::TriggerCat::triggering}",
+            )
+            .Define(
+                "pixel_eta",
+                f"ROOT::VecOps::RVec<float>{{float({reco_cols['plus_eta']}), float({reco_cols['minus_eta']})}}",
+            )
+            .Define(
+                "pixel_pt",
+                f"ROOT::VecOps::RVec<float>{{float({reco_cols['plus_pt']}), float({reco_cols['minus_pt']})}}",
+            )
+            .Define("pixel_charge", "ROOT::VecOps::RVec<int>{1, -1}")
+            .Define(
+                "pixel_nvalidpixel",
+                "ROOT::VecOps::RVec<int>{Muplus_nvalidpixel, Muminus_nvalidpixel}",
+            )
             .Define(
                 "scale_recoPt",
-                "ROOT::VecOps::RVec<float>{float(Mupluscor_pt), float(Muminuscor_pt)}",
+                f"ROOT::VecOps::RVec<float>{{float({reco_cols['plus_pt']}), float({reco_cols['minus_pt']})}}",
             )
             .Define(
                 "scale_recoEta",
-                "ROOT::VecOps::RVec<float>{float(Mupluscor_eta), float(Muminuscor_eta)}",
+                f"ROOT::VecOps::RVec<float>{{float({reco_cols['plus_eta']}), float({reco_cols['minus_eta']})}}",
             )
             .Define(
                 "scale_recoPhi",
-                "ROOT::VecOps::RVec<float>{float(Mupluscor_phi), float(Muminuscor_phi)}",
+                f"ROOT::VecOps::RVec<float>{{float({reco_cols['plus_phi']}), float({reco_cols['minus_phi']})}}",
             )
             .Define("scale_recoCharge", "ROOT::VecOps::RVec<int>{1, -1}")
             .Define(
@@ -232,6 +309,14 @@ def build_graph(df, dataset):
             .Define("scale_genCharge", "ROOT::VecOps::RVec<int>{1, -1}")
             .Define("scale_muon_source", "ROOT::VecOps::RVec<int>{443, 443}")
         )
+
+        pixel_multiplicity_cols = [
+            "pixel_triggerCat",
+            "pixel_eta",
+            "pixel_pt",
+            "pixel_charge",
+            "pixel_nvalidpixel",
+        ]
 
         input_kinematics = [
             "scale_recoPt",
@@ -279,10 +364,44 @@ def build_graph(df, dataset):
             storage_type=hist.storage.Double(),
         )
 
+        df = df.Define(
+            "nominal_pixelMultiplicitySyst_tensor",
+            pixel_multiplicity_uncertainty_helper,
+            [*pixel_multiplicity_cols, "nominal_weight"],
+        )
+        results.append(
+            df.HistoBoost(
+                "nominal_pixelMultiplicitySyst",
+                calibration_axes,
+                [*calibration_cols, "nominal_pixelMultiplicitySyst_tensor"],
+                tensor_axes=pixel_multiplicity_uncertainty_helper.tensor_axes,
+                storage=hist.storage.Double(),
+            )
+        )
+
+        if args.pixelMultiplicityStat:
+            df = df.Define(
+                "nominal_pixelMultiplicityStat_tensor",
+                pixel_multiplicity_uncertainty_helper_stat,
+                [*pixel_multiplicity_cols, "nominal_weight"],
+            )
+            results.append(
+                df.HistoBoost(
+                    "nominal_pixelMultiplicityStat",
+                    calibration_axes,
+                    [*calibration_cols, "nominal_pixelMultiplicityStat_tensor"],
+                    tensor_axes=pixel_multiplicity_uncertainty_helper_stat.tensor_axes,
+                    storage=hist.storage.Double(),
+                )
+            )
+
     return results, weightsum
 
 
 resultdict = narf.build_and_run(datasets, build_graph, event_tree="tree")
 
 fout = f"{os.path.basename(__file__).replace('py', 'hdf5')}"
-write_analysis_output(resultdict, fout, args, name_append=[args.resonance, args.era])
+name_append = [args.resonance, args.era]
+if args.etaBins is not None:
+    name_append.append(f"etaBins_{args.etaBins}")
+write_analysis_output(resultdict, fout, args, name_append=name_append)
