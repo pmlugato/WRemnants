@@ -101,12 +101,12 @@ local_resonance_files = {
             "/scratch/submit/cms/emanca/jcor_mc_0to8.root",
         ],
     },
-    # Temporary placeholder until the dedicated Upsilon ntuples are available.
     "upsilon": {
-        "data": ["/scratch/submit/cms/emanca/jpsicor_data.root"],
+        "data": ["/scratch/submit/cms/emanca/upsilon_data.root"],
         "mc": [
-            "/scratch/submit/cms/emanca/jpsicor_mc.root",
-            "/scratch/submit/cms/emanca/jcor_mc_0to8.root",
+            "/scratch/submit/cms/emanca/upsilon_0to8.root",
+            "/scratch/submit/cms/emanca/upsilon_8to13.root",
+            "/scratch/submit/cms/emanca/upsilon_13toInf.root",
         ],
     },
 }
@@ -126,7 +126,6 @@ trigger_channels = {
             "layer_corrected": False,
         },
     ],
-    # Temporary placeholder until the dedicated Upsilon configuration is available.
     "upsilon": [
         {
             "label": "inclusive",
