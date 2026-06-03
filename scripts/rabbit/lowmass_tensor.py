@@ -160,15 +160,16 @@ def make_jpsi_channel(dataset_label, histograms):
         "JPsi_mc",
         "nominal_muonScaleSyst_responseWeights",
         "nominal_muonResolutionSyst_responseWeights",
+        "nominal_pixelMultiplicitySyst",
     ]
     missing = [name for name in required if name not in histograms]
     if missing:
         raise RuntimeError(
             f"Missing histograms for JPsi channel '{dataset_label}': {missing}. "
-            "Run dimuon_resonances_calinput.py with MC scale systematics enabled."
+            "Run dimuon_resonances_calinput.py with MC scale/pixel systematics enabled."
         )
 
-    return {
+    channel = {
         "name": jpsi_channel_names.get(
             dataset_label, f"JPsi_{dataset_label}" if dataset_label else "JPsi"
         ),
@@ -178,7 +179,14 @@ def make_jpsi_channel(dataset_label, histograms):
         "JPsi_resolution_syst": histograms[
             "nominal_muonResolutionSyst_responseWeights"
         ],
+        "JPsi_pixel_syst": histograms["nominal_pixelMultiplicitySyst"],
     }
+    if "nominal_pixelMultiplicityStat" in histograms:
+        channel["JPsi_pixel_stat"] = histograms["nominal_pixelMultiplicityStat"]
+    else:
+        channel["JPsi_pixel_stat"] = None
+
+    return channel
 
 
 def load_jpsi_channels_from_calinput(path):
@@ -279,6 +287,27 @@ def split_calinput_resolution_variations(hsyst, hist_mc, scaling_factor, thresh)
             resolution_groups.append(f"res_{param_name}")
 
     return resolution_variations, resolution_names, resolution_groups
+
+
+def split_calinput_pixel_multiplicity_variations(hsyst, hist_mc, scaling_factor, thresh, name_prefix="pixel_multiplicity_syst"):
+    if "var" not in hsyst.axes.name:
+        raise RuntimeError(
+            f"Expected WRemnants pixel multiplicity histogram with 'var' axis, found {hsyst.axes.name}"
+        )
+
+    num_vars = hsyst.axes["var"].size
+    variations = []
+    names = []
+    groups = []
+    for ivar in range(num_vars):
+        variation = hsyst[{"var": ivar}] * scaling_factor
+        variations.append(
+            trim_variations(clip_values(variation), hist_mc, thresh)
+        )
+        names.append(f"{name_prefix}_{ivar}")
+        groups.append(name_prefix)
+
+    return variations, names, groups
 
 
 # set up the global systematics
@@ -400,6 +429,19 @@ for resultdict in load_jpsi_channels_from_calinput(args.calinputHdf5):
             resultdict["JPsi_resolution_syst"], hist_mc, scaling_factor, thresh
         )
     )
+    pixel_variations, pixel_names, pixel_groups = (
+        split_calinput_pixel_multiplicity_variations(
+            resultdict["JPsi_pixel_syst"], hist_mc, scaling_factor, thresh, "pixel_multiplicity_syst"
+        )
+    )
+    if resultdict.get("JPsi_pixel_stat") is not None:
+        pixel_stat_variations, pixel_stat_names, pixel_stat_groups = (
+            split_calinput_pixel_multiplicity_variations(
+                resultdict["JPsi_pixel_stat"], hist_mc, scaling_factor, thresh, "pixel_multiplicity_stat"
+            )
+        )
+    else:
+        pixel_stat_variations, pixel_stat_names, pixel_stat_groups = [], [], []
 
     writer.add_channel(hist_mc.axes, sample)
     writer.add_process(
@@ -430,6 +472,32 @@ for resultdict in load_jpsi_channels_from_calinput(args.calinputHdf5):
 
     for variation, var, group in zip(
         resolution_variations, resolution_names, resolution_groups
+    ):
+        print(var)
+        writer.add_systematic(
+            variation,
+            var,
+            f"sig_{sample}",
+            sample,
+            groups=[group],
+            constrained=True,
+        )
+
+    for variation, var, group in zip(
+        pixel_variations, pixel_names, pixel_groups
+    ):
+        print(var)
+        writer.add_systematic(
+            variation,
+            var,
+            f"sig_{sample}",
+            sample,
+            groups=[group],
+            constrained=True,
+        )
+
+    for variation, var, group in zip(
+        pixel_stat_variations, pixel_stat_names, pixel_stat_groups
     ):
         print(var)
         writer.add_systematic(
