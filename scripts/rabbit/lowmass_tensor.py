@@ -15,6 +15,11 @@ if str(WREMNANTS_DIR) not in sys.path:
 from wremnants.utilities.io_tools import base_io
 from wums import ioutils
 
+jpsi_channel_names = {
+    "dimuon20_jpsi": "JPsi_prompt",
+    "doublemu4_jpsitrk_displaced": "JPsi_displaced",
+}
+
 parser = argparse.ArgumentParser()
 parser.add_argument("-o", "--output", default="./", help="output directory")
 parser.add_argument("--outname", default="test_tensor", help="output file name")
@@ -53,6 +58,19 @@ parser.add_argument(
     default=str(WREMNANTS_DIR / "dimuon_resonances_calinput_jpsi_2016PostVFP.hdf5"),
     help="WRemnants calInput-style HDF5 file to use for the JPsi channel",
 )
+parser.add_argument(
+    "--jpsiChannels",
+    nargs="+",
+    choices=list(jpsi_channel_names.values()),
+    default=list(jpsi_channel_names.values()),
+    help="JPsi channels to add to the tensor",
+)
+parser.add_argument(
+    "--eventThresh",
+    default=0,
+    type=float,
+    help="event threshold in rescaled MC for a 4d bin being included in the fit (zeros MC and data both if rescaled MC is too small)",
+)
 args = parser.parse_args()
 
 
@@ -86,10 +104,10 @@ def clip_values(dummy_hist, lim=1e-6, variances=True):
     return dummy_hist
 
 
-def populated_cells(dummy_hist, shape_axis="mass"):
+def populated_cells(dummy_hist, shape_axis="mass", event_thresh=0):
     """Return the nonempty cells after integrating over the lineshape axis."""
     shape_axis_index = dummy_hist.axes.name.index(shape_axis)
-    return np.any(dummy_hist.values() != 0.0, axis=shape_axis_index)
+    return (np.sum(dummy_hist.values(), axis=shape_axis_index) > event_thresh)
 
 
 def zero_inactive_cells(dummy_hist, active_cells, shape_axis="mass"):
@@ -148,10 +166,7 @@ def load_calinput_datasets(path):
     return datasets
 
 
-jpsi_channel_names = {
-    "dimuon20_jpsi": "JPsi_prompt",
-    "doublemu4_jpsitrk_displaced": "JPsi_displaced",
-}
+
 
 
 def make_jpsi_channel(dataset_label, histograms):
@@ -395,6 +410,9 @@ cov_data = np.array([])
 
 for resultdict in load_jpsi_channels_from_calinput(args.calinputHdf5):
     sample = resultdict["name"]
+    if sample not in args.jpsiChannels:
+        print(f"skipping channel {sample}")
+        continue
     print(f"processing {sample}")
     hist_mc = resultdict["JPsi_mc"]
 
@@ -404,17 +422,11 @@ for resultdict in load_jpsi_channels_from_calinput(args.calinputHdf5):
     print(scaling_factor, sample)
     # scaling_factor = 1 # undo this easily
     hist_mc = hist_mc * scaling_factor
-    signal_active_cells = populated_cells(hist_mc)
-    fit_active_cells = signal_active_cells | populated_cells(hist_data)
-    clip_values(hist_mc, variances=True)
+    signal_active_cells = populated_cells(hist_mc, event_thresh=args.eventThresh)
+    # fit_active_cells = signal_active_cells | populated_cells(hist_data)
+    # clip_values(hist_mc, variances=True)
     zero_inactive_cells(hist_mc, signal_active_cells)
-    # print('nominal')
-    # print(hist_mc[{ 'pt1':1, 'pt2':1, 'eta2':12, 'mass':13}])
-    # print('muplus weight')
-    # hist_plus = resultdict[f'{sample}_mc_A_plus']
-    # print(hist_plus[{'eta_syst':0, 'downUpVar':0, 'pt1':1, 'pt2':1, 'eta2':12, 'mass':13}])
-    # print('is anything less than 0')
-    # print((hist_mc.values() < 0).any())
+    zero_inactive_cells(hist_data, signal_active_cells)
 
     up_variations = []
     down_variations = []
@@ -447,7 +459,8 @@ for resultdict in load_jpsi_channels_from_calinput(args.calinputHdf5):
     writer.add_process(
         hist_mc, f"sig_{sample}", sample, signal=True
     )  # singal=True means cross sections float
-    background_hist = make_active_background(hist_mc, fit_active_cells)
+    # background_hist = make_active_background(hist_mc, fit_active_cells)
+    background_hist = make_active_background(hist_mc, signal_active_cells)
     writer.add_process(background_hist, f"background_{sample}", sample, signal=False)
     writer.add_data(hist_data, sample)
     # writer.add_norm_systematic("norm", [f"sig_{sample}"], sample, 1.02)
