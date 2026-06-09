@@ -83,6 +83,8 @@ _smearing_helper, smearing_uncertainty_helper = (
         parameter_variations=True,
         fit_muon_resolution=args.fitMuonScaleAndResolution,
         variation_eta_bins=args.etaBins,
+        resolution_prefit_uncertainties=[0.3, 0.3, 0.3, 0.3],
+        resolution_prefit_uncertainties_mode="relative",
     )
 )
 

@@ -344,6 +344,7 @@ def make_muon_smearing_helpers(
     parameter_variations=False,
     fit_muon_resolution=False,
     resolution_prefit_uncertainties=(1e-5, 1e-5, 1e-9, 1e-2),
+    resolution_prefit_uncertainties_mode="absolute",
     smearing=True,
     scale_var_method="onnxReweight",
     onnx_path=None,
@@ -495,9 +496,16 @@ def make_muon_smearing_helpers(
 
     varied_parms = axis_res_parm if parameter_variations else axis_res_parm_reduced
     for iparm, parm in enumerate(varied_parms):
-        hvar[{"res_parm": parm}] = (
-            hvar[{"res_parm": parm}].values() + dparms[:, iparm, :]
-        )
+        if resolution_prefit_uncertainties_mode == "absolute":
+            hvar[{"res_parm": parm}] = (
+                hvar[{"res_parm": parm}].values() + dparms[:, iparm, :]
+            )
+        elif resolution_prefit_uncertainties_mode == "relative":
+            hvar[{"res_parm": parm}] = (
+                hvar[{"res_parm": parm}].values() * (1 + dparms[:, iparm, :])
+            )
+        else:
+            raise ValueError("resolution_prefit_uncertainties_mode must be 'absolute' or 'relative'")
 
     hnom = hist.Hist(*hnomw.axes)
     hnom[...] = hnomw.values()
