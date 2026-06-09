@@ -443,7 +443,7 @@ def make_muon_smearing_helpers(
     check_variances(hnomwmc, covmc)
 
     if fit_muon_resolution:
-        hnomw[{"data_mc": "data"}].values()[...] = hnomw[{"data_mc": "mc"}].values()
+        hnomw[{"data_mc": "data"}] = hnomw[{"data_mc": "mc"}]
 
     hnomwdata = hnomw[{"data_mc": "data"}]
     hnomwmc = hnomw[{"data_mc": "mc"}]
