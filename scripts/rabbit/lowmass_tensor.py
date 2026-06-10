@@ -67,9 +67,15 @@ parser.add_argument(
 )
 parser.add_argument(
     "--eventThresh",
+    default=-1,
+    type=float,
+    help="event threshold in rescaled MC for a 4d bin being included in the fit. Disabled by default. Zeros both MC and data in failing bins if specified",
+)
+parser.add_argument(
+    "--clip",
     default=0,
     type=float,
-    help="event threshold in rescaled MC for a 4d bin being included in the fit (zeros MC and data both if rescaled MC is too small)",
+    help="clip values in MC and data at this threshold",
 )
 args = parser.parse_args()
 
@@ -107,7 +113,7 @@ def clip_values(dummy_hist, lim=1e-6, variances=True):
 def populated_cells(dummy_hist, shape_axis="mass", event_thresh=0):
     """Return the nonempty cells after integrating over the lineshape axis."""
     shape_axis_index = dummy_hist.axes.name.index(shape_axis)
-    return (np.sum(dummy_hist.values(), axis=shape_axis_index) > event_thresh)
+    return (np.sum(dummy_hist.values(), axis=shape_axis_index) > max(event_thresh, 0))
 
 
 def zero_inactive_cells(dummy_hist, active_cells, shape_axis="mass"):
@@ -266,8 +272,8 @@ def split_calinput_scale_variations(hsyst, hist_mc, scaling_factor, thresh):
             unc_index = i * len(nuisance_categories) + param_index
             up = hsyst[{"unc": unc_index, "downUpVar": up_index}] * scaling_factor
             down = hsyst[{"unc": unc_index, "downUpVar": down_index}] * scaling_factor
-            up_variations.append(trim_variations(clip_values(up), hist_mc, thresh))
-            down_variations.append(trim_variations(clip_values(down), hist_mc, thresh))
+            up_variations.append(trim_variations(clip_values(up, lim=args.clip), hist_mc, thresh))
+            down_variations.append(trim_variations(clip_values(down, lim=args.clip), hist_mc, thresh))
             variations.append(f"{nuisance_category}{i}")
             groups.append(nuisance_category)
 
@@ -296,7 +302,7 @@ def split_calinput_resolution_variations(hsyst, hist_mc, scaling_factor, thresh)
             variation_index = ieta * len(res_categories) + param_index
             variation = hsyst[{"smearing_variation": variation_index}] * scaling_factor
             resolution_variations.append(
-                trim_variations(clip_values(variation), hist_mc, thresh)
+                trim_variations(clip_values(variation, lim=args.clip), hist_mc, thresh)
             )
             resolution_names.append(f"res_{param_name}{ieta}")
             resolution_groups.append(f"res_{param_name}")
@@ -317,7 +323,7 @@ def split_calinput_pixel_multiplicity_variations(hsyst, hist_mc, scaling_factor,
     for ivar in range(num_vars):
         variation = hsyst[{"var": ivar}] * scaling_factor
         variations.append(
-            trim_variations(clip_values(variation), hist_mc, thresh)
+            trim_variations(clip_values(variation, lim=args.clip), hist_mc, thresh)
         )
         names.append(f"{name_prefix}_{ivar}")
         groups.append(name_prefix)
@@ -423,10 +429,13 @@ for resultdict in load_jpsi_channels_from_calinput(args.calinputHdf5):
     # scaling_factor = 1 # undo this easily
     hist_mc = hist_mc * scaling_factor
     signal_active_cells = populated_cells(hist_mc, event_thresh=args.eventThresh)
-    # fit_active_cells = signal_active_cells | populated_cells(hist_data)
-    # clip_values(hist_mc, variances=True)
+    clip_values(hist_mc, lim=args.clip, variances=True)
     zero_inactive_cells(hist_mc, signal_active_cells)
-    zero_inactive_cells(hist_data, signal_active_cells)
+    if args.eventThresh < 0:
+        fit_active_cells = signal_active_cells | populated_cells(hist_data)
+    else:
+        fit_active_cells = signal_active_cells
+        zero_inactive_cells(hist_data, fit_active_cells)
 
     up_variations = []
     down_variations = []
@@ -459,8 +468,7 @@ for resultdict in load_jpsi_channels_from_calinput(args.calinputHdf5):
     writer.add_process(
         hist_mc, f"sig_{sample}", sample, signal=True
     )  # singal=True means cross sections float
-    # background_hist = make_active_background(hist_mc, fit_active_cells)
-    background_hist = make_active_background(hist_mc, signal_active_cells)
+    background_hist = make_active_background(hist_mc, fit_active_cells)
     writer.add_process(background_hist, f"background_{sample}", sample, signal=False)
     writer.add_data(hist_data, sample)
     # writer.add_norm_systematic("norm", [f"sig_{sample}"], sample, 1.02)
