@@ -24,6 +24,15 @@ parser.add_argument(
     default=None,
     help="Override the number of bins for each reconstructed muon eta axis",
 )
+parser.add_argument(
+    "--applyAeMtoData",
+    type=str,
+    default=None,
+    help="Path to a rabbit fitresult HDF5 file. The fitted AeM parameters are "
+    "extracted and used to correct the data muon pts "
+    "(via muon_calibration.define_AeM_data_corrections) before filling the "
+    "data histograms. MC histograms are left unchanged.",
+)
 parser = parsing.set_parser_default(parser, "theoryCorr", [])
 
 args = parser.parse_args()
@@ -37,6 +46,38 @@ if args.etaBins is not None and not args.fitMuonScaleAndResolution:
     )
 
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
+
+
+def read_AeM_corrections(fitresult_path, n_eta_bins=24):
+    import rabbit.io_tools
+
+    fitresult = rabbit.io_tools.get_fitresult(fitresult_path)
+    h_parms = fitresult["parms"].get()
+    labels = [str(label) for label in h_parms.axes["parms"]]
+    values = h_parms.values()
+    parm_map = dict(zip(labels, values))
+
+    def collect(prefix):
+        out = []
+        for i in range(n_eta_bins):
+            key = f"{prefix}{i}"
+            if key not in parm_map:
+                raise ValueError(
+                    f"Parameter '{key}' not found in fitresult '{fitresult_path}'. "
+                    f"Available parameters: {labels}"
+                )
+            out.append(float(parm_map[key]))
+        return out
+
+    return collect("A"), collect("e"), collect("M")
+
+
+AeM_corrections = None
+if args.applyAeMtoData is not None:
+    AeM_corrections = read_AeM_corrections(args.applyAeMtoData)
+    logger.info(
+        f"Loaded A/e/M data pt corrections from fitresult {args.applyAeMtoData}"
+    )
 
 if args.muonScaleVariation not in ["onnxReweight", "smearingWeightsSplines"]:
     raise ValueError(
@@ -233,6 +274,20 @@ def build_graph(df, dataset):
     results = []
     channel = dataset_channels[dataset.name]
     reco_cols = reco_columns(channel)
+
+    if dataset.is_data and AeM_corrections is not None:
+        if not channel["layer_corrected"]:
+            raise ValueError(
+                "--applyAeMtoData operates on the layer-corrected data columns "
+                f"(Mupluscor_*), but data channel '{channel['label']}' is not "
+                "layer corrected"
+            )
+        A_vals, e_vals, M_vals = AeM_corrections
+        df = muon_calibration.define_AeM_data_corrections(df, A_vals, e_vals, M_vals)
+        reco_cols["plus_pt"] = "Mupluscor_AeM_pt"
+        reco_cols["minus_pt"] = "Muminuscor_AeM_pt"
+        reco_cols["mass"] = "Jpsicor_AeM_mass"
+
     calibration_cols = [
         reco_cols["plus_eta"],
         reco_cols["minus_eta"],

@@ -2124,6 +2124,62 @@ def define_passthrough_corrections_jpsi_calibration_ntuples(df):
     return df
 
 
+def define_AeM_data_corrections(
+    df, A, e, M, n_eta_bins=24, eta_min=-2.4, eta_max=2.4
+):
+    # Apply per-eta-bin A/e/M scale corrections on top of the layer-corrected
+    # muon pts and recompute the dimuon mass from the corrected kinematics.
+    # for data, we have no gen values, so we have to use reco values everywhere
+    if not (len(A) == len(e) == len(M) == n_eta_bins):
+        raise ValueError(
+            f"A, e, M must each have length n_eta_bins={n_eta_bins}, got "
+            f"{len(A)}, {len(e)}, {len(M)}"
+        )
+
+    def rvec_literal(values, scaling):
+        return (
+            "ROOT::VecOps::RVec<double>{"
+            + ", ".join(repr(float(v*scaling)) for v in values)
+            + "}"
+        )
+
+    A_lit = rvec_literal(A, 1e-3)
+    e_lit = rvec_literal(e, 1e-2)
+    M_lit = rvec_literal(M, 1e-4)
+
+    @ROOT.Numba.Declare(['double'], 'int')
+    def getEtaBin(eta):
+        eta_bin_edges = np.linspace(eta_min, eta_max, n_eta_bins+1)
+        ieta = np.digitize(eta,eta_bin_edges)-1
+        return ieta
+
+    # plus muon: index i from Mupluscor_eta
+    for (charge, q) in zip(['plus', 'minus'], [1.0, -1.0]):
+        df = df.Define(f"Mu{charge}cor_ieta", f"Numba::getEtaBin(Mu{charge}cor_eta)")
+        df = df.Define(f"Mu{charge}cor_A",    f"({A_lit})[Mu{charge}cor_ieta]")
+        df = df.Define(f"Mu{charge}cor_e",    f"({e_lit})[Mu{charge}cor_ieta]")
+        df = df.Define(f"Mu{charge}cor_qM",   f"{q} * ({M_lit})[Mu{charge}cor_ieta]")
+        df = df.Define(
+            f"Mu{charge}cor_AeM_pt",
+            f"(1.0 + Mu{charge}cor_A - Mu{charge}cor_e / Mu{charge}cor_pt + Mu{charge}cor_qM * Mu{charge}cor_pt) * Mu{charge}cor_pt",
+        )
+        df = df.Define(
+            f"Mu{charge}cor_AeM_mom4",
+            f"ROOT::Math::PtEtaPhiMVector(Mu{charge}cor_AeM_pt, Mu{charge}cor_eta, Mu{charge}cor_phi, wrem::muon_mass)",
+        )
+    
+    df = df.Define(
+        "Jpsicor_AeM_mom4",
+        "ROOT::Math::PxPyPzEVector(Mupluscor_AeM_mom4) + ROOT::Math::PxPyPzEVector(Muminuscor_AeM_mom4)",
+    )
+    df = df.Define("Jpsicor_AeM_pt", "Jpsicor_AeM_mom4.Pt()")
+    df = df.Define("Jpsicor_AeM_eta", "Jpsicor_AeM_mom4.Eta()")
+    df = df.Define("Jpsicor_AeM_phi", "Jpsicor_AeM_mom4.Phi()")
+    df = df.Define("Jpsicor_AeM_mass", "Jpsicor_AeM_mom4.M()")
+
+    return df
+
+
 def make_pixel_multiplicity_helpers(
     filename=f"{common.data_dir}/calibration/pixelcorr.pkl.lz4",
     reverse_variations=False,
