@@ -131,10 +131,11 @@ def make_active_background(template_hist, active_cells, shape_axis="mass"):
     """Build a flat background only in populated kinematic cells."""
     shape_axis_index = template_hist.axes.name.index(shape_axis)
     active_bins = np.expand_dims(active_cells, axis=shape_axis_index)
-    background_hist = hist.Hist(*template_hist.axes)
+    background_hist = hist.Hist(*template_hist.axes, storage=hist.storage.Weight())
     background_hist.values()[...] = np.broadcast_to(
         active_bins, template_hist.values().shape
     )
+    background_hist.variances()[...] = 0
     return background_hist
 
 
@@ -437,6 +438,16 @@ for resultdict in load_jpsi_channels_from_calinput(args.calinputHdf5):
         fit_active_cells = signal_active_cells
         zero_inactive_cells(hist_data, fit_active_cells)
 
+    # placing a hack here to tell me which 4d bins to make rabbit selections for
+    # s = ""
+    # for eta1 in range(24):
+    #     for eta2 in range(24):
+    #         for pt1 in range(4):
+    #             for pt2 in range(4):
+    #                 if fit_active_cells[eta1, eta2, pt1, pt2]:
+    #                     s += f"-m Select JPsi_prompt eta1:{eta1},eta2:{eta2},pt1:{pt1},pt2:{pt2} "
+    # print(s)
+    # exit()
     up_variations = []
     down_variations = []
     thresh = 1e-5
@@ -478,8 +489,6 @@ for resultdict in load_jpsi_channels_from_calinput(args.calinputHdf5):
     for up_var, down_var, var, group in zip(
         up_variations, down_variations, variations, groups
     ):
-        # if not (int(var[-1]) >= 7 and int(var[-1]) <= 8):
-        #    continue
         print(var)
         writer.add_systematic(
             [up_var, down_var],
