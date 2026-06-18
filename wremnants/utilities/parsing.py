@@ -63,7 +63,8 @@ def set_parser_default(parser, argument, newDefault):
 
 
 def base_parser():
-    parser = argparse.ArgumentParser()
+    # manually adding help at the end lets inheriting parsers use it correctly
+    parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
         "-v",
         "--verbose",
@@ -824,6 +825,15 @@ def common_parser(analysis_label=""):
         "--printParser",
         action=PrintParserAction,
         help="Print the whole parser with its arguments (use it as the last argument or default values might not be displayed correctly)",
+    )
+
+    # add help back now that all common arguments are registered
+    parser.add_argument(
+        "-h",
+        "--help",
+        action="help",
+        default=argparse.SUPPRESS,
+        help="show this help message and exit",
     )
 
     return parser, initargs
