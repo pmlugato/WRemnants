@@ -77,6 +77,13 @@ parser.add_argument(
     help="Override the number of bins for each reconstructed muon eta axis",
 )
 parser.add_argument(
+    "--ptBinEdges",
+    type=float,
+    nargs="+",
+    default=None,
+    help="Override the default pt bining for the selected resonance"
+)
+parser.add_argument(
     "--applyAeMtoData",
     type=str,
     default=None,
@@ -234,7 +241,7 @@ resonance_options = {
         "name": "JPsi",
         "default_eta_bins": 24,
         "eta_range": (-2.4, 2.4),
-        "pt_axis": hist.axis.Variable([4.2, 7.0, 10.5, 15.0, 25.0], name="pt1"),
+        "pt1_axis": hist.axis.Variable([4.2, 7.0, 10.5, 15.0, 25.0], name="pt1"),
         "pt2_axis": hist.axis.Variable([4.2, 7.0, 10.5, 15.0, 25.0], name="pt2"),
         "mass_axis": hist.axis.Regular(25, 2.92, 3.28, name="mass"),
         "mass_range": (2.8, 3.35),
@@ -243,7 +250,7 @@ resonance_options = {
         "name": "Y",
         "default_eta_bins": 8,
         "eta_range": (-0.8, 0.8),
-        "pt_axis": hist.axis.Variable([4.2, 6.0, 7.9, 10.3, 25.0], name="pt1"),
+        "pt1_axis": hist.axis.Variable([4.2, 6.0, 7.9, 10.3, 25.0], name="pt1"),
         "pt2_axis": hist.axis.Variable([4.2, 6.0, 7.9, 10.3, 25.0], name="pt2"),
         "mass_axis": hist.axis.Regular(25, 9.0, 9.7, name="mass"),
         "mass_range": (8.8, 9.6),
@@ -256,8 +263,8 @@ eta_min, eta_max = cfg["eta_range"]
 calibration_axes = [
     hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta1"),
     hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta2"),
-    cfg["pt_axis"],
-    cfg["pt2_axis"],
+    cfg["pt1_axis"] if args.ptBinEdges is None else hist.axis.Variable(args.ptBinEdges, name="pt1"),
+    cfg["pt2_axis"] if args.ptBinEdges is None else hist.axis.Variable(args.ptBinEdges, name="pt2"),
     cfg["mass_axis"],
 ]
 
