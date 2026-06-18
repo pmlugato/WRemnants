@@ -10,6 +10,52 @@ from wremnants.utilities import common, parsing
 from wums import logging
 
 analysis_label = common.analysis_label(os.path.basename(__file__))
+
+
+local_resonance_files = {
+    "jpsi": {
+        "data": ["/scratch/submit/cms/emanca/jpsicor_data.root"],
+        "mc": [
+            "/scratch/submit/cms/emanca/jpsicor_mc.root",
+            "/scratch/submit/cms/emanca/jcor_mc_0to8.root",
+        ],
+    },
+    "upsilon": {
+        "data": ["/scratch/submit/cms/emanca/upsilon_data.root"],
+        "mc": [
+            "/scratch/submit/cms/emanca/upsilon_0to8.root",
+            "/scratch/submit/cms/emanca/upsilon_8to13.root",
+            "/scratch/submit/cms/emanca/upsilon_13toInf.root",
+        ],
+    },
+}
+
+trigger_channels = {
+    "jpsi": [
+        {
+            "label": "dimuon20_jpsi",
+            "cut": "HLT_Dimuon20_Jpsi",
+            "mc": local_resonance_files["jpsi"]["mc"],
+            "layer_corrected": True,
+        },
+        {
+            "label": "doublemu4_jpsitrk_displaced",
+            "cut": "HLT_DoubleMu4_JpsiTrk_Displaced",
+            "mc": ["/scratch/submit/cms/emanca/BuToJpsiK_BMuonFilter_v2_BPH.root"],
+            "layer_corrected": False,
+        },
+    ],
+    "upsilon": [
+        {
+            "label": "inclusive",
+            "cut": "1.",
+            "mc": local_resonance_files["upsilon"]["mc"],
+            "layer_corrected": True,
+        },
+    ],
+}
+
+
 parser, initargs = parsing.common_parser(analysis_label)
 parser.add_argument(
     "--resonance",
@@ -17,6 +63,12 @@ parser.add_argument(
     choices=["jpsi", "upsilon"],
     help="Resonance for selection",
     default="upsilon",
+)
+parser.add_argument(
+    "--triggers",
+    nargs="+",
+    default=None,
+    help="Triggers to process for the resonance (each as a separate channel)",
 )
 parser.add_argument(
     "--etaBins",
@@ -43,6 +95,14 @@ if args.etaBins is not None and not args.fitMuonScaleAndResolution:
     raise ValueError(
         "--etaBins currently requires --fitMuonScaleAndResolution so scale "
         "uncertainties can be correlated across the requested eta groups"
+    )
+possible_triggers = [trig["label"] for trig in trigger_channels[args.resonance]]
+selected_triggers = possible_triggers if args.triggers is None else args.triggers
+if not all(trig in possible_triggers for trig in selected_triggers):
+    raise ValueError(
+        f"--triggers must contain only valid triggers for the "
+        f"selected resonance ({possible_triggers} for resonance "
+        f"{args.resonance}), or be None to use all valid triggers"
     )
 
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
@@ -136,50 +196,6 @@ _smearing_helper, smearing_uncertainty_helper = (
 ) = muon_calibration.make_pixel_multiplicity_helpers()
 
 
-local_resonance_files = {
-    "jpsi": {
-        "data": ["/scratch/submit/cms/emanca/jpsicor_data.root"],
-        "mc": [
-            "/scratch/submit/cms/emanca/jpsicor_mc.root",
-            "/scratch/submit/cms/emanca/jcor_mc_0to8.root",
-        ],
-    },
-    "upsilon": {
-        "data": ["/scratch/submit/cms/emanca/upsilon_data.root"],
-        "mc": [
-            "/scratch/submit/cms/emanca/upsilon_0to8.root",
-            "/scratch/submit/cms/emanca/upsilon_8to13.root",
-            "/scratch/submit/cms/emanca/upsilon_13toInf.root",
-        ],
-    },
-}
-
-trigger_channels = {
-    "jpsi": [
-        {
-            "label": "dimuon20_jpsi",
-            "cut": "HLT_Dimuon20_Jpsi",
-            "mc": local_resonance_files["jpsi"]["mc"],
-            "layer_corrected": True,
-        },
-        {
-            "label": "doublemu4_jpsitrk_displaced",
-            "cut": "HLT_DoubleMu4_JpsiTrk_Displaced",
-            "mc": ["/scratch/submit/cms/emanca/BuToJpsiK_BMuonFilter_v2_BPH.root"],
-            "layer_corrected": False,
-        },
-    ],
-    "upsilon": [
-        {
-            "label": "inclusive",
-            "cut": "1.",
-            "mc": local_resonance_files["upsilon"]["mc"],
-            "layer_corrected": True,
-        },
-    ],
-}
-
-
 def limited_files(files):
     if args.maxFiles is not None and args.maxFiles > 0:
         return files[: args.maxFiles]
@@ -193,6 +209,8 @@ def bool_filter(expression):
 datasets = []
 dataset_channels = {}
 for channel in trigger_channels[args.resonance]:
+    if channel["label"] not in selected_triggers:
+        continue
     for sample_type in ["data", "mc"]:
         dataset_name = f"{args.resonance}_{sample_type}_{channel['label']}"
         dataset_channels[dataset_name] = channel
