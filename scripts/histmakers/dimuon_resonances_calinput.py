@@ -1,6 +1,7 @@
 import os
 
 import hist
+import numpy as np
 import ROOT
 
 import narf
@@ -32,6 +33,31 @@ parser.add_argument(
     help=(
         "Override the number of bins for each reconstructed muon pt axis. "
         "Currently 2 and 3 are implemented for J/psi fit studies."
+    ),
+)
+parser.add_argument(
+    "--quantile4D",
+    action="store_true",
+    help=(
+        "Fill eta1, eta2, pt1, and pt2 as data-derived chained quantile-bin "
+        "indices instead of physical bins. The mass axis remains unchanged."
+    ),
+)
+parser.add_argument(
+    "--quantile5D",
+    action="store_true",
+    help=(
+        "Fill eta1, eta2, pt1, pt2, and mass as data-derived chained "
+        "quantile-bin indices instead of physical bins. This is a fit stress "
+        "test: the mass axis is a quantile index, not physical mass."
+    ),
+)
+parser.add_argument(
+    "--quantileMass",
+    action="store_true",
+    help=(
+        "Fill only mass as a data-derived quantile-bin index. The kinematic "
+        "axes remain physical bins."
     ),
 )
 parser.add_argument(
@@ -101,6 +127,10 @@ if (
     and args.resolutionPrefitUncertaintyA <= 0
 ):
     raise ValueError("--resolutionPrefitUncertaintyA must be positive")
+if sum([args.quantile4D, args.quantile5D, args.quantileMass]) > 1:
+    raise ValueError(
+        "--quantile4D, --quantile5D, and --quantileMass are mutually exclusive"
+    )
 if args.etaBins is not None and not args.fitMuonScaleAndResolution:
     raise ValueError(
         "--etaBins currently requires --fitMuonScaleAndResolution so scale "
@@ -336,6 +366,228 @@ calibration_axes = [
     mass_axis,
 ]
 
+quantile_kinematic_axes = [
+    hist.axis.Regular(eta_bins, 0.0, 1.0, name="eta1", underflow=False, overflow=False),
+    hist.axis.Regular(eta_bins, 0.0, 1.0, name="eta2", underflow=False, overflow=False),
+    hist.axis.Regular(
+        pt_axis.size, 0.0, 1.0, name="pt1", underflow=False, overflow=False
+    ),
+    hist.axis.Regular(
+        pt2_axis.size, 0.0, 1.0, name="pt2", underflow=False, overflow=False
+    ),
+]
+quantile_dummy_axis = hist.axis.Integer(
+    0,
+    1,
+    name="quantile4d_dummy",
+    underflow=False,
+    overflow=False,
+)
+quantile_5d_dummy_axis = hist.axis.Integer(
+    0,
+    1,
+    name="quantile5d_dummy",
+    underflow=False,
+    overflow=False,
+)
+quantile_mass_dummy_axis = hist.axis.Integer(
+    0,
+    1,
+    name="quantilemass_dummy",
+    underflow=False,
+    overflow=False,
+)
+quantile_calibration_axes = [
+    hist.axis.Integer(0, eta_bins, name="eta1", underflow=False, overflow=False),
+    hist.axis.Integer(0, eta_bins, name="eta2", underflow=False, overflow=False),
+    hist.axis.Integer(0, pt_axis.size, name="pt1", underflow=False, overflow=False),
+    hist.axis.Integer(0, pt2_axis.size, name="pt2", underflow=False, overflow=False),
+    mass_axis,
+]
+quantile_5d_axes = [
+    *quantile_kinematic_axes,
+    hist.axis.Regular(
+        mass_axis.size, 0.0, 1.0, name="mass", underflow=False, overflow=False
+    ),
+]
+quantile_5d_calibration_axes = [
+    hist.axis.Integer(0, eta_bins, name="eta1", underflow=False, overflow=False),
+    hist.axis.Integer(0, eta_bins, name="eta2", underflow=False, overflow=False),
+    hist.axis.Integer(0, pt_axis.size, name="pt1", underflow=False, overflow=False),
+    hist.axis.Integer(0, pt2_axis.size, name="pt2", underflow=False, overflow=False),
+    hist.axis.Integer(
+        0,
+        mass_axis.size,
+        name="mass",
+        underflow=False,
+        overflow=False,
+        metadata={
+            "physical_centers": np.asarray(mass_axis.centers, dtype=float),
+            "physical_widths": np.asarray(mass_axis.widths, dtype=float),
+            "physical_axis_name": "mass",
+        },
+    ),
+]
+quantile_mass_axis = hist.axis.Regular(
+    mass_axis.size, 0.0, 1.0, name="mass", underflow=False, overflow=False
+)
+quantile_mass_calibration_axes = [
+    hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta1"),
+    hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta2"),
+    pt_axis,
+    pt2_axis,
+    hist.axis.Integer(
+        0,
+        mass_axis.size,
+        name="mass",
+        underflow=False,
+        overflow=False,
+        metadata={
+            "physical_centers": np.asarray(mass_axis.centers, dtype=float),
+            "physical_widths": np.asarray(mass_axis.widths, dtype=float),
+            "physical_axis_name": "mass",
+        },
+    ),
+]
+quantile_helpers_by_channel = {}
+quantile_output_axes_by_channel = {}
+
+
+def quantile_mass_output_axes_from_hists(centers_hist, volume_hist):
+    centers = np.asarray(centers_hist.values()[..., 0], dtype=float)
+    widths = np.asarray(volume_hist.values(), dtype=float)
+    expected_shape = (eta_bins, eta_bins, pt_axis.size, pt2_axis.size, mass_axis.size)
+    if centers.shape != expected_shape:
+        raise RuntimeError(
+            "Unexpected conditional mass-quantile center shape "
+            f"{centers.shape}, expected {expected_shape}"
+        )
+    if widths.shape != expected_shape:
+        raise RuntimeError(
+            "Unexpected conditional mass-quantile volume shape "
+            f"{widths.shape}, expected {expected_shape}"
+        )
+    return [
+        hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta1"),
+        hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta2"),
+        pt_axis,
+        pt2_axis,
+        hist.axis.Integer(
+            0,
+            mass_axis.size,
+            name="mass",
+            underflow=False,
+            overflow=False,
+            metadata={
+                "physical_centers_nd": centers,
+                "physical_widths_nd": widths,
+                "physical_axis_names": ["eta1", "eta2", "pt1", "pt2", "mass"],
+                "physical_axis_name": "mass",
+                "quantile_volume_corrected": True,
+            },
+        ),
+    ]
+
+
+def calibration_axes_and_cols(df, dataset, channel, cols):
+    if not (args.quantile4D or args.quantile5D or args.quantileMass):
+        return df, calibration_axes, [
+            cols["plus_eta"],
+            cols["minus_eta"],
+            cols["plus_pt"],
+            cols["minus_pt"],
+            cols["mass"],
+        ]
+
+    channel_label = channel["label"]
+    if args.quantile5D:
+        quantile_label = "calib5d"
+    elif args.quantileMass:
+        quantile_label = "calibmass"
+    else:
+        quantile_label = "calib4d"
+    dummy_col = (
+        "quantile5d_dummy"
+        if args.quantile5D
+        else "quantilemass_dummy"
+        if args.quantileMass
+        else "quantile4d_dummy"
+    )
+    dummy_axis = (
+        quantile_5d_dummy_axis
+        if args.quantile5D
+        else quantile_mass_dummy_axis
+        if args.quantileMass
+        else quantile_dummy_axis
+    )
+    df = df.DefinePerSample(dummy_col, "0")
+    quantile_input_cols = [
+        dummy_col,
+        cols["plus_eta"],
+        cols["minus_eta"],
+        cols["plus_pt"],
+        cols["minus_pt"],
+    ]
+    quantile_axes = quantile_kinematic_axes
+    output_axes = quantile_calibration_axes
+    if args.quantile5D:
+        quantile_input_cols.append(cols["mass"])
+        quantile_axes = quantile_5d_axes
+        output_axes = quantile_5d_calibration_axes
+    elif args.quantileMass:
+        quantile_input_cols = [
+            cols["plus_eta"],
+            cols["minus_eta"],
+            cols["plus_pt"],
+            cols["minus_pt"],
+            cols["mass"],
+        ]
+        quantile_axes = [quantile_mass_axis]
+        output_axes = quantile_mass_calibration_axes
+    quantile_helpers = quantile_helpers_by_channel.get(channel_label)
+    stored_output_axes = quantile_output_axes_by_channel.get(channel_label)
+
+    if dataset.is_data:
+        quantile_helpers, centers_hist, volume_hist = (
+            narf.histutils.build_quantile_hists(
+                df,
+                quantile_input_cols,
+                condaxes=calibration_axes[:-1] if args.quantileMass else [dummy_axis],
+                quantaxes=quantile_axes,
+            )
+        )
+        quantile_helpers_by_channel[channel_label] = quantile_helpers
+        if args.quantileMass:
+            output_axes = quantile_mass_output_axes_from_hists(
+                centers_hist, volume_hist
+            )
+            quantile_output_axes_by_channel[channel_label] = output_axes
+    elif quantile_helpers is None:
+        raise RuntimeError(
+            f"Missing data-derived quantile helpers for channel {channel_label}. "
+            "Datasets must be processed with data before MC."
+        )
+    elif stored_output_axes is not None:
+        output_axes = stored_output_axes
+
+    df, _quantile_axes, quantile_cols = narf.histutils.define_quantiles(
+        df,
+        cols=quantile_input_cols,
+        quantile_hists=quantile_helpers,
+        label=quantile_label,
+    )
+    if args.quantile5D:
+        return df, output_axes, quantile_cols[1:]
+    if args.quantileMass:
+        return df, output_axes, [
+            cols["plus_eta"],
+            cols["minus_eta"],
+            cols["plus_pt"],
+            cols["minus_pt"],
+            quantile_cols[-1],
+        ]
+    return df, output_axes, [*quantile_cols[1:], cols["mass"]]
+
 
 def reco_columns(channel):
     suffix = "cor" if channel["layer_corrected"] else ""
@@ -394,13 +646,6 @@ def build_graph(df, dataset):
     results = []
     channel = dataset_channels[dataset.name]
     reco_cols = reco_columns(channel)
-    calibration_cols = [
-        reco_cols["plus_eta"],
-        reco_cols["minus_eta"],
-        reco_cols["plus_pt"],
-        reco_cols["minus_pt"],
-        reco_cols["mass"],
-    ]
 
     df = df.DefinePerSample("weight", "1.0")
     weightsum = df.SumAndCount("weight")
@@ -413,6 +658,13 @@ def build_graph(df, dataset):
             "Jpsigen_mass > 0.0 && Muplusgen_pt > 0.0 && Muminusgen_pt > 0.0"
         )
     df = df.Filter(bool_filter(channel["cut"]))
+
+    df, hist_axes, calibration_cols = calibration_axes_and_cols(
+        df,
+        dataset,
+        channel,
+        reco_cols,
+    )
 
     pixel_multiplicity_cols = [
         "pixel_triggerCat",
@@ -449,7 +701,7 @@ def build_graph(df, dataset):
     results.append(
         df.HistoBoost(
             hist_name,
-            calibration_axes,
+            hist_axes,
             [*calibration_cols, "weight"],
         )
     )
@@ -521,7 +773,7 @@ def build_graph(df, dataset):
         results.append(
             df.HistoBoost(
                 "nominal_muonScaleSyst_responseWeights",
-                calibration_axes,
+                hist_axes,
                 [*calibration_cols, "nominal_muonScaleSyst_responseWeights_tensor"],
                 tensor_axes=data_jpsi_crctn_unc_helper.tensor_axes,
                 storage=hist.storage.Double(),
@@ -530,7 +782,7 @@ def build_graph(df, dataset):
 
         df = muon_calibration.add_resolution_uncertainty(
             df,
-            calibration_axes,
+            hist_axes,
             results,
             calibration_cols,
             smearing_uncertainty_helper,
@@ -547,7 +799,7 @@ def build_graph(df, dataset):
         results.append(
             df.HistoBoost(
                 "nominal_pixelMultiplicitySyst",
-                calibration_axes,
+                hist_axes,
                 [*calibration_cols, "nominal_pixelMultiplicitySyst_tensor"],
                 tensor_axes=pixel_multiplicity_uncertainty_helper.tensor_axes,
                 storage=hist.storage.Double(),
@@ -563,7 +815,7 @@ def build_graph(df, dataset):
             results.append(
                 df.HistoBoost(
                     "nominal_pixelMultiplicityStat",
-                    calibration_axes,
+                    hist_axes,
                     [*calibration_cols, "nominal_pixelMultiplicityStat_tensor"],
                     tensor_axes=pixel_multiplicity_uncertainty_helper_stat.tensor_axes,
                     storage=hist.storage.Double(),
@@ -581,6 +833,12 @@ if args.etaBins is not None:
     name_append.append(f"etaBins_{args.etaBins}")
 if args.ptBins is not None:
     name_append.append(f"ptBins_{args.ptBins}")
+if args.quantile4D:
+    name_append.append("quantile4D")
+if args.quantile5D:
+    name_append.append("quantile5D")
+if args.quantileMass:
+    name_append.append("quantileMass")
 if args.deltaPhiSign != "all":
     name_append.append(f"deltaPhi_{args.deltaPhiSign}")
 write_analysis_output(resultdict, fout, args, name_append=name_append)
