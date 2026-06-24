@@ -429,8 +429,15 @@ vertex_helper = vertex.make_vertex_helper(era=era)
 
 calib_filepaths = common.calib_filepaths
 closure_filepaths = common.closure_filepaths
-diff_weights_helper = (
+scale_diff_weights_helper = (
     ROOT.wrem.SplinesDifferentialWeightsHelper(calib_filepaths["tflite_file"])
+    if (args.muonScaleVariation == "smearingWeightsSplines" or args.validationHists)
+    else None
+)
+resolution_diff_weights_helper = (
+    ROOT.wrem.SplinesDifferentialWeightsHelper(
+        calib_filepaths["tflite_file_nosmearing"]
+    )
     if (args.muonScaleVariation == "smearingWeightsSplines" or args.validationHists)
     else None
 )
@@ -1352,10 +1359,19 @@ def build_graph(df, dataset):
                     f"{reco_sel_GF}_genCharge",
                 ]
                 response_weight_col = f"{reco_sel_GF}_response_weight"
-                if diff_weights_helper:
+                resolution_response_weight_col = (
+                    f"{reco_sel_GF}_resolution_response_weight"
+                )
+                if scale_diff_weights_helper:
                     df = df.Define(
                         response_weight_col,
-                        diff_weights_helper,
+                        scale_diff_weights_helper,
+                        [*input_kinematics],
+                    )
+                if resolution_diff_weights_helper:
+                    df = df.Define(
+                        resolution_response_weight_col,
+                        resolution_diff_weights_helper,
                         [*input_kinematics],
                     )
 
@@ -1381,7 +1397,13 @@ def build_graph(df, dataset):
                 results.append(muonScaleSyst_responseWeights)
 
                 df = muon_calibration.add_resolution_uncertainty(
-                    df, axes, results, cols, smearing_uncertainty_helper, reco_sel_GF
+                    df,
+                    axes,
+                    results,
+                    cols,
+                    smearing_uncertainty_helper,
+                    reco_sel_GF,
+                    response_weight_col=resolution_response_weight_col,
                 )
 
                 # add pixel multiplicity uncertainties
