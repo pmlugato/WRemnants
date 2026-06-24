@@ -24,12 +24,83 @@ parser.add_argument(
     default=None,
     help="Override the number of bins for each reconstructed muon eta axis",
 )
+parser.add_argument(
+    "--ptBins",
+    type=int,
+    choices=[2, 3],
+    default=None,
+    help=(
+        "Override the number of bins for each reconstructed muon pt axis. "
+        "Currently 2 and 3 are implemented for J/psi fit studies."
+    ),
+)
+parser.add_argument(
+    "--pixelHitSelection",
+    choices=["all", "bothPixelHits", "anyMissingPixelHits"],
+    default="all",
+    help=(
+        "Optional selection on the number of valid pixel hits in the track refit. "
+        "Use bothPixelHits for both muons passing --minValidPixelHits; "
+        "use anyMissingPixelHits for the complementary category."
+    ),
+)
+parser.add_argument(
+    "--minValidPixelHits",
+    type=int,
+    default=1,
+    help=(
+        "Minimum valid pixel hits required per muon when "
+        "--pixelHitSelection bothPixelHits is used."
+    ),
+)
+parser.add_argument(
+    "--deltaPhiSign",
+    choices=["all", "positive", "negative"],
+    default="all",
+    help=(
+        "Optional selection on the signed dimuon azimuthal separation, defined "
+        "as TVector2::Phi_mpi_pi(phi_plus - phi_minus). Use negative for "
+        "DeltaPhi < 0 and positive for DeltaPhi > 0."
+    ),
+)
+parser.add_argument(
+    "--resolutionPrefitUncertainty",
+    type=float,
+    default=3.0,
+    help=(
+        "Relative prefit uncertainty assigned to each fitted muon-resolution "
+        "parameter when --fitMuonScaleAndResolution is used."
+    ),
+)
+parser.add_argument(
+    "--resolutionPrefitUncertaintyA",
+    type=float,
+    default=None,
+    help=(
+        "Override the relative prefit uncertainty for only the fitted "
+        "muon-resolution a parameter. If omitted, --resolutionPrefitUncertainty "
+        "is used for a, b, c, and d."
+    ),
+)
 parser = parsing.set_parser_default(parser, "theoryCorr", [])
+parser = parsing.set_parser_default(parser, "scale_A", 5.0)
+parser = parsing.set_parser_default(parser, "scale_e", 5.0)
 
 args = parser.parse_args()
 
 if args.etaBins is not None and args.etaBins <= 0:
     raise ValueError("--etaBins must be a positive integer")
+if args.ptBins is not None and args.ptBins <= 0:
+    raise ValueError("--ptBins must be a positive integer")
+if args.minValidPixelHits < 1:
+    raise ValueError("--minValidPixelHits must be at least 1")
+if args.resolutionPrefitUncertainty <= 0:
+    raise ValueError("--resolutionPrefitUncertainty must be positive")
+if (
+    args.resolutionPrefitUncertaintyA is not None
+    and args.resolutionPrefitUncertaintyA <= 0
+):
+    raise ValueError("--resolutionPrefitUncertaintyA must be positive")
 if args.etaBins is not None and not args.fitMuonScaleAndResolution:
     raise ValueError(
         "--etaBins currently requires --fitMuonScaleAndResolution so scale "
@@ -45,8 +116,15 @@ if args.muonScaleVariation not in ["onnxReweight", "smearingWeightsSplines"]:
     )
 
 calib_filepaths = common.calib_filepaths
-diff_weights_helper = (
+scale_diff_weights_helper = (
     ROOT.wrem.SplinesDifferentialWeightsHelper(calib_filepaths["tflite_file"])
+    if args.muonScaleVariation == "smearingWeightsSplines"
+    else None
+)
+resolution_diff_weights_helper = (
+    ROOT.wrem.SplinesDifferentialWeightsHelper(
+        calib_filepaths["tflite_file_nosmearing"]
+    )
     if args.muonScaleVariation == "smearingWeightsSplines"
     else None
 )
@@ -83,7 +161,13 @@ _smearing_helper, smearing_uncertainty_helper = (
         parameter_variations=True,
         fit_muon_resolution=args.fitMuonScaleAndResolution,
         variation_eta_bins=args.etaBins,
-        resolution_prefit_uncertainties=[0.3, 0.3, 0.3, 0.3],
+        resolution_prefit_uncertainties=[
+            args.resolutionPrefitUncertaintyA
+            or args.resolutionPrefitUncertainty,
+            args.resolutionPrefitUncertainty,
+            args.resolutionPrefitUncertainty,
+            args.resolutionPrefitUncertainty,
+        ],
         resolution_prefit_uncertainties_mode="relative",
     )
 )
@@ -177,7 +261,37 @@ resonance_options = {
         "eta_range": (-2.4, 2.4),
         "pt_axis": hist.axis.Variable([4.2, 7.0, 10.5, 15.0, 25.0], name="pt1"),
         "pt2_axis": hist.axis.Variable([4.2, 7.0, 10.5, 15.0, 25.0], name="pt2"),
-        "mass_axis": hist.axis.Regular(25, 2.92, 3.28, name="mass"),
+        "mass_axis": hist.axis.Variable(
+            [
+                2.92,
+                2.965,
+                3.000,
+                3.030,
+                3.050,
+                3.065,
+                3.077,
+                3.087,
+                3.091,
+                3.095,
+                3.101,
+                3.106,
+                3.111,
+                3.116,
+                3.121,
+                3.126,
+                3.132,
+                3.139,
+                3.148,
+                3.159,
+                3.173,
+                3.190,
+                3.210,
+                3.233,
+                3.258,
+                3.28,
+            ],
+            name="mass",
+        ),
         "mass_range": (2.8, 3.35),
     },
     "upsilon": {
@@ -194,12 +308,32 @@ resonance_options = {
 cfg = resonance_options[args.resonance]
 eta_bins = args.etaBins or cfg["default_eta_bins"]
 eta_min, eta_max = cfg["eta_range"]
+mass_axis = cfg["mass_axis"]
+
+if args.ptBins == 2:
+    if args.resonance == "jpsi":
+        pt_axis = hist.axis.Variable([4.2, 10.5, 25.0], name="pt1")
+        pt2_axis = hist.axis.Variable([4.2, 10.5, 25.0], name="pt2")
+    else:
+        pt_axis = hist.axis.Variable([4.2, 7.9, 25.0], name="pt1")
+        pt2_axis = hist.axis.Variable([4.2, 7.9, 25.0], name="pt2")
+elif args.ptBins == 3:
+    if args.resonance == "jpsi":
+        pt_axis = hist.axis.Variable([4.2, 7.0, 10.5, 25.0], name="pt1")
+        pt2_axis = hist.axis.Variable([4.2, 7.0, 10.5, 25.0], name="pt2")
+    else:
+        pt_axis = hist.axis.Variable([4.2, 7.9, 10.3, 25.0], name="pt1")
+        pt2_axis = hist.axis.Variable([4.2, 7.9, 10.3, 25.0], name="pt2")
+else:
+    pt_axis = cfg["pt_axis"]
+    pt2_axis = cfg["pt2_axis"]
+
 calibration_axes = [
     hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta1"),
     hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta2"),
-    cfg["pt_axis"],
-    cfg["pt2_axis"],
-    cfg["mass_axis"],
+    pt_axis,
+    pt2_axis,
+    mass_axis,
 ]
 
 
@@ -227,6 +361,33 @@ def reco_selection(cols):
     )
 
 
+def pixel_hit_selection():
+    if args.pixelHitSelection == "all":
+        return "1."
+    if args.pixelHitSelection == "bothPixelHits":
+        return (
+            f"Muplus_nvalidpixel >= {args.minValidPixelHits} && "
+            f"Muminus_nvalidpixel >= {args.minValidPixelHits}"
+        )
+    if args.pixelHitSelection == "anyMissingPixelHits":
+        return (
+            f"Muplus_nvalidpixel < {args.minValidPixelHits} || "
+            f"Muminus_nvalidpixel < {args.minValidPixelHits}"
+        )
+    raise ValueError(f"Unsupported --pixelHitSelection {args.pixelHitSelection}")
+
+
+def delta_phi_selection(cols):
+    if args.deltaPhiSign == "all":
+        return "1."
+
+    comparison = "<" if args.deltaPhiSign == "negative" else ">"
+    return (
+        f"TVector2::Phi_mpi_pi({cols['plus_phi']} - {cols['minus_phi']}) "
+        f"{comparison} 0.0"
+    )
+
+
 def build_graph(df, dataset):
     logger.info(f"build graph for dataset: {dataset.name}")
 
@@ -245,24 +406,24 @@ def build_graph(df, dataset):
     weightsum = df.SumAndCount("weight")
 
     df = df.Filter(reco_selection(reco_cols))
+    df = df.Filter(bool_filter(pixel_hit_selection()))
+    df = df.Filter(bool_filter(delta_phi_selection(reco_cols)))
     if not dataset.is_data:
         df = df.Filter(
             "Jpsigen_mass > 0.0 && Muplusgen_pt > 0.0 && Muminusgen_pt > 0.0"
         )
     df = df.Filter(bool_filter(channel["cut"]))
 
-    hist_name = f"{cfg['name']}_{'data' if dataset.is_data else 'mc'}"
-    results.append(
-        df.HistoBoost(
-            hist_name,
-            calibration_axes,
-            [*calibration_cols, "weight"],
-        )
-    )
-
+    pixel_multiplicity_cols = [
+        "pixel_triggerCat",
+        "pixel_eta",
+        "pixel_pt",
+        "pixel_charge",
+        "pixel_nvalidpixel",
+    ]
     if not dataset.is_data:
         df = (
-            df.Define("nominal_weight", "weight")
+            df
             # The calInput ntuples have no per-leg trigger matching; both selected
             # paths are dimuon triggers, so both candidates use the triggering map.
             .DefinePerSample(
@@ -282,6 +443,20 @@ def build_graph(df, dataset):
                 "pixel_nvalidpixel",
                 "ROOT::VecOps::RVec<int>{int(Muplus_nvalidpixel), int(Muminus_nvalidpixel)}",
             )
+        )
+
+    hist_name = f"{cfg['name']}_{'data' if dataset.is_data else 'mc'}"
+    results.append(
+        df.HistoBoost(
+            hist_name,
+            calibration_axes,
+            [*calibration_cols, "weight"],
+        )
+    )
+
+    if not dataset.is_data:
+        df = (
+            df.Define("nominal_weight", "weight")
             .Define(
                 "scale_recoPt",
                 f"ROOT::VecOps::RVec<float>{{float({reco_cols['plus_pt']}), float({reco_cols['minus_pt']})}}",
@@ -311,14 +486,6 @@ def build_graph(df, dataset):
             .Define("scale_muon_source", "ROOT::VecOps::RVec<int>{443, 443}")
         )
 
-        pixel_multiplicity_cols = [
-            "pixel_triggerCat",
-            "pixel_eta",
-            "pixel_pt",
-            "pixel_charge",
-            "pixel_nvalidpixel",
-        ]
-
         input_kinematics = [
             "scale_recoPt",
             "scale_recoEta",
@@ -327,10 +494,16 @@ def build_graph(df, dataset):
             "scale_genEta",
             "scale_genCharge",
         ]
-        if diff_weights_helper is not None:
+        if scale_diff_weights_helper is not None:
             df = df.Define(
                 "scale_response_weight",
-                diff_weights_helper,
+                scale_diff_weights_helper,
+                input_kinematics,
+            )
+        if resolution_diff_weights_helper is not None:
+            df = df.Define(
+                "scale_resolution_response_weight",
+                resolution_diff_weights_helper,
                 input_kinematics,
             )
 
@@ -363,6 +536,7 @@ def build_graph(df, dataset):
             smearing_uncertainty_helper,
             "scale",
             storage_type=hist.storage.Double(),
+            response_weight_col="scale_resolution_response_weight",
         )
 
         df = df.Define(
@@ -405,4 +579,8 @@ fout = f"{os.path.basename(__file__).replace('py', 'hdf5')}"
 name_append = [args.resonance, args.era]
 if args.etaBins is not None:
     name_append.append(f"etaBins_{args.etaBins}")
+if args.ptBins is not None:
+    name_append.append(f"ptBins_{args.ptBins}")
+if args.deltaPhiSign != "all":
+    name_append.append(f"deltaPhi_{args.deltaPhiSign}")
 write_analysis_output(resultdict, fout, args, name_append=name_append)
