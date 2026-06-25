@@ -67,15 +67,6 @@ const double MuonScarekitCB::pi = 3.14159265358979;
 const double MuonScarekitCB::sqrtPiOver2 = sqrt(MuonScarekitCB::pi / 2.0);
 const double MuonScarekitCB::sqrt2 = sqrt(2.0);
 
-namespace muonscarekit_step1_impl {
-TFile *tf_scale =
-    TFile::Open("wremnants-data/data/lowPU/muonscarekit/step1_C.root", "READ");
-TH2D *h_M_DATA = (TH2D *)tf_scale->Get("M_DATA");
-TH2D *h_A_DATA = (TH2D *)tf_scale->Get("A_DATA");
-TH2D *h_M_SIG = (TH2D *)tf_scale->Get("M_SIG");
-TH2D *h_A_SIG = (TH2D *)tf_scale->Get("A_SIG");
-} // namespace muonscarekit_step1_impl
-
 namespace muonscarekit_impl {
 TFile *tf_scale = TFile::Open(
     "wremnants-data/data/lowPU/muonscarekit/step3_correction.root", "READ");
@@ -103,85 +94,6 @@ Vec_f applyMuonScarekitData(Vec_f pt, Vec_f eta, Vec_f phi, Vec_i charge) {
     double M = h_M_DATA->GetBinContent(h_M_DATA->FindBin(eta[i], phi[i]));
     double A = h_A_DATA->GetBinContent(h_A_DATA->FindBin(eta[i], phi[i]));
     res[i] = static_cast<float>(1.0 / (M / pt[i] + charge[i] * A));
-  }
-  return res;
-}
-
-Vec_f applyMuonScarekitMC_scaleOnly(Vec_f pt, Vec_f eta, Vec_f phi,
-                                    Vec_i charge) {
-  using namespace muonscarekit_impl;
-  unsigned int size = pt.size();
-  Vec_f res(size);
-  for (unsigned int i = 0; i < size; ++i) {
-    double M = h_M_SIG->GetBinContent(h_M_SIG->FindBin(eta[i], phi[i]));
-    double A = h_A_SIG->GetBinContent(h_A_SIG->FindBin(eta[i], phi[i]));
-    res[i] = static_cast<float>(1.0 / (M / pt[i] + charge[i] * A));
-  }
-  return res;
-}
-
-Vec_f applyMuonScarekitStep1Data(Vec_f pt, Vec_f eta, Vec_f phi, Vec_i charge) {
-  using namespace muonscarekit_step1_impl;
-  unsigned int size = pt.size();
-  Vec_f res(size);
-  for (unsigned int i = 0; i < size; ++i) {
-    double M = h_M_DATA->GetBinContent(h_M_DATA->FindBin(eta[i], phi[i]));
-    double A = h_A_DATA->GetBinContent(h_A_DATA->FindBin(eta[i], phi[i]));
-    res[i] = static_cast<float>(1.0 / (M / pt[i] + charge[i] * A));
-  }
-  return res;
-}
-
-Vec_f applyMuonScarekitStep1MC(Vec_f pt, Vec_f eta, Vec_f phi, Vec_i charge) {
-  using namespace muonscarekit_step1_impl;
-  unsigned int size = pt.size();
-  Vec_f res(size);
-  for (unsigned int i = 0; i < size; ++i) {
-    double M = h_M_SIG->GetBinContent(h_M_SIG->FindBin(eta[i], phi[i]));
-    double A = h_A_SIG->GetBinContent(h_A_SIG->FindBin(eta[i], phi[i]));
-    res[i] = static_cast<float>(1.0 / (M / pt[i] + charge[i] * A));
-  }
-  return res;
-}
-
-Vec_f applyMuonScarekitMC_noKFactor(Vec_f pt, Vec_f eta, Vec_f phi,
-                                    Vec_i charge, Vec_i nTrackerLayers) {
-  using namespace muonscarekit_impl;
-  unsigned int size = pt.size();
-  Vec_f res(size);
-
-  for (unsigned int i = 0; i < size; ++i) {
-    double M = h_M_SIG->GetBinContent(h_M_SIG->FindBin(eta[i], phi[i]));
-    double A = h_A_SIG->GetBinContent(h_A_SIG->FindBin(eta[i], phi[i]));
-    double pt_scale = 1.0 / (M / pt[i] + charge[i] * A);
-
-    Int_t etabin = h_cb->GetXaxis()->FindBin(fabs((double)eta[i]));
-    Int_t nlbin = h_cb->GetYaxis()->FindBin((double)nTrackerLayers[i]);
-
-    double mean_cb = h_cb->GetBinContent(etabin, nlbin, 1);
-    double sig_cb = h_cb->GetBinContent(etabin, nlbin, 2);
-    double n_cb = h_cb->GetBinContent(etabin, nlbin, 3);
-    double alpha_cb = h_cb->GetBinContent(etabin, nlbin, 4);
-
-    double a_poly = h_poly->GetBinContent(etabin, nlbin, 1);
-    double b_poly = h_poly->GetBinContent(etabin, nlbin, 2);
-    double c_poly = h_poly->GetBinContent(etabin, nlbin, 3);
-    double sigma_poly =
-        a_poly + b_poly * pt_scale + c_poly * pt_scale * pt_scale;
-    if (sigma_poly < 0.0)
-      sigma_poly = 0.0;
-
-    if (sigma_poly == 0.0 || n_cb <= 1.0 + 1e-6 || sig_cb <= 0.0 ||
-        alpha_cb <= 0.0) {
-      res[i] = static_cast<float>(pt_scale);
-      continue;
-    }
-
-    MuonScarekitCB cb(mean_cb, sig_cb, alpha_cb, n_cb);
-    double rndm_cb = cb.invcdf(gRandom->Rndm());
-
-    // step123: scale + smearing model, but no k-factor rescaling (k_mc = 1)
-    res[i] = static_cast<float>(pt_scale * (1.0 + sigma_poly * rndm_cb));
   }
   return res;
 }

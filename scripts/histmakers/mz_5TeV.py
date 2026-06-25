@@ -12,14 +12,6 @@ parser.add_argument(
     choices=["none", "rochester", "scarekit"],
     help="Muon momentum correction to apply",
 )
-parser.add_argument(
-    "--corrStep",
-    default="1234",
-    choices=["0", "1", "123", "1234"],
-    help="Scarekit calibration stage (only with --muonCorr scarekit): "
-    "0 = no correction, 1 = scale only, 123 = scale+smearing, 1234 = full",
-)
-
 args = parser.parse_args()
 
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
@@ -182,41 +174,16 @@ def build_graph(df, dataset):
                 "wrem::applyRochesterMC(Muon_pt, Muon_eta, Muon_phi, ROOT::VecOps::RVec<float>(Muon_charge.begin(), Muon_charge.end()), Muon_genPartIdx, GenPart_pt, Muon_nTrackerLayers)",
             )
     elif args.muonCorr == "scarekit":
-        if args.corrStep == "0":
-            df = df.Alias("Muon_pt_corr", "Muon_pt")
-        elif args.corrStep == "1":
-            if dataset.is_data:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitStep1Data(Muon_pt, Muon_eta, Muon_phi, Muon_charge)",
-                )
-            else:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitStep1MC(Muon_pt, Muon_eta, Muon_phi, Muon_charge)",
-                )
-        elif args.corrStep == "123":
-            if dataset.is_data:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitData(Muon_pt, Muon_eta, Muon_phi, Muon_charge)",
-                )
-            else:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitMC_scaleOnly(Muon_pt, Muon_eta, Muon_phi, Muon_charge)",
-                )
-        else:  # "1234"
-            if dataset.is_data:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitData(Muon_pt, Muon_eta, Muon_phi, Muon_charge)",
-                )
-            else:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitMC(Muon_pt, Muon_eta, Muon_phi, Muon_charge, Muon_nTrackerLayers, run, luminosityBlock)",
-                )
+        if dataset.is_data:
+            df = df.Define(
+                "Muon_pt_corr",
+                "wrem::applyMuonScarekitData(Muon_pt, Muon_eta, Muon_phi, Muon_charge)",
+            )
+        else:
+            df = df.Define(
+                "Muon_pt_corr",
+                "wrem::applyMuonScarekitMC(Muon_pt, Muon_eta, Muon_phi, Muon_charge, Muon_nTrackerLayers, run, luminosityBlock)",
+            )
     else:  # "none"
         df = df.Alias("Muon_pt_corr", "Muon_pt")
 
