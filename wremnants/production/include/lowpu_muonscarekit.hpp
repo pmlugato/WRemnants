@@ -103,21 +103,19 @@ Vec_f applyMuonScarekitData(Vec_f pt, Vec_f eta, Vec_f phi, Vec_i charge) {
 class MuonScarekitMCHelper {
 
 public:
-  MuonScarekitMCHelper(const std::size_t seed = 0,
-                       const unsigned int nslots = 1) {
-    const unsigned int nslotsactual = std::max(nslots, 1U);
-    rng_.reserve(nslotsactual);
-    auto const hash = std::hash<std::string>()("MuonScarekitMCHelper");
-    for (std::size_t islot = 0; islot < nslotsactual; ++islot) {
-      std::seed_seq seq{hash, seed, islot};
-      rng_.emplace_back(seq);
-    }
-  }
+  MuonScarekitMCHelper(const std::size_t seed = 0)
+      : hash_(std::hash<std::string>()("MuonScarekitMCHelper")), seed_(seed) {}
 
-  Vec_f operator()(const unsigned int slot, Vec_f pt, Vec_f eta, Vec_f phi,
-                   Vec_i charge, Vec_i nTrackerLayers) {
+  // Per-event seeding (run, lumi, event): reproducible across runs and thread
+  // counts, and thread-safe (RNG is local to each call). Mirrors
+  // wrem::SmearingHelper in muon_calibration.hpp.
+  Vec_f operator()(const unsigned int run, const unsigned int lumi,
+                   const unsigned long long event, Vec_f pt, Vec_f eta,
+                   Vec_f phi, Vec_i charge, Vec_i nTrackerLayers) const {
     using namespace muonscarekit_impl;
-    auto &rngslot = rng_[slot];
+    std::seed_seq seq{hash_, seed_, std::size_t(run), std::size_t(lumi),
+                      std::size_t(event)};
+    std::mt19937 rng(seq);
     std::uniform_real_distribution<double> unif(0., 1.);
 
     unsigned int size = pt.size();
@@ -158,7 +156,7 @@ public:
       }
 
       MuonScarekitCB cb(mean_cb, sig_cb, alpha_cb, n_cb);
-      double rndm_cb = cb.invcdf(unif(rngslot));
+      double rndm_cb = cb.invcdf(unif(rng));
 
       res[i] =
           static_cast<float>(pt_scale * (1.0 + k_mc * sigma_poly * rndm_cb));
@@ -167,7 +165,8 @@ public:
   }
 
 private:
-  std::vector<std::mt19937> rng_;
+  const std::size_t hash_;
+  std::size_t seed_;
 };
 
 } // namespace wrem

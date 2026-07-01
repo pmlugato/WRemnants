@@ -36,9 +36,7 @@ if args.muonCorr == "rochester":
 elif args.muonCorr == "scarekit":
     narf.clingutils.Load("libROOTDataFrame")
     narf.clingutils.Declare('#include "lowpu_muonscarekit.hpp"')
-    scarekit_mc_helper = ROOT.wrem.MuonScarekitMCHelper(
-        args.randomSeedForToys, ROOT.ROOT.GetThreadPoolSize()
-    )
+    scarekit_mc_helper = ROOT.wrem.MuonScarekitMCHelper(args.randomSeedForToys)
 
 datasets = getDatasets(
     maxFiles=args.maxFiles,
@@ -188,7 +186,9 @@ def build_graph(df, dataset):
                 "Muon_pt_corr",
                 scarekit_mc_helper,
                 [
-                    "rdfslot_",
+                    "run",
+                    "luminosityBlock",
+                    "event",
                     "Muon_pt",
                     "Muon_eta",
                     "Muon_phi",
