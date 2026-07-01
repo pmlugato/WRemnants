@@ -6,8 +6,10 @@
 #include <TH2D.h>
 #include <TH3D.h>
 #include <TMath.h>
-#include <TRandom.h>
 #include <boost/math/special_functions/erf.hpp>
+#include <random>
+#include <string>
+#include <vector>
 
 namespace wrem {
 
@@ -98,54 +100,75 @@ Vec_f applyMuonScarekitData(Vec_f pt, Vec_f eta, Vec_f phi, Vec_i charge) {
   return res;
 }
 
-Vec_f applyMuonScarekitMC(Vec_f pt, Vec_f eta, Vec_f phi, Vec_i charge,
-                          Vec_i nTrackerLayers, unsigned int run,
-                          unsigned int lumi) {
-  using namespace muonscarekit_impl;
-  unsigned int size = pt.size();
-  Vec_f res(size);
+class MuonScarekitMCHelper {
 
-  for (unsigned int i = 0; i < size; ++i) {
-    double M = h_M_SIG->GetBinContent(h_M_SIG->FindBin(eta[i], phi[i]));
-    double A = h_A_SIG->GetBinContent(h_A_SIG->FindBin(eta[i], phi[i]));
-    double pt_scale = 1.0 / (M / pt[i] + charge[i] * A);
-
-    Int_t etabin = h_cb->GetXaxis()->FindBin(fabs((double)eta[i]));
-    Int_t nlbin = h_cb->GetYaxis()->FindBin((double)nTrackerLayers[i]);
-
-    double mean_cb = h_cb->GetBinContent(etabin, nlbin, 1);
-    double sig_cb = h_cb->GetBinContent(etabin, nlbin, 2);
-    double n_cb = h_cb->GetBinContent(etabin, nlbin, 3);
-    double alpha_cb = h_cb->GetBinContent(etabin, nlbin, 4);
-
-    double a_poly = h_poly->GetBinContent(etabin, nlbin, 1);
-    double b_poly = h_poly->GetBinContent(etabin, nlbin, 2);
-    double c_poly = h_poly->GetBinContent(etabin, nlbin, 3);
-    double sigma_poly =
-        a_poly + b_poly * pt_scale + c_poly * pt_scale * pt_scale;
-    if (sigma_poly < 0.0)
-      sigma_poly = 0.0;
-
-    Int_t absetabin = h_k_data->GetXaxis()->FindBin(fabs((double)eta[i]));
-    double k_data_v = h_k_data->GetBinContent(absetabin, 3);
-    double k_sig_v = h_k_sig->GetBinContent(absetabin, 3);
-    double k_mc = (k_sig_v < k_data_v)
-                      ? sqrt(k_data_v * k_data_v - k_sig_v * k_sig_v)
-                      : 0.0;
-
-    if (k_mc == 0.0 || sigma_poly == 0.0 || n_cb <= 1.0 + 1e-6 ||
-        sig_cb <= 0.0 || alpha_cb <= 0.0) {
-      res[i] = static_cast<float>(pt_scale);
-      continue;
+public:
+  MuonScarekitMCHelper(const std::size_t seed = 0,
+                       const unsigned int nslots = 1) {
+    const unsigned int nslotsactual = std::max(nslots, 1U);
+    rng_.reserve(nslotsactual);
+    auto const hash = std::hash<std::string>()("MuonScarekitMCHelper");
+    for (std::size_t islot = 0; islot < nslotsactual; ++islot) {
+      std::seed_seq seq{hash, seed, islot};
+      rng_.emplace_back(seq);
     }
-
-    MuonScarekitCB cb(mean_cb, sig_cb, alpha_cb, n_cb);
-    double rndm_cb = cb.invcdf(gRandom->Rndm());
-
-    res[i] = static_cast<float>(pt_scale * (1.0 + k_mc * sigma_poly * rndm_cb));
   }
-  return res;
-}
+
+  Vec_f operator()(const unsigned int slot, Vec_f pt, Vec_f eta, Vec_f phi,
+                   Vec_i charge, Vec_i nTrackerLayers) {
+    using namespace muonscarekit_impl;
+    auto &rngslot = rng_[slot];
+    std::uniform_real_distribution<double> unif(0., 1.);
+
+    unsigned int size = pt.size();
+    Vec_f res(size);
+
+    for (unsigned int i = 0; i < size; ++i) {
+      double M = h_M_SIG->GetBinContent(h_M_SIG->FindBin(eta[i], phi[i]));
+      double A = h_A_SIG->GetBinContent(h_A_SIG->FindBin(eta[i], phi[i]));
+      double pt_scale = 1.0 / (M / pt[i] + charge[i] * A);
+
+      Int_t etabin = h_cb->GetXaxis()->FindBin(fabs((double)eta[i]));
+      Int_t nlbin = h_cb->GetYaxis()->FindBin((double)nTrackerLayers[i]);
+
+      double mean_cb = h_cb->GetBinContent(etabin, nlbin, 1);
+      double sig_cb = h_cb->GetBinContent(etabin, nlbin, 2);
+      double n_cb = h_cb->GetBinContent(etabin, nlbin, 3);
+      double alpha_cb = h_cb->GetBinContent(etabin, nlbin, 4);
+
+      double a_poly = h_poly->GetBinContent(etabin, nlbin, 1);
+      double b_poly = h_poly->GetBinContent(etabin, nlbin, 2);
+      double c_poly = h_poly->GetBinContent(etabin, nlbin, 3);
+      double sigma_poly =
+          a_poly + b_poly * pt_scale + c_poly * pt_scale * pt_scale;
+      if (sigma_poly < 0.0)
+        sigma_poly = 0.0;
+
+      Int_t absetabin = h_k_data->GetXaxis()->FindBin(fabs((double)eta[i]));
+      double k_data_v = h_k_data->GetBinContent(absetabin, 3);
+      double k_sig_v = h_k_sig->GetBinContent(absetabin, 3);
+      double k_mc = (k_sig_v < k_data_v)
+                        ? sqrt(k_data_v * k_data_v - k_sig_v * k_sig_v)
+                        : 0.0;
+
+      if (k_mc == 0.0 || sigma_poly == 0.0 || n_cb <= 1.0 + 1e-6 ||
+          sig_cb <= 0.0 || alpha_cb <= 0.0) {
+        res[i] = static_cast<float>(pt_scale);
+        continue;
+      }
+
+      MuonScarekitCB cb(mean_cb, sig_cb, alpha_cb, n_cb);
+      double rndm_cb = cb.invcdf(unif(rngslot));
+
+      res[i] =
+          static_cast<float>(pt_scale * (1.0 + k_mc * sigma_poly * rndm_cb));
+    }
+    return res;
+  }
+
+private:
+  std::vector<std::mt19937> rng_;
+};
 
 } // namespace wrem
 #endif

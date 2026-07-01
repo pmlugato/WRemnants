@@ -17,6 +17,7 @@ args = parser.parse_args()
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
 
 import hist
+import ROOT
 
 import narf
 from wremnants.production import (
@@ -35,6 +36,9 @@ if args.muonCorr == "rochester":
 elif args.muonCorr == "scarekit":
     narf.clingutils.Load("libROOTDataFrame")
     narf.clingutils.Declare('#include "lowpu_muonscarekit.hpp"')
+    scarekit_mc_helper = ROOT.wrem.MuonScarekitMCHelper(
+        args.randomSeedForToys, ROOT.ROOT.GetThreadPoolSize()
+    )
 
 datasets = getDatasets(
     maxFiles=args.maxFiles,
@@ -182,7 +186,15 @@ def build_graph(df, dataset):
         else:
             df = df.Define(
                 "Muon_pt_corr",
-                "wrem::applyMuonScarekitMC(Muon_pt, Muon_eta, Muon_phi, Muon_charge, Muon_nTrackerLayers, run, luminosityBlock)",
+                scarekit_mc_helper,
+                [
+                    "rdfslot_",
+                    "Muon_pt",
+                    "Muon_eta",
+                    "Muon_phi",
+                    "Muon_charge",
+                    "Muon_nTrackerLayers",
+                ],
             )
     else:  # "none"
         df = df.Alias("Muon_pt_corr", "Muon_pt")
