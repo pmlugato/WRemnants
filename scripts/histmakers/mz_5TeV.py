@@ -12,6 +12,8 @@ parser.add_argument(
     choices=["none", "rochester", "scarekit"],
     help="Muon momentum correction to apply",
 )
+# This is the 5 TeV low-PU analysis: default to the 5 TeV era (2017G)
+parser.set_defaults(era="2017G")
 args = parser.parse_args()
 
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
