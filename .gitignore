@@ -158,4 +158,3 @@ cython_debug/
 *.pdf
 *.png
 *.hdf5
-*.root
