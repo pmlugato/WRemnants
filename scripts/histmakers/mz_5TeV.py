@@ -12,19 +12,14 @@ parser.add_argument(
     choices=["none", "rochester", "scarekit"],
     help="Muon momentum correction to apply",
 )
-parser.add_argument(
-    "--corrStep",
-    default="1234",
-    choices=["0", "1", "123", "1234"],
-    help="Scarekit calibration stage (only with --muonCorr scarekit): "
-    "0 = no correction, 1 = scale only, 123 = scale+smearing, 1234 = full",
-)
-
+# This is the 5 TeV low-PU analysis: default to the 5 TeV era (2017G)
+parser.set_defaults(era="2017G")
 args = parser.parse_args()
 
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
 
 import hist
+import ROOT
 
 import narf
 from wremnants.production import (
@@ -43,6 +38,7 @@ if args.muonCorr == "rochester":
 elif args.muonCorr == "scarekit":
     narf.clingutils.Load("libROOTDataFrame")
     narf.clingutils.Declare('#include "lowpu_muonscarekit.hpp"')
+    scarekit_mc_helper = ROOT.wrem.MuonScarekitMCHelper(args.randomSeedForToys)
 
 datasets = getDatasets(
     maxFiles=args.maxFiles,
@@ -182,41 +178,26 @@ def build_graph(df, dataset):
                 "wrem::applyRochesterMC(Muon_pt, Muon_eta, Muon_phi, ROOT::VecOps::RVec<float>(Muon_charge.begin(), Muon_charge.end()), Muon_genPartIdx, GenPart_pt, Muon_nTrackerLayers)",
             )
     elif args.muonCorr == "scarekit":
-        if args.corrStep == "0":
-            df = df.Alias("Muon_pt_corr", "Muon_pt")
-        elif args.corrStep == "1":
-            if dataset.is_data:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitData(Muon_pt, Muon_eta, Muon_phi, Muon_charge)",
-                )
-            else:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitMC_scaleOnly(Muon_pt, Muon_eta, Muon_phi, Muon_charge)",
-                )
-        elif args.corrStep == "123":
-            if dataset.is_data:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitData(Muon_pt, Muon_eta, Muon_phi, Muon_charge)",
-                )
-            else:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitMC_noKFactor(Muon_pt, Muon_eta, Muon_phi, Muon_charge, Muon_nTrackerLayers)",
-                )
-        else:  # "1234"
-            if dataset.is_data:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitData(Muon_pt, Muon_eta, Muon_phi, Muon_charge)",
-                )
-            else:
-                df = df.Define(
-                    "Muon_pt_corr",
-                    "wrem::applyMuonScarekitMC(Muon_pt, Muon_eta, Muon_phi, Muon_charge, Muon_nTrackerLayers, run, luminosityBlock)",
-                )
+        if dataset.is_data:
+            df = df.Define(
+                "Muon_pt_corr",
+                "wrem::applyMuonScarekitData(Muon_pt, Muon_eta, Muon_phi, Muon_charge)",
+            )
+        else:
+            df = df.Define(
+                "Muon_pt_corr",
+                scarekit_mc_helper,
+                [
+                    "run",
+                    "luminosityBlock",
+                    "event",
+                    "Muon_pt",
+                    "Muon_eta",
+                    "Muon_phi",
+                    "Muon_charge",
+                    "Muon_nTrackerLayers",
+                ],
+            )
     else:  # "none"
         df = df.Alias("Muon_pt_corr", "Muon_pt")
 
@@ -314,8 +295,9 @@ def build_graph(df, dataset):
         df = df.DefinePerSample("central_pdf_weight", "1.0")
         df = df.Alias("nominal_weight_uncorr", "exp_weight")
         df = df.DefinePerSample("theory_weight_truncate", "10.0")
+        applied_theory_corrs = []
         for theory_corr_name in theory_corrs:
-            if theory_corr_name not in corr_helpers[dataset.name]:
+            if theory_corr_name not in corr_helpers.get(dataset.name, {}):
                 continue
             df = theory_corrections.define_theory_corr_weight_column(
                 df, theory_corr_name
@@ -331,9 +313,14 @@ def build_graph(df, dataset):
                     f"{theory_corr_name}_corr_weight",
                 ],
             )
+            applied_theory_corrs.append(theory_corr_name)
 
-        theory_corr_name = theory_corrs[0]
-        df = df.Define("nominal_weight", f"{theory_corr_name}Weight_tensor[0]")
+        if applied_theory_corrs:
+            df = df.Define(
+                "nominal_weight", f"{applied_theory_corrs[0]}Weight_tensor[0]"
+            )
+        else:
+            df = df.Alias("nominal_weight", "exp_weight")
 
     # ---- Fill histograms ----
     hist_nLepton = df.HistoBoost(
@@ -456,17 +443,18 @@ def build_graph(df, dataset):
         )
         results.append(hist_mutraileta_prefire)
 
-        systematics.add_theory_corr_hists(
-            results,
-            df,
-            [axis_ptll, axis_absYll, axis_cosThetaStarll],
-            ["ptll", "absYll", "cosThetaStarll"],
-            corr_helpers[dataset.name],
-            theory_corrs,
-            modify_central_weight=True,
-            isW=False,
-            base_name="ptll",
-        )
+        if applied_theory_corrs:
+            systematics.add_theory_corr_hists(
+                results,
+                df,
+                [axis_ptll, axis_absYll, axis_cosThetaStarll],
+                ["ptll", "absYll", "cosThetaStarll"],
+                corr_helpers[dataset.name],
+                theory_corrs,
+                modify_central_weight=True,
+                isW=False,
+                base_name="ptll",
+            )
 
     results += [
         hist_mll,
@@ -502,5 +490,6 @@ def build_graph(df, dataset):
 
 resultdict = narf.build_and_run(datasets, build_graph)
 
+args.flavor = "mumu"
 fout = f"{os.path.basename(__file__).replace('py', 'hdf5')}"
 write_analysis_output(resultdict, fout, args)
