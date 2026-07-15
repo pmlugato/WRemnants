@@ -81,7 +81,14 @@ parser.add_argument(
     type=float,
     nargs="+",
     default=None,
-    help="Override the default pt bining for the selected resonance"
+    help="Override the default pt binning for the selected resonance"
+)
+parser.add_argument(
+    "--massBinEdges",
+    type=float,
+    nargs="+",
+    default=None,
+    help="Override the default mass binning for the selected resonance"
 )
 parser.add_argument(
     "--applyAeMtoData",
@@ -265,7 +272,7 @@ calibration_axes = [
     hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta2"),
     cfg["pt1_axis"] if args.ptBinEdges is None else hist.axis.Variable(args.ptBinEdges, name="pt1"),
     cfg["pt2_axis"] if args.ptBinEdges is None else hist.axis.Variable(args.ptBinEdges, name="pt2"),
-    cfg["mass_axis"],
+    cfg["mass_axis"] if args.massBinEdges is None else hist.axis.Variable(args.massBinEdges, name="mass"),
 ]
 
 

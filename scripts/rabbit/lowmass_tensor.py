@@ -66,10 +66,10 @@ parser.add_argument(
     help="JPsi channels to add to the tensor",
 )
 parser.add_argument(
-    "--eventThresh",
+    "--mcEventThresh",
     default=-1,
     type=float,
-    help="event threshold in rescaled MC for a 4d bin being included in the fit. Disabled by default. Zeros both MC and data in failing bins if specified",
+    help="event threshold in raw MC for a 4d bin being included in the fit. Disabled by default. Zeros both MC and data in failing bins if specified",
 )
 parser.add_argument(
     "--clip",
@@ -426,13 +426,13 @@ for resultdict in load_jpsi_channels_from_calinput(args.calinputHdf5):
     print(np.any(hist_mc.values() <= 0))
     hist_data = resultdict["JPsi_data"]
     scaling_factor = np.sum(hist_data.values()) / np.sum(hist_mc.values())
+    signal_active_cells = populated_cells(hist_mc, event_thresh=args.mcEventThresh)
+    print("signal active cells:", np.sum(signal_active_cells))
     print(scaling_factor, sample)
-    # scaling_factor = 1 # undo this easily
     hist_mc = hist_mc * scaling_factor
-    signal_active_cells = populated_cells(hist_mc, event_thresh=args.eventThresh)
     clip_values(hist_mc, lim=args.clip, variances=True)
     zero_inactive_cells(hist_mc, signal_active_cells)
-    if args.eventThresh < 0:
+    if args.mcEventThresh < 0:
         fit_active_cells = signal_active_cells | populated_cells(hist_data)
     else:
         fit_active_cells = signal_active_cells
