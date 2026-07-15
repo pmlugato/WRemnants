@@ -501,11 +501,13 @@ def make_muon_smearing_helpers(
                 hvar[{"res_parm": parm}].values() + dparms[:, iparm, :]
             )
         elif resolution_prefit_uncertainties_mode == "relative":
-            hvar[{"res_parm": parm}] = (
-                hvar[{"res_parm": parm}].values() * (1 + dparms[:, iparm, :])
+            hvar[{"res_parm": parm}] = hvar[{"res_parm": parm}].values() * (
+                1 + dparms[:, iparm, :]
             )
         else:
-            raise ValueError("resolution_prefit_uncertainties_mode must be 'absolute' or 'relative'")
+            raise ValueError(
+                "resolution_prefit_uncertainties_mode must be 'absolute' or 'relative'"
+            )
 
     hnom = hist.Hist(*hnomw.axes)
     hnom[...] = hnomw.values()
@@ -553,6 +555,7 @@ def add_resolution_uncertainty(
     smearing_uncertainty_helper,
     reco_sel_GF,
     storage_type=hist.storage.Double(),
+    response_weight_col=None,
 ):
 
     if smearing_uncertainty_helper is None:
@@ -578,10 +581,12 @@ def add_resolution_uncertainty(
             "nominal_weight",
         ]
     else:
+        if response_weight_col is None:
+            response_weight_col = f"{reco_sel_GF}_response_weight"
         cols = [
             f"{reco_sel_GF}_recoPt",
             f"{reco_sel_GF}_recoEta",
-            f"{reco_sel_GF}_response_weight",
+            response_weight_col,
             "nominal_weight",
         ]
 
@@ -2188,7 +2193,7 @@ def make_pixel_multiplicity_helpers(
         res = pickle.load(fin)
 
     hNValidPixelHitsTrig_data = res["hNValidPixelHitsTrig_data"]
-    hNValidPixelHitsNonTrig_data = res["hNValidPixelHitsTrig_data"]
+    hNValidPixelHitsNonTrig_data = res["hNValidPixelHitsNonTrig_data"]
     hNValidPixelHitsTrig_mc = res["hNValidPixelHitsTrig_mc"]
     hNValidPixelHitsNonTrig_mc = res["hNValidPixelHitsNonTrig_mc"]
 
