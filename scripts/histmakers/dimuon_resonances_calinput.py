@@ -82,14 +82,14 @@ parser.add_argument(
     type=float,
     nargs="+",
     default=None,
-    help="Override the default pt binning for the selected resonance"
+    help="Override the default pt binning for the selected resonance",
 )
 parser.add_argument(
     "--massBinEdges",
     type=float,
     nargs="+",
     default=None,
-    help="Override the default mass binning for the selected resonance"
+    help="Override the default mass binning for the selected resonance",
 )
 parser.add_argument(
     "--applyAeMtoData",
@@ -99,6 +99,8 @@ parser.add_argument(
     "extracted and used to correct the data muon pts "
     "(via muon_calibration.define_AeM_data_corrections) before filling the "
     "data histograms. MC histograms are left unchanged.",
+)
+parser.add_argument(
     "--ptBins",
     type=int,
     choices=[2, 3],
@@ -165,7 +167,7 @@ parser.add_argument(
 parser.add_argument(
     "--resolutionPrefitUncertainty",
     type=float,
-    default=3.0,
+    default=0.3,
     help=(
         "Relative prefit uncertainty assigned to each fitted muon-resolution "
         "parameter when --fitMuonScaleAndResolution is used."
@@ -441,7 +443,7 @@ quantile_kinematic_axes = [
     hist.axis.Regular(eta_bins, 0.0, 1.0, name="eta1", underflow=False, overflow=False),
     hist.axis.Regular(eta_bins, 0.0, 1.0, name="eta2", underflow=False, overflow=False),
     hist.axis.Regular(
-        pt_axis.size, 0.0, 1.0, name="pt1", underflow=False, overflow=False
+        pt1_axis.size, 0.0, 1.0, name="pt1", underflow=False, overflow=False
     ),
     hist.axis.Regular(
         pt2_axis.size, 0.0, 1.0, name="pt2", underflow=False, overflow=False
@@ -471,7 +473,7 @@ quantile_mass_dummy_axis = hist.axis.Integer(
 quantile_calibration_axes = [
     hist.axis.Integer(0, eta_bins, name="eta1", underflow=False, overflow=False),
     hist.axis.Integer(0, eta_bins, name="eta2", underflow=False, overflow=False),
-    hist.axis.Integer(0, pt_axis.size, name="pt1", underflow=False, overflow=False),
+    hist.axis.Integer(0, pt1_axis.size, name="pt1", underflow=False, overflow=False),
     hist.axis.Integer(0, pt2_axis.size, name="pt2", underflow=False, overflow=False),
     mass_axis,
 ]
@@ -484,7 +486,7 @@ quantile_5d_axes = [
 quantile_5d_calibration_axes = [
     hist.axis.Integer(0, eta_bins, name="eta1", underflow=False, overflow=False),
     hist.axis.Integer(0, eta_bins, name="eta2", underflow=False, overflow=False),
-    hist.axis.Integer(0, pt_axis.size, name="pt1", underflow=False, overflow=False),
+    hist.axis.Integer(0, pt1_axis.size, name="pt1", underflow=False, overflow=False),
     hist.axis.Integer(0, pt2_axis.size, name="pt2", underflow=False, overflow=False),
     hist.axis.Integer(
         0,
@@ -505,7 +507,7 @@ quantile_mass_axis = hist.axis.Regular(
 quantile_mass_calibration_axes = [
     hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta1"),
     hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta2"),
-    pt_axis,
+    pt1_axis,
     pt2_axis,
     hist.axis.Integer(
         0,
@@ -527,7 +529,7 @@ quantile_output_axes_by_channel = {}
 def quantile_mass_output_axes_from_hists(centers_hist, volume_hist):
     centers = np.asarray(centers_hist.values()[..., 0], dtype=float)
     widths = np.asarray(volume_hist.values(), dtype=float)
-    expected_shape = (eta_bins, eta_bins, pt_axis.size, pt2_axis.size, mass_axis.size)
+    expected_shape = (eta_bins, eta_bins, pt1_axis.size, pt2_axis.size, mass_axis.size)
     if centers.shape != expected_shape:
         raise RuntimeError(
             "Unexpected conditional mass-quantile center shape "
@@ -541,7 +543,7 @@ def quantile_mass_output_axes_from_hists(centers_hist, volume_hist):
     return [
         hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta1"),
         hist.axis.Regular(eta_bins, eta_min, eta_max, name="eta2"),
-        pt_axis,
+        pt1_axis,
         pt2_axis,
         hist.axis.Integer(
             0,
