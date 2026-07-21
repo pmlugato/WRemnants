@@ -1096,6 +1096,38 @@ def make_parser(parser=None, argv=None):
         help="probability density for systematic variations",
     )
     parser.add_argument(
+        "--clipSystVariations",
+        type=float,
+        default=0.0,
+        help="If >0, clip log_normal systematic variations so each bin's up/down "
+        "factor stays within [1/x, x] (e.g. 10 => [0.1x, 10x]). Tames spurious "
+        "huge variations in statistically-empty bins (e.g. Ztautau cancellation "
+        "residuals). 0 disables (default). Keep looser than any genuine lnN "
+        "(e.g. the 2x photon-induced norm) so real uncertainties are untouched.",
+    )
+    parser.add_argument(
+        "--zeroSystLowNeff",
+        type=float,
+        default=0.0,
+        help="If >0, zero every systematic's logk in any (bin, process) whose "
+        "effective sample size n_eff = sumw^2/sumw2 is below this threshold "
+        "(units of effective events; n_eff is scale-invariant). Such bins are "
+        "mixed-sign NLO-weight cancellation residuals where logk is noise and "
+        "nom*exp(logk) blows up. Keeps the nominal, removes only the meaningless "
+        "systematic lever. 1.0 ('fewer than one effective event') is the "
+        "recommended value. 0 disables (default). Cleaner than --clipSystVariations "
+        "(the card itself comes out clean for debug/plot tools).",
+    )
+    parser.add_argument(
+        "--zeroSystLowNeffProcs",
+        nargs="+",
+        default=None,
+        metavar="PROCESS",
+        help="Restrict --zeroSystLowNeff to these process names. Default: all "
+        "processes (safe: only statistically-empty bins are touched, and "
+        "signal/Zmumu have none).",
+    )
+    parser.add_argument(
         "--presel",
         nargs=3,
         action="append",
@@ -3366,12 +3398,22 @@ if __name__ == "__main__":
             "Fitting multiple channels with 'wwidth' or decorMassWidth is not currently supported since this can lead to inconsistent treatment of mass variations between channels."
         )
 
-    writer = tensorwriter.TensorWriter(
+    writer_kwargs = dict(
         sparse=args.sparse,
         allow_negative_expectation=args.allowNegativeExpectation,
         systematic_type=args.systematicType,
         add_bin_by_bin_stat_to_data_cov=args.addMCStatToCovariance,
     )
+    # Forward the empty-bin-systematic knobs only when actually requested, so
+    # this script stays compatible with rabbit versions predating them (both
+    # are off by default; using them requires a rabbit with these TensorWriter
+    # arguments).
+    if args.clipSystVariations:
+        writer_kwargs["clip_syst_variations"] = args.clipSystVariations
+    if args.zeroSystLowNeff:
+        writer_kwargs["zero_syst_low_neff"] = args.zeroSystLowNeff
+        writer_kwargs["zero_syst_low_neff_procs"] = args.zeroSystLowNeffProcs
+    writer = tensorwriter.TensorWriter(**writer_kwargs)
 
     if args.fitresult is not None:
         # set data from external fitresult file
