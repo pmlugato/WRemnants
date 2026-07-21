@@ -14,7 +14,7 @@ analysis_label = common.analysis_label(os.path.basename(__file__))
 parser, initargs = parsing.common_parser(analysis_label)
 parser.add_argument(
     "--dataFile",
-    default="/scratch/submit/cms/emanca/D0data.root",
+    default="/scratch/submit/cms/emanca/D0Data_v4.root",
     help="Input ROOT file for data",
 )
 parser.add_argument(
@@ -33,6 +33,19 @@ parser.add_argument(
     help=(
         "Also apply the later fitted DeltaM cut "
         "abs(deltaM_D0pis_piK - 0.14543) < 0.003."
+    ),
+)
+parser.add_argument(
+    "--pvalCut",
+    type=float,
+    default=0.005,
+    help=(
+        "Minimum vertex-fit p-value required for both the piK (D0) and D0pis (D*) "
+        "vertices. Disabled by default: the current ntuples store an unfilled -99 "
+        "sentinel in pval_piK/pval_D0pis, so any positive cut would reject every "
+        "event. Set e.g. 0.005 once valid p-values are produced. When enabled the "
+        "cut is guarded so sentinel (-99) values are never rejected, and the "
+        "pval_piK/pval_D0pis branches are only required in that case."
     ),
 )
 parser.add_argument(
@@ -495,10 +508,13 @@ def define_reco(df):
             "pi_CVH_eta",
             "pi_CVH_phi",
             "pi_charge",
-            "pval_piK",
-            "pval_D0pis",
         ],
     )
+    # The vertex-fit p-value branches are only needed when the cut is enabled;
+    # they are unfilled (-99) in current productions, so do not require them by default.
+    pval_cols = ["pval_piK", "pval_D0pis"] if args.pvalCut is not None else []
+    if pval_cols:
+        require_columns(columns, pval_cols)
     d0_mass_cols = available_first(
         columns, ["mass_piK", "D0_fit_mass", "D0_CVH_mass"], "D0 fitted mass"
     )
@@ -520,8 +536,7 @@ def define_reco(df):
         "pi_CVH_eta",
         "pi_CVH_phi",
         "pi_charge",
-        "pval_piK",
-        "pval_D0pis",
+        *pval_cols,
         *d0_mass_cols,
         *dst_mass_cols,
         *delta_m_cols,
@@ -571,11 +586,14 @@ def reco_selection():
         "std::fabs(K_CVH_eta0) < 2.4",
         "D0_fit_mass_for_selection > 0.0",
         "Dst_fit_mass_for_selection > 0.0",
-        "pval_piK0 > 0.005",
         "std::fabs(D0_fit_mass_for_selection - 1.86483) < 0.05",
-        "pval_D0pis0 > 0.005",
         "std::fabs(Dst_fit_mass_for_selection - 2.01026) < 0.15",
     ]
+    if args.pvalCut is not None:
+        # Guard against the unfilled -99 sentinel: reject a candidate only when its
+        # p-value is valid (> -1) and below threshold. Sentinel values are kept.
+        selection.append(f"(pval_piK0 < -1.0 || pval_piK0 > {args.pvalCut})")
+        selection.append(f"(pval_D0pis0 < -1.0 || pval_D0pis0 > {args.pvalCut})")
     if args.applyFitDeltaM:
         selection.append("std::fabs(Dst_fit_deltaM_for_selection - 0.14543) < 0.003")
     return " && ".join(selection)
