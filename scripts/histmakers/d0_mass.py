@@ -14,7 +14,7 @@ analysis_label = common.analysis_label(os.path.basename(__file__))
 parser, initargs = parsing.common_parser(analysis_label)
 parser.add_argument(
     "--dataFile",
-    default="/scratch/submit/cms/emanca/D0Data_v4.root",
+    default="/scratch/submit/cms/emanca/D0Data_v4",
     help="Input ROOT file for data",
 )
 parser.add_argument(
