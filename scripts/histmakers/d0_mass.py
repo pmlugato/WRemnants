@@ -35,7 +35,7 @@ parser.add_argument(
 parser.add_argument(
     "--resolutionPrefitUncertainty",
     type=float,
-    default=3.0,
+    default=0.3,
     help=(
         "Relative prefit uncertainty assigned to each fitted resolution "
         "parameter when --fitMuonScaleAndResolution is used."
@@ -52,8 +52,8 @@ parser.add_argument(
     ),
 )
 parser = parsing.set_parser_default(parser, "theoryCorr", [])
-parser = parsing.set_parser_default(parser, "scale_A", 5.0)
-parser = parsing.set_parser_default(parser, "scale_e", 5.0)
+parser = parsing.set_parser_default(parser, "scale_A", 1.0)
+parser = parsing.set_parser_default(parser, "scale_e", 1.0)
 parser = parsing.set_parser_default(parser, "fitMuonScaleAndResolution", True)
 
 args = parser.parse_args()
@@ -150,6 +150,142 @@ ROOT.gInterpreter.Declare("""
     }
     """)
 
+# Manual A/e/M scale variations: recompute the D0 mass (and mRK) from the K/pi
+# four-vectors under an independent +-1 prefit-width shift of each (eta bin, scale
+# parameter), instead of reweighting. The correction model matches
+# muon_calibration.define_AeM_data_corrections:
+#     pt_cor = (1 + A' - e'/pt + q*M'*pt) * pt   (primed = physical units)
+# The D0 mass is linear in each of A', e', M', so the per-variation pt shift is
+# independent of the (unknown here) central A/e/M values and we propagate the shift
+# directly:  dpt_A = dA'*pt,  dpt_e = -de',  dpt_M = q*dM'*pt^2.
+# Both the varied mass and mRK are expressed as a shift on top of their authoritative
+# nominal values (D0_CVH_mass0 and the nominal mRK column), so a variation that touches
+# neither track's eta bin lands exactly on the nominal histogram. Mass and mRK share the
+# same shifted momenta (computed once) so they never drift apart.
+ROOT.gInterpreter.Declare("""
+    #include <cmath>
+    #include "ROOT/RVec.hxx"
+    #include "Math/Vector4D.h"
+
+    namespace wrem {
+    namespace d0 {
+
+    // Per-event varied observables: mass[k] and mRK[k] share the flattened index k.
+    struct ScaleVarResult {
+        ROOT::VecOps::RVec<double> mass;
+        ROOT::VecOps::RVec<double> mRK;
+    };
+
+    class ScaleVariationsHelper {
+    public:
+        ScaleVariationsHelper(unsigned int n_eta_bins, double eta_min, double eta_max,
+                              unsigned int n_scale_params,
+                              double width_A, double width_e, double width_M,
+                              double mK, double mPi)
+          : n_eta_bins_(n_eta_bins), n_scale_params_(n_scale_params),
+            nvars_(n_eta_bins * n_scale_params),
+            eta_min_(eta_min), eta_max_(eta_max),
+            width_A_(width_A), width_e_(width_e), width_M_(width_M),
+            mK_(mK), mPi_(mPi) {}
+
+        int eta_bin(double eta) const {
+            if (eta < eta_min_ || eta >= eta_max_) return -1;
+            int ib = static_cast<int>((eta - eta_min_) / (eta_max_ - eta_min_) * n_eta_bins_);
+            if (ib < 0 || ib >= static_cast<int>(n_eta_bins_)) return -1;
+            return ib;
+        }
+
+        // pt of a track after shifting scale parameter iparm in eta bin ieta by sgn*width
+        double shifted_pt(double pt, double q, int track_ieta,
+                          unsigned int ieta, unsigned int iparm, double sgn) const {
+            if (track_ieta != static_cast<int>(ieta)) return pt;
+            double dpt = 0.0;
+            if (iparm == 0)      dpt = sgn * width_A_ * pt;            // A': dpt = dA'*pt
+            else if (iparm == 1) dpt = -sgn * width_e_;               // e': dpt = -de'
+            else if (iparm == 2) dpt = sgn * width_M_ * q * pt * pt;  // M': dpt = q*dM'*pt^2
+            return pt + dpt;
+        }
+
+        // mRK observable, matching the nominal column M_K^2 * (pi_E/K_E) / mass.
+        double mrk(double eK, double ePi, double mass) const {
+            return mK_ * mK_ * (ePi / eK) / mass;
+        }
+
+        // Returns nvars*2 varied mass and mRK values, ordered (ieta, iparm, {down, up})
+        // so the flattened index is ivar*2 + isign with ivar = ieta*n_scale_params + iparm.
+        ScaleVarResult operator()(
+            double ptK, double etaK, double phiK, double qK,
+            double ptPi, double etaPi, double phiPi, double qPi,
+            double d0_mass_nom, double mRK_nom) const {
+
+            const int biK = eta_bin(etaK);
+            const int biPi = eta_bin(etaPi);
+
+            const double coshK = std::cosh(etaK);
+            const double coshPi = std::cosh(etaPi);
+            const auto energy = [](double pt, double cosh_eta, double m) {
+                return std::sqrt(pt * cosh_eta * pt * cosh_eta + m * m);
+            };
+
+            const ROOT::Math::PtEtaPhiMVector v0K(ptK, etaK, phiK, mK_);
+            const ROOT::Math::PtEtaPhiMVector v0Pi(ptPi, etaPi, phiPi, mPi_);
+            const double m_nom = (v0K + v0Pi).M();
+            const double mrk_nom_recomp =
+                mrk(energy(ptK, coshK, mK_), energy(ptPi, coshPi, mPi_), m_nom);
+
+            ScaleVarResult res;
+            res.mass.reserve(nvars_ * 2);
+            res.mRK.reserve(nvars_ * 2);
+            const double signs[2] = {-1.0, 1.0};  // down, up
+            for (unsigned int ieta = 0; ieta < n_eta_bins_; ++ieta) {
+                for (unsigned int iparm = 0; iparm < n_scale_params_; ++iparm) {
+                    for (int isign = 0; isign < 2; ++isign) {
+                        const double sgn = signs[isign];
+                        const double ptKs = shifted_pt(ptK, qK, biK, ieta, iparm, sgn);
+                        const double ptPis = shifted_pt(ptPi, qPi, biPi, ieta, iparm, sgn);
+                        const ROOT::Math::PtEtaPhiMVector vK(ptKs, etaK, phiK, mK_);
+                        const ROOT::Math::PtEtaPhiMVector vPi(ptPis, etaPi, phiPi, mPi_);
+                        const double m_var = (vK + vPi).M();
+                        const double mrk_var =
+                            mrk(energy(ptKs, coshK, mK_), energy(ptPis, coshPi, mPi_), m_var);
+                        res.mass.push_back(d0_mass_nom + (m_var - m_nom));
+                        res.mRK.push_back(mRK_nom + (mrk_var - mrk_nom_recomp));
+                    }
+                }
+            }
+            return res;
+        }
+
+    private:
+        unsigned int n_eta_bins_, n_scale_params_, nvars_;
+        double eta_min_, eta_max_, width_A_, width_e_, width_M_, mK_, mPi_;
+    };
+
+    // Constant per-fill index vectors matching the (ivar, {down, up}) ordering above.
+    inline ROOT::VecOps::RVec<int> scale_var_indices(unsigned int nvars) {
+        ROOT::VecOps::RVec<int> out;
+        out.reserve(nvars * 2);
+        for (unsigned int ivar = 0; ivar < nvars; ++ivar) {
+            out.push_back(static_cast<int>(ivar));
+            out.push_back(static_cast<int>(ivar));
+        }
+        return out;
+    }
+    // down -> -1.0 (downUpVar bin 0), up -> +1.0 (downUpVar bin 1)
+    inline ROOT::VecOps::RVec<double> updown_coords(unsigned int nvars) {
+        ROOT::VecOps::RVec<double> out;
+        out.reserve(nvars * 2);
+        for (unsigned int ivar = 0; ivar < nvars; ++ivar) {
+            out.push_back(-1.0);
+            out.push_back(1.0);
+        }
+        return out;
+    }
+
+    }
+    }
+    """)
+
 
 def limited_files(files):
     if args.maxFiles is not None and args.maxFiles > 0:
@@ -205,6 +341,46 @@ d0_axes = [axis_etaK, axis_mRK, axis_D0mass]
 
 M_K = 0.493677
 M_PI = 0.139570
+
+# Manual A/e/M scale-variation histogram. The per-(eta bin, parameter) construction
+# below is only valid for the diagonal prefit-width configuration (no covariance /
+# eigen-decomposition), i.e. --fitMuonScaleAndResolution, which is the default here.
+# The scale-variation and down/up axes are reused verbatim from the response-weight
+# uncertainty helper so the manual histogram is structurally identical to
+# nominal_muonScaleSyst_responseWeights and the "unc" index maps to the same nuisance.
+build_manual_scale_variations = args.fitMuonScaleAndResolution
+d0_scale_var_helper = None
+manual_scale_axes = None
+if build_manual_scale_variations:
+    _scale_var_axis, _updown_axis = data_jpsi_crctn_unc_helper.tensor_axes
+    _nvars = _scale_var_axis.size
+    if _nvars % 3 != 0:
+        raise ValueError(
+            f"Expected the scale unc axis size to be a multiple of 3 (A, e, M per "
+            f"eta bin), got {_nvars}"
+        )
+    _n_eta_bins_scale = _nvars // 3
+    d0_scale_var_helper = ROOT.wrem.d0.ScaleVariationsHelper(
+        _n_eta_bins_scale,
+        -2.4,
+        2.4,
+        3,
+        1e-3 * args.scale_A,
+        1e-2 * args.scale_e,
+        1e-4 * args.scale_M,
+        M_K,
+        M_PI,
+    )
+    manual_scale_axes = [_scale_var_axis, _updown_axis]
+    logger.info(
+        f"Manual A/e/M scale variations enabled: {_nvars} nuisances "
+        f"({_n_eta_bins_scale} eta bins x 3 parameters), down/up each."
+    )
+else:
+    logger.warning(
+        "Manual A/e/M scale variations require --fitMuonScaleAndResolution "
+        "(diagonal prefit widths); skipping nominal_muonScaleSyst_manualAeM."
+    )
 
 
 def bool_filter(expression):
@@ -363,6 +539,54 @@ def build_graph(df, dataset):
                 storage=hist.storage.Double(),
             )
         )
+
+        if build_manual_scale_variations:
+            # Manual scale variations: recompute the D0 mass and mRK under each +-1
+            # prefit-width A/e/M shift and fill a single histogram in one pass. The mass
+            # and mRK coordinates are RVecs of length nvars*2 (both varied, sharing the
+            # same shifted momenta); etaK is held at its nominal reco value since a pt
+            # scale does not change eta.
+            df = df.Define(
+                "d0_scale_var",
+                d0_scale_var_helper,
+                [
+                    "K_CVH_pt0",
+                    "K_CVH_eta0",
+                    "K_CVH_phi0",
+                    "K_charge0",
+                    "pi_CVH_pt0",
+                    "pi_CVH_eta0",
+                    "pi_CVH_phi0",
+                    "pi_charge0",
+                    "D0_mass",
+                    "mRK",
+                ],
+            )
+            df = df.Define("d0_scale_var_mass", "d0_scale_var.mass")
+            df = df.Define("d0_scale_var_mRK", "d0_scale_var.mRK")
+            df = df.Define(
+                "d0_scale_var_idx",
+                f"wrem::d0::scale_var_indices({manual_scale_axes[0].size})",
+            )
+            df = df.Define(
+                "d0_scale_updown",
+                f"wrem::d0::updown_coords({manual_scale_axes[0].size})",
+            )
+            results.append(
+                df.HistoBoost(
+                    "nominal_muonScaleSyst_manualAeM",
+                    d0_axes + manual_scale_axes,
+                    [
+                        "K_CVH_eta0",
+                        "d0_scale_var_mRK",
+                        "d0_scale_var_mass",
+                        "d0_scale_var_idx",
+                        "d0_scale_updown",
+                        "nominal_weight",
+                    ],
+                    storage=hist.storage.Double(),
+                )
+            )
 
         df = muon_calibration.add_resolution_uncertainty(
             df,
