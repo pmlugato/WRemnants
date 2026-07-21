@@ -1,3 +1,4 @@
+import glob
 import os
 
 import hist
@@ -18,13 +19,21 @@ parser.add_argument(
 )
 parser.add_argument(
     "--mcFile",
-    default="/scratch/submit/cms/emanca/D0mc.root",
-    help="Input ROOT file for MC",
+    default="/scratch/submit/cms/emanca/D0MC",
+    help="Input ROOT file, glob, or directory for MC",
 )
 parser.add_argument(
     "--treeName",
     default="tree",
     help="Input tree name",
+)
+parser.add_argument(
+    "--applyFitDeltaM",
+    action="store_true",
+    help=(
+        "Also apply the later fitted DeltaM cut "
+        "abs(deltaM_D0pis_piK - 0.14543) < 0.003."
+    ),
 )
 parser.add_argument(
     "--etaBins",
@@ -131,6 +140,7 @@ _smearing_helper, smearing_uncertainty_helper = (
 
 ROOT.gInterpreter.Declare("""
     #include <cmath>
+    #include <algorithm>
     #include "ROOT/RVec.hxx"
 
     namespace wrem {
@@ -146,6 +156,56 @@ ROOT.gInterpreter.Declare("""
         return values.empty() ? -999.0 : static_cast<double>(values[0]);
     }
 
+    inline double delta_phi(double phi1, double phi2) {
+        double dphi = phi1 - phi2;
+        while (dphi > M_PI) dphi -= 2.0*M_PI;
+        while (dphi <= -M_PI) dphi += 2.0*M_PI;
+        return dphi;
+    }
+
+    template <typename PtVec, typename EtaVec, typename PhiVec, typename ChargeVec, typename PdgIdVec>
+    ROOT::VecOps::RVec<float> matched_gen_kinematics(
+        double reco_pt,
+        double reco_eta,
+        double reco_phi,
+        int reco_charge,
+        const PtVec &gen_pt,
+        const EtaVec &gen_eta,
+        const PhiVec &gen_phi,
+        const ChargeVec &gen_charge,
+        const PdgIdVec &gen_pdgId,
+        int abs_pdgid,
+        double max_dr = 0.03
+    ) {
+        const auto size = std::min({gen_pt.size(), gen_eta.size(), gen_phi.size(),
+                                    gen_charge.size(), gen_pdgId.size()});
+        const double max_dr2 = max_dr*max_dr;
+        double best_dr2 = max_dr2;
+        int best = -1;
+        for (std::size_t i = 0; i < size; ++i) {
+            if (std::abs(static_cast<int>(gen_pdgId[i])) != abs_pdgid) continue;
+            if (static_cast<int>(gen_charge[i]) != reco_charge) continue;
+
+            const double deta = reco_eta - static_cast<double>(gen_eta[i]);
+            const double dphi = delta_phi(reco_phi, static_cast<double>(gen_phi[i]));
+            const double dr2 = deta*deta + dphi*dphi;
+            if (dr2 < best_dr2) {
+                best_dr2 = dr2;
+                best = static_cast<int>(i);
+            }
+        }
+
+        if (best < 0) return ROOT::VecOps::RVec<float>{0.f, 0.f, 0.f, 0.f, 0.f};
+
+        return ROOT::VecOps::RVec<float>{
+            static_cast<float>(gen_pt[best]),
+            static_cast<float>(gen_eta[best]),
+            static_cast<float>(gen_phi[best]),
+            static_cast<float>(gen_charge[best]),
+            1.f
+        };
+    }
+
     }
     }
     """)
@@ -157,17 +217,27 @@ def limited_files(files):
     return files
 
 
+def input_files(path):
+    if os.path.isdir(path):
+        files = sorted(glob.glob(os.path.join(path, "**", "*.root"), recursive=True))
+    else:
+        files = sorted(glob.glob(path))
+    if not files:
+        raise ValueError(f"No input ROOT files found for {path}")
+    return limited_files(files)
+
+
 datasets = [
     narf.Dataset(
         name="D0_data",
-        filepaths=limited_files([args.dataFile]),
+        filepaths=input_files(args.dataFile),
         is_data=True,
         xsec=None,
         group="Data",
     ),
     narf.Dataset(
         name="D0_mc",
-        filepaths=limited_files([args.mcFile]),
+        filepaths=input_files(args.mcFile),
         is_data=False,
         xsec=1.0,
         group="D0",
@@ -217,7 +287,54 @@ def scalarize(df, names):
     return df
 
 
+def available_columns(df):
+    return {str(col) for col in df.GetColumnNames()}
+
+
+def require_columns(columns, names):
+    missing = [name for name in names if name not in columns]
+    if missing:
+        raise ValueError(f"Missing required D0 ntuple branches: {', '.join(missing)}")
+
+
+def available_first(columns, names, label):
+    available = [name for name in names if name in columns]
+    if not available:
+        raise ValueError(
+            f"Missing D0 ntuple branch for {label}; tried {', '.join(names)}"
+        )
+    return available
+
+
 def define_reco(df):
+    columns = available_columns(df)
+    require_columns(
+        columns,
+        [
+            "K_CVH_pt",
+            "K_CVH_eta",
+            "K_CVH_phi",
+            "K_charge",
+            "pi_CVH_pt",
+            "pi_CVH_eta",
+            "pi_CVH_phi",
+            "pi_charge",
+            "pval_piK",
+            "pval_D0pis",
+        ],
+    )
+    d0_mass_cols = available_first(
+        columns, ["mass_piK", "D0_fit_mass", "D0_CVH_mass"], "D0 fitted mass"
+    )
+    dst_mass_cols = available_first(
+        columns,
+        ["mass_D0pis", "Dst_fit_mass", "Dst_CVH3_mass", "Dst_CVH_mass"],
+        "D* fitted mass",
+    )
+    delta_m_cols = [
+        name for name in ["deltaM_D0pis_piK", "Dst_fit_deltaM"] if name in columns
+    ]
+
     reco_cols = [
         "K_CVH_pt",
         "K_CVH_eta",
@@ -227,10 +344,27 @@ def define_reco(df):
         "pi_CVH_eta",
         "pi_CVH_phi",
         "pi_charge",
-        "D0_CVH_mass",
+        "pval_piK",
+        "pval_D0pis",
+        *d0_mass_cols,
+        *dst_mass_cols,
+        *delta_m_cols,
     ]
     df = scalarize(df, reco_cols)
-    return (
+    d0_expr = f"{d0_mass_cols[-1]}0"
+    for name in reversed(d0_mass_cols[:-1]):
+        d0_expr = f"({name}0 > 0.0 ? {name}0 : {d0_expr})"
+    dst_expr = f"{dst_mass_cols[-1]}0"
+    for name in reversed(dst_mass_cols[:-1]):
+        dst_expr = f"({name}0 > 0.0 ? {name}0 : {dst_expr})"
+    if delta_m_cols:
+        delta_m_expr = f"{delta_m_cols[-1]}0"
+        for name in reversed(delta_m_cols[:-1]):
+            delta_m_expr = f"({name}0 > 0.0 ? {name}0 : {delta_m_expr})"
+    else:
+        delta_m_expr = "Dst_fit_mass_for_selection - D0_fit_mass_for_selection"
+
+    df = (
         df.Define(
             "K_E0",
             f"std::sqrt(std::pow(K_CVH_pt0*std::cosh(K_CVH_eta0), 2) + {M_K}*{M_K})",
@@ -239,17 +373,36 @@ def define_reco(df):
             "pi_E0",
             f"std::sqrt(std::pow(pi_CVH_pt0*std::cosh(pi_CVH_eta0), 2) + {M_PI}*{M_PI})",
         )
-        .Define("D0_mass", "D0_CVH_mass0")
+        .Define("D0_fit_mass_for_selection", d0_expr)
+        .Define("Dst_fit_mass_for_selection", dst_expr)
+        .Define("Dst_fit_deltaM_for_selection", delta_m_expr)
+        .Define("D0_mass", "D0_fit_mass_for_selection")
         .Define("mRK", f"{M_K}*{M_K}*(pi_E0/K_E0)/D0_mass")
     )
+    if args.applyFitDeltaM and not delta_m_cols:
+        logger.warning(
+            "No fitted DeltaM branch found; using D* fitted mass minus D0 fitted mass"
+        )
+    return df
 
 
 def reco_selection():
-    return (
-        "K_CVH_pt0 > 0.0 && pi_CVH_pt0 > 0.0 && K_E0 > 0.0 && pi_E0 > 0.0 && "
-        "std::fabs(K_CVH_eta0) < 2.4 && "
-        "D0_mass > 1.75 && D0_mass < 2.0"
-    )
+    selection = [
+        "K_CVH_pt0 > 0.0",
+        "pi_CVH_pt0 > 0.0",
+        "K_E0 > 0.0",
+        "pi_E0 > 0.0",
+        "std::fabs(K_CVH_eta0) < 2.4",
+        "D0_fit_mass_for_selection > 0.0",
+        "Dst_fit_mass_for_selection > 0.0",
+        "pval_piK0 > 0.005",
+        "std::fabs(D0_fit_mass_for_selection - 1.86483) < 0.05",
+        "pval_D0pis0 > 0.005",
+        "std::fabs(Dst_fit_mass_for_selection - 2.01026) < 0.15",
+    ]
+    if args.applyFitDeltaM:
+        selection.append("std::fabs(Dst_fit_deltaM_for_selection - 0.14543) < 0.003")
+    return " && ".join(selection)
 
 
 def build_graph(df, dataset):
@@ -270,14 +423,6 @@ def build_graph(df, dataset):
             )
         )
     else:
-        results.append(
-            df.HistoBoost(
-                "hD0_nom",
-                d0_axes,
-                ["K_CVH_eta0", "mRK", "D0_mass", "weight"],
-            )
-        )
-
         df = (
             df.Define("nominal_weight", "weight")
             .Define(
@@ -296,25 +441,48 @@ def build_graph(df, dataset):
                 "scale_recoCharge",
                 "ROOT::VecOps::RVec<int>{int(K_charge0), int(pi_charge0)}",
             )
-            # D0 ntuples do not carry gen-matched track kinematics; use the
-            # reconstructed K/pi legs as the response-map coordinates.
+            .Define(
+                "K_gen_match",
+                "wrem::d0::matched_gen_kinematics("
+                "K_CVH_pt0, K_CVH_eta0, K_CVH_phi0, int(K_charge0), "
+                "gen_pt, gen_eta, gen_phi, gen_charge, gen_pdgId, 321)",
+            )
+            .Define(
+                "pi_gen_match",
+                "wrem::d0::matched_gen_kinematics("
+                "pi_CVH_pt0, pi_CVH_eta0, pi_CVH_phi0, int(pi_charge0), "
+                "gen_pt, gen_eta, gen_phi, gen_charge, gen_pdgId, 211)",
+            )
             .Define(
                 "scale_genPt",
-                "ROOT::VecOps::RVec<float>{float(K_CVH_pt0), float(pi_CVH_pt0)}",
+                "ROOT::VecOps::RVec<float>{K_gen_match[0], pi_gen_match[0]}",
             )
             .Define(
                 "scale_genEta",
-                "ROOT::VecOps::RVec<float>{float(K_CVH_eta0), float(pi_CVH_eta0)}",
+                "ROOT::VecOps::RVec<float>{K_gen_match[1], pi_gen_match[1]}",
             )
             .Define(
                 "scale_genPhi",
-                "ROOT::VecOps::RVec<float>{float(K_CVH_phi0), float(pi_CVH_phi0)}",
+                "ROOT::VecOps::RVec<float>{K_gen_match[2], pi_gen_match[2]}",
             )
             .Define(
                 "scale_genCharge",
-                "ROOT::VecOps::RVec<int>{int(K_charge0), int(pi_charge0)}",
+                "ROOT::VecOps::RVec<int>{int(K_gen_match[3]), int(pi_gen_match[3])}",
+            )
+            .Define(
+                "scale_hasGenMatch",
+                "ROOT::VecOps::RVec<int>{int(K_gen_match[4]), int(pi_gen_match[4])}",
             )
             .Define("scale_muon_source", "ROOT::VecOps::RVec<int>{443, 443}")
+            .Filter("K_gen_match[4] > 0.5 && pi_gen_match[4] > 0.5")
+        )
+
+        results.append(
+            df.HistoBoost(
+                "hD0_nom",
+                d0_axes,
+                ["K_CVH_eta0", "mRK", "D0_mass", "weight"],
+            )
         )
 
         input_kinematics = [
