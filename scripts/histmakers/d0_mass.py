@@ -73,6 +73,11 @@ parser.add_argument(
         "is used for a, b, c, and d."
     ),
 )
+parser.add_argument(
+    "--buildManualScaleVariations",
+    action="store_true",
+    help="Include manual scale variations in addition to reweights"
+)
 parser = parsing.set_parser_default(parser, "theoryCorr", [])
 parser = parsing.set_parser_default(parser, "scale_A", 1.0)
 parser = parsing.set_parser_default(parser, "scale_e", 1.0)
@@ -431,7 +436,7 @@ M_PI = 0.139570
 # The scale-variation and down/up axes are reused verbatim from the response-weight
 # uncertainty helper so the manual histogram is structurally identical to
 # nominal_muonScaleSyst_responseWeights and the "unc" index maps to the same nuisance.
-build_manual_scale_variations = args.fitMuonScaleAndResolution
+build_manual_scale_variations = args.buildManualScaleVariations
 d0_scale_var_helper = None
 manual_scale_axes = None
 if build_manual_scale_variations:
@@ -462,7 +467,7 @@ if build_manual_scale_variations:
 else:
     logger.warning(
         "Manual A/e/M scale variations require --fitMuonScaleAndResolution "
-        "(diagonal prefit widths); skipping nominal_muonScaleSyst_manualAeM."
+        "(diagonal prefit widths); skipping nominal_muonScaleSyst_manual."
     )
 
 
@@ -760,7 +765,7 @@ def build_graph(df, dataset):
             )
             results.append(
                 df.HistoBoost(
-                    "nominal_muonScaleSyst_manualAeM",
+                    "nominal_muonScaleSyst_manual",
                     d0_axes + manual_scale_axes,
                     [
                         "K_CVH_eta0",
