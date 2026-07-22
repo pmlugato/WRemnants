@@ -281,7 +281,7 @@ ROOT.gInterpreter.Declare("""
             if (iparm == 0)      dpt = sgn * width_A_ * pt;            // A': dpt = dA'*pt
             else if (iparm == 1) dpt = -sgn * width_e_;               // e': dpt = -de'
             else if (iparm == 2) dpt = sgn * width_M_ * q * pt * pt;  // M': dpt = q*dM'*pt^2
-            return pt + dpt;
+            return pt - dpt; //match reweight sign convention
         }
 
         // mRK observable, matching the nominal column M_K^2 * (pi_E/K_E) / mass.
@@ -464,12 +464,6 @@ if build_manual_scale_variations:
         f"Manual A/e/M scale variations enabled: {_nvars} nuisances "
         f"({_n_eta_bins_scale} eta bins x 3 parameters), down/up each."
     )
-else:
-    logger.warning(
-        "Manual A/e/M scale variations require --fitMuonScaleAndResolution "
-        "(diagonal prefit widths); skipping nominal_muonScaleSyst_manual."
-    )
-
 
 def bool_filter(expression):
     return f"static_cast<bool>({expression})"
