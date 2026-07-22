@@ -52,9 +52,11 @@
 
 ## 2. Refit configuration
 
-- [ ] 2.1 `useIdealGeometry = False`; no correction file (identity).
-- [ ] 2.2 `fillGrads = False`, `fillRunTree = False`,
-  `fillTrackTree = False` (nano replaces the sidecar tree).
+- [x] 2.1 `useIdealGeometry=False`, no correction file (identity) --
+  driver defaults; `plimit` default lowered 1.0 -> 0.05 (soft bachelors:
+  kaon-maker failures fell from 10/15 to 2/44).
+- [x] 2.2 `fillGrads=False`, `fillRunTree=False`; `fillTrackTree` forced
+  False on both makers when `nanoOut` is set (nano replaces the sidecar).
 - [x] 2.3 **DONE + VALIDATED**: two-track maker descends a nested VCC daughter
   (~10 lines at `...TwoTrackG4e.cc:1142`): when the
   `dynamic_cast<RecoChargedCandidate*>` fails, descend into the
@@ -94,10 +96,13 @@
 
 ## 4. Tables and config
 
-- [ ] 4.1 Per-channel candidate tables: raw VCC vars + corrected
-  ValueMaps as `externalVariables`.
-- [ ] 4.2 `Track` table + dE/dx + `originalIndex` externalVariables.
-- [ ] 4.3 `PV` and `Muon` tables.
+- [x] 4.1 **DONE (B+ channel)**: `BuJpsiK` table carries raw VCC columns
+  (mass, pt, vertexChi2, jpsi/kaon daughter kinematics + pdgId) AND the
+  refit ValueMaps as `externalVariables` (`corMass`, `corMassErr`,
+  `corPt/Eta/Phi`, `corMuPlusPt`, `corMuMinusPt`, `corEdmval`).
+  Remaining channels still to wire.
+- [x] 4.2 `Track` table + dE/dx + `originalIndex` externalVariables.
+- [x] 4.3 `PV` and `Muon` tables.
 - [ ] 4.4 HLT trigger-flag table + L1 decision bits from
   `L1GlobalTriggerReadoutRecord`.
 - [ ] 4.5 Event-level `DcsStatus` branches (`magnetCurrent`,
@@ -109,8 +114,10 @@
 
 ## 5. Validation
 
-- [ ] 5.1 One-file job on `TkAlJpsiX`: both makers in one process.
-- [ ] 5.2 `uproot`: raw + corrected columns present, counts consistent.
+- [x] 5.1 **DONE**: one-file job, both makers in one process, 30 events.
+- [x] 5.2 **DONE**: raw B+ mass mean 5.243 (B+ region); refit dimuon
+  `corMass` mean 3.0967 vs PDG J/psi 3.0969; `corMass` identical across
+  candidates sharing a J/psi; 45/45 corrected, 0 sentinel.
 - [ ] 5.3 In-job corrected `m(mu mu K)` == old offline-join output on
   the same file.
 - [ ] 5.4 Repeat per channel and per stream (all five).
@@ -137,6 +144,18 @@ the `mit-slides` skill so it supersedes it at the same path.
 - [ ] 6.5 Slide: status / next steps — identity corrections now, real
   2016 corrections later, batch production.
 - [ ] 6.6 Rebuild the PDF and confirm it renders.
+
+## 6b. Blocking issue surfaced by the end-to-end run
+
+- [ ] 6b.1 **CVH fit does not converge**: `corEdmval ~ 190` on every
+  candidate, `edmval < 1e-5` on 0/45. Pre-existing and tracked by
+  `improve-cvh-refit-convergence` / [[project-cvh-jpsi-mass-broadening]],
+  not introduced here, and harmless for v1 plumbing (identity
+  corrections). **The `cor*` columns must not be used for physics until
+  this is fixed.**
+- [ ] 6b.2 Measure real output size on a full file: the 30-event smoke
+  gave ~60 kB/event, which is dominated by small-file overhead and needs
+  a proper measurement before batch planning.
 
 ## 7. Follow-up (separate changes)
 
