@@ -103,10 +103,19 @@
   Remaining channels still to wire.
 - [x] 4.2 `Track` table + dE/dx + `originalIndex` externalVariables.
 - [x] 4.3 `PV` and `Muon` tables.
-- [ ] 4.4 HLT trigger-flag table + L1 decision bits from
-  `L1GlobalTriggerReadoutRecord`.
-- [ ] 4.5 Event-level `DcsStatus` branches (`magnetCurrent`,
-  `magnetTemperature`, `ready`).
+- [x] 4.4a **HLT flags DONE**: `NanoAODOutputModule` converts
+  `edm::TriggerResults` into `HLT_*` branches itself, so
+  `keep edmTriggerResults_*_*_*` in `outputCommands` is the whole change.
+  Verified: **534 HLT_* flags** written.
+- [ ] 4.4b **L1 bits still open**: the AlCaReco carries the *legacy*
+  `L1GlobalTriggerReadoutRecord` (2016), not the Run3 `gtStage2Digis`
+  that stock nano L1 tooling expects. Needs a small producer to unpack
+  the decision word into flags -- no stock path exists.
+- [x] 4.5 **DONE**: `SimpleDcsStatusFlatTableProducer` typedef added
+  (+ `DataFormats/Scalers` in the plugins `BuildFile.xml`, without which
+  it fails to link on `typeinfo for DcsStatus`). `Dcs` table verified:
+  `magnetCurrent = 18164 A` (CMS solenoid nominal for 3.8 T),
+  `magnetTemperature`, `ready` mask.
 - [ ] 4.6 Cross-link index columns on the candidate and Track tables.
 - [ ] 4.7 Branch names matching the histmaker raw contract
   (`bkmm_kaon_*`, `mm_mu*`, `Muon_*`).
