@@ -74,16 +74,23 @@
 
 ## 3. NanoAOD plugins
 
-- [ ] 3.1 `SimpleFlatTableProducer<reco::Muon>` typedef +
-  `DEFINE_FWK_MODULE`.
-- [ ] 3.2 Resolve the daughter-accessor gap: concrete
-  `SimpleFlatTableProducer<reco::VertexCompositeCandidate>` typedef,
-  or daughter columns emitted by the splitter/combiner.
+- [x] 3.1 **DONE + VALIDATED**: `SimpleMuonFlatTableProducer`
+  (`SimpleFlatTableProducer<reco::Muon>`) added + registered. Smoke on
+  `ALCARECOTkAlJpsiXLooseMuons`: nMuon=2, `Muon_pt=[11.80, 9.34]`
+  (matches the two leading `Track_pt`), `isGlobal`/`isTracker` true,
+  `nMatches=4`.
+- [x] 3.2 **DONE + VALIDATED**: daughter-accessor gap closed by the
+  concrete `SimpleVertexCompositeCandidateFlatTableProducer`
+  (`SimpleFlatTableProducer<reco::VertexCompositeCandidate>`).
+  `daughter(0).pt` / `daughter(0).pdgId` now resolve. On B+:
+  `dau0pdg=443` (J/psi composite), `dau1pdg=+-321` (bachelor kaon,
+  signed convention holding), `dau0pt` constant across the candidates
+  of one J/psi while `dau1pt` varies -- the expected nesting.
 - [ ] 3.3 Index-map helper producer(s) emitting `ValueMap<int>` for
   all three cross-links: daughter->Track, Track->Muon (invert the
   persisted `TrackToMuon` Association), Track->PV.
-- [ ] 3.4 `scram b` from inside `PhysicsTools/NanoAOD` and
-  `Analysis/HitAnalyzer` only.
+- [x] 3.4 `scram b` from inside the touched packages only -- both
+  `Analysis/HitAnalyzer` and `PhysicsTools/NanoAOD` build green.
 
 ## 4. Tables and config
 
