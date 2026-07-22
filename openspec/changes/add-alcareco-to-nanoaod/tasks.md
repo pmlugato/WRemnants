@@ -122,6 +122,14 @@
   the same file.
 - [ ] 5.4 Repeat per channel and per stream (all five).
 - [ ] 5.5 Resource check: peak RSS + runtime vs. the two-job baseline.
+- [x] 5.7 **600-event validation run**: two-track 1030/1030 (100%);
+  single-track 936/1003 (93.3%) at plimit=0.05. Matched control at
+  plimit=1.0 on the SAME 1003 tracks: 428/1003 (42.7%) -- the lowered
+  floor is worth +50 percentage points of bachelor legs.
+- [x] 5.8 Refit dimuon mass peaks at the J/psi: median 3.0935 vs PDG
+  3.0969 (**-3.4 MeV**, identity corrections, unconstrained). Raw B+
+  distribution is broad/combinatorial as expected for the wide AlCaReco
+  window.
 - [ ] 5.6 Run `btojpsik.py` over the produced nano via its existing
   AlCaReco path.
 
@@ -130,32 +138,51 @@
 Source: the 2-slide background deck already built; extend in place via
 the `mit-slides` skill so it supersedes it at the same path.
 
-- [ ] 6.1 Slide: how ours differs — AlCaReco is not MINIAOD; content
+- [x] 6.1 Slide: how ours differs — AlCaReco is not MINIAOD; content
   inventory; which tables can/cannot be filled; why `mz_dilepton` /
   `mw_*` cannot consume this nano.
-- [ ] 6.2 Slide: what we needed to do — refit in the loop (application
+- [x] 6.2 Slide: what we needed to do — refit in the loop (application
   mode); two jobs -> one after the shared-G4-master fix; generic
   nested-VCC decomposition replacing the splitter; missing
   `reco::Muon` producer; cross-links as the flat-tree ref substitute.
-- [ ] 6.3 Slide: what we did — one-job pipeline diagram, table
+- [x] 6.3 Slide: what we did — one-job pipeline diagram, table
   inventory (raw + corrected), histmaker branch-name contract.
-- [ ] 6.4 Slide: validation — cross-release smoke, raw-vs-corrected
+- [x] 6.4 Slide: validation — cross-release smoke, raw-vs-corrected
   closure vs. the retired offline join, per-channel counts, resources.
-- [ ] 6.5 Slide: status / next steps — identity corrections now, real
+- [x] 6.5 Slide: status / next steps — identity corrections now, real
   2016 corrections later, batch production.
-- [ ] 6.6 Rebuild the PDF and confirm it renders.
+- [x] 6.6 PDF rebuilt and rendered-checked (12 pages). Plot slides needed
+  a `section.plots` CSS block that the original 2-slide deck never had,
+  plus `min-width: 0` on the figrow images -- flex items refuse to shrink
+  below intrinsic size, so a wide PNG overflowed and hid its neighbour.
 
-## 6b. Blocking issue surfaced by the end-to-end run
+## 6b. Convergence auditing (NOT a blocker)
 
-- [ ] 6b.1 **CVH fit does not converge**: `corEdmval ~ 190` on every
-  candidate, `edmval < 1e-5` on 0/45. Pre-existing and tracked by
-  `improve-cvh-refit-convergence` / [[project-cvh-jpsi-mass-broadening]],
-  not introduced here, and harmless for v1 plumbing (identity
-  corrections). **The `cor*` columns must not be used for physics until
-  this is fixed.**
-- [ ] 6b.2 Measure real output size on a full file: the 30-event smoke
-  gave ~60 kB/event, which is dominated by small-file overhead and needs
-  a proper measurement before batch planning.
+- [x] 6b.1 **Corrected reading of `edmval`.** An earlier note here called
+  `corEdmval ~ 190` a convergence failure. That was wrong. The stored
+  `edmval` is the **full-state** EDM, including all per-hit scattering
+  parameters, which are re-zeroed at every re-linearization; large
+  values (median ~1e3) are expected and are **not** the criterion. The
+  criterion is **EDM < 1e-5 on the reference-state block**, with an
+  iteration cap of 10. Not meeting it is also not by itself failure --
+  fits can be successful without reaching the threshold.
+- [ ] 6b.2 Persist the **reference-block** EDM per iteration (new
+  trajectory branches) and expose it in the NanoAOD instead of / beside
+  the full-state `edmval`, so consumers audit convergence on the right
+  quantity.
+- [ ] 6b.3 Measure real output size on a full file: the 30-event smoke
+  gave ~60 kB/event, dominated by small-file overhead.
+
+Measured convergence audit (reference-block criterion), for context:
+
+| | at iteration cap without meeting criterion | of which genuinely still improving |
+|---|---|---|
+| dimuon | 1.3 % | essentially all (chi2 still falling) |
+| single-track | 15.8 % | ~half converge by iteration 20; 8.2 % never |
+
+The never-converging fits are **limit cycles**: the solver predicts a
+chi2 improvement of ~0.07 (median) every iteration, but 30 extra
+iterations change the actual chi2 by exactly zero for the median fit.
 
 ## 7. Follow-up (separate changes)
 

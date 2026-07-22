@@ -205,6 +205,27 @@ The nano production must set a lowered `plimit` or it will silently
 publish candidates whose bachelor leg was never refit — which is exactly
 what the orphan/status column (D2) has to make visible.
 
+## Reading `edmval` correctly
+
+The `edmval` the makers store is the **full-state** EDM: it includes
+every per-hit scattering parameter, and those are re-zeroed at each
+re-linearization. Its median is ~1e3, so a value of order 1e2 is
+unremarkable and says nothing about convergence.
+
+The actual convergence criterion is **EDM < 1e-5 on the reference-state
+block**, iteration cap 10. Failing to reach it is not equivalent to a
+failed fit. Measured rates: dimuon fits hit the cap without meeting the
+criterion 1.3 % of the time (essentially all still genuinely improving,
+chi2 still falling); single-track 15.8 %, of which about half converge
+by iteration 20 and 8.2 % never do. The never-converging class are limit
+cycles -- the solver keeps predicting a ~0.07 chi2 gain while 30 further
+iterations move the actual chi2 by exactly zero.
+
+**Consequence for the NanoAOD:** exposing the full-state `edmval` alone
+invites exactly the misreading above. The reference-block EDM is now
+recordable per iteration, and that is the quantity the tables should
+carry for convergence auditing.
+
 ## Risks
 
 - **R1.** Multi-bachelor channels (K*0->Kpi, phi->KK, psi2S->J/psi
