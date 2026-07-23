@@ -95,9 +95,13 @@
   `dau0pdg=443` (J/psi composite), `dau1pdg=+-321` (bachelor kaon,
   signed convention holding), `dau0pt` constant across the candidates
   of one J/psi while `dau1pt` varies -- the expected nesting.
-- [ ] 3.3 Index-map helper producer(s) emitting `ValueMap<int>` for
-  all three cross-links: daughter->Track, Track->Muon (invert the
-  persisted `TrackToMuon` Association), Track->PV.
+- [x] 3.3a **daughter->Track DONE + VALIDATED**: new
+  `CandidateLeafTrackIndexProducer` emits mu0/mu1/bach0/bach1TrackIdx
+  ValueMap<int> keyed to the candidate collection, ProductID-guarded.
+  `Track_pt[kaonTrackIdx]` reproduces `BuJpsiK_kaonPt` exactly; kaon
+  dE/dx now reachable per candidate.
+- [ ] 3.3b Track->Muon (invert `TrackToMuon` Association) and Track->PV
+  index maps -- still to add.
 - [x] 3.4 `scram b` from inside the tou ched packages only -- both
   `Analysis/HitAnalyzer` and `PhysicsTools/NanoAOD` build green.
 
@@ -123,7 +127,8 @@
   it fails to link on `typeinfo for DcsStatus`). `Dcs` table verified:
   `magnetCurrent = 18164 A` (CMS solenoid nominal for 3.8 T),
   `magnetTemperature`, `ready` mask.
-- [ ] 4.6 Cross-link index columns on the candidate and Track tables.
+- [x] 4.6a Candidate daughter->Track columns (mu0/mu1/kaonTrackIdx) on
+  the BuJpsiK table. Track->Muon / Track->PV columns still to add (3.3b).
 - [ ] 4.7 Branch names matching the histmaker raw contract
   (`bkmm_kaon_*`, `mm_mu*`, `Muon_*`).
 - [ ] 4.8 Top-level config + `NanoAODOutputModule` outputCommands.

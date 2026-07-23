@@ -159,6 +159,34 @@ def main():
          "Reference-block EDM audit (cap = 10 iterations)",
          outdir, "convergence_audit.png")
 
+    # 6. kaon dE/dx via the daughter->Track cross-link, if present. This is the
+    #    join the flat tree exists to support: BuJpsiK_kaonTrackIdx -> Track row.
+    cols = set(t.keys())
+    if {"BuJpsiK_kaonTrackIdx", "Track_dedxHarmonic2"} <= cols:
+        ev = t.arrays(["BuJpsiK_kaonTrackIdx", "Track_dedxHarmonic2", "Track_pt"],
+                      library="np")
+        kded, kdpt = [], []
+        for idx, ded, tpt in zip(ev["BuJpsiK_kaonTrackIdx"], ev["Track_dedxHarmonic2"],
+                                 ev["Track_pt"]):
+            for i in idx:
+                if 0 <= i < len(ded):
+                    kded.append(ded[i])
+                    kdpt.append(tpt[i])
+        kded = np.array(kded)
+        if kded.size:
+            fig, ax = plt.subplots(figsize=(5.4, 3.5))
+            _style(ax)
+            ax.hist(kded, bins=50, range=(0, 8), color=ORANGE,
+                    edgecolor="white", linewidth=0.4)
+            ax.set_xlabel(r"bachelor-kaon dE/dx (harmonic2) [MeV/cm]")
+            ax.set_ylabel("candidates")
+            ax.set_title("Kaon dE/dx via the candidate->Track cross-link",
+                         color=INK, fontsize=11, loc="left", pad=8)
+            ax.annotate(f"n = {kded.size}\nmedian = {np.median(kded):.2f}",
+                        xy=(0.97, 0.95), xycoords="axes fraction",
+                        color=MUTED, fontsize=9, va="top", ha="right")
+            _save(fig, outdir, "kaon_dedx.png")
+
 
 if __name__ == "__main__":
     main()
