@@ -297,12 +297,17 @@ to the FITTED candidate. The deprecated preset A/B path
   which we emit as `cvhFitVtxProb` -- not a tight DOCA. Bmm5's production
   two-track DOCA cut is LOOSE (0.1), and the histmaker adds no DOCA cut.
   The deprecated preset's DOCA<0.03 was a red herring.
-- [ ] 8.4 **Add the remaining fit-quality handles the analysis uses**
-  (currently absent from the NanoAOD, so the study lists them as
-  not-applied): dimuon vtx prob (needs a dimuon-only KVF -> emit its
-  prob), dimuon alphaBS / sl3d (need the beamspot/PV + decay length),
-  muon softMVA, the bmm BDT. Prioritise dimuon vtx prob (cheap) and the
-  PV-based flight-length (needs the Track->PV bridge, 4.6c).
+- [x] 8.4 **Dimuon fit-quality handles DONE + VALIDATED**: the B-fit
+  producer now runs a dimuon-only KVF and emits `dimuonVtxProb`,
+  `dimuonAlphaBS` (XY pointing wrt beamspot), `dimuonSxy` (2D Lxy
+  significance wrt beamspot -- proxy for the analysis's 3D sl3d; true 3D
+  needs the PV via 4.6c). Physical values (vtxProb med 0.51, alphaBS med
+  0.12, Sxy med 1.97). **Adding these cuts takes the peak from S/B~1 to
+  S/B~11** (≈970 signal, median 5.2715) on 52 files -- a clean B+ peak.
+  Still absent: muon softMVA, bmm BDT (task 8.4b).
+- [ ] 8.4b Remaining analysis handles not derivable here: muon softMVA
+  (not on the AlCaReco reco::Muon), the bmm BDT (a trained model). Low
+  priority; the peak is already clean without them.
 - [ ] 8.5 **Loose in-chain candidate pre-filter to shrink output**: add a
   configurable `CandViewSelector` (default OFF/loose) before the tables,
   modelled on Bmm5 production (muon/kaon pT>1, |eta|<2.4, B mass (4,6),

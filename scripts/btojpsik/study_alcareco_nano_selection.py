@@ -70,11 +70,15 @@ def main():
     br = ["BuJpsiK_kaonPt", "BuJpsiK_kaonEta", "BuJpsiK_kaonPhi",
           "BuJpsiK_mu0TrackIdx", "BuJpsiK_mu1TrackIdx",
           "BuJpsiK_cvhFitMass", "BuJpsiK_cvhFitOk", "BuJpsiK_cvhFitVtxProb",
+          "BuJpsiK_dimuonVtxProb", "BuJpsiK_dimuonAlphaBS", "BuJpsiK_dimuonSxy",
           "Track_pt", "Track_eta", "Track_phi", "Track_charge"]
+    have_mm = "BuJpsiK_dimuonVtxProb" in t.keys()
+    if not have_mm:
+        br = [b for b in br if not b.startswith("BuJpsiK_dimuon")]
     a = t.arrays(br, library="np")
 
     keys = ["fitM", "vtxP", "fitOk", "mu0Pt", "mu1Pt", "mu0Eta", "mu1Eta",
-            "mmPt", "kPt", "kEta", "chMul"]
+            "mmPt", "kPt", "kEta", "chMul", "mmVtxP", "mmAlpha", "mmSxy"]
     acc = {k: [] for k in keys}
     for ev in range(len(a["BuJpsiK_kaonPt"])):
         tp, te, tf, tc = (a[f"Track_{x}"][ev]
@@ -97,6 +101,9 @@ def main():
             acc["kPt"].append(a["BuJpsiK_kaonPt"][ev][i])
             acc["kEta"].append(abs(a["BuJpsiK_kaonEta"][ev][i]))
             acc["chMul"].append(tc[i0] * tc[i1])
+            acc["mmVtxP"].append(a["BuJpsiK_dimuonVtxProb"][ev][i] if have_mm else 1.0)
+            acc["mmAlpha"].append(a["BuJpsiK_dimuonAlphaBS"][ev][i] if have_mm else 0.0)
+            acc["mmSxy"].append(a["BuJpsiK_dimuonSxy"][ev][i] if have_mm else 99.0)
     d = {k: np.array(v) for k, v in acc.items()}
 
     n0 = len(d["fitM"])
@@ -108,6 +115,9 @@ def main():
         ("muon |eta| < 1.4", (d["mu0Eta"] < 1.4) & (d["mu1Eta"] < 1.4)),
         ("muon pT > 4", (d["mu0Pt"] > 4) & (d["mu1Pt"] > 4)),
         ("dimuon pT > 7", d["mmPt"] > 7),
+        ("dimuon vtx prob > 0.1", d["mmVtxP"] > 0.1),
+        ("dimuon alphaBS < 0.4", d["mmAlpha"] < 0.4),
+        ("dimuon Sxy > 4 (~sl3d)", d["mmSxy"] > 4),
         ("kaon pT in (1,8)", (d["kPt"] > 1) & (d["kPt"] < 8)),
         ("kaon |eta| < 1.4", d["kEta"] < 1.4),
         (f"fitted vtx prob > {vtxprob_cut}", d["vtxP"] > vtxprob_cut),
@@ -120,9 +130,11 @@ def main():
         mask = mask & c
         print(f"{name:34s} {mask.sum():8d} {mask.sum()/max(n0,1):8.3f}")
         stages[name] = mask.copy()
-    print("NOT applied (absent from the NanoAOD, yields are upper bounds): "
-          "muon softMVA>0.45, dimuon vtx-prob>0.1, dimuon alphaBS<0.4, "
-          "dimuon sl3d>4, bmm BDT>0.1, two-track DOCA<0.1.")
+    mm_note = ("dimuon Sxy is the 2D Lxy-significance proxy for the analysis's "
+               "3D sl3d (true 3D needs the PV). " if have_mm else
+               "dimuon vtx-prob / alphaBS / Sxy columns ABSENT -- not applied. ")
+    print("NOTE: " + mm_note + "Still absent from the NanoAOD (not applied): "
+          "muon softMVA>0.45, bmm BDT>0.1, two-track DOCA<0.1.")
 
     kin = stages["kaon |eta| < 1.4"]              # kinematics only
     full = stages["fitted mass in (5.2,5.4)"]     # full selection incl. mass band
@@ -134,10 +146,11 @@ def main():
     b = np.linspace(5.0, 5.6, 60)
     ax.hist(d["fitM"][d["fitOk"] == 1], bins=b, histtype="stepfilled",
             color=RULE, label=f"all fitted ({int((d['fitOk']==1).sum())})")
+    klabel = "+ kin & dimuon quality" if have_mm else "+ kinematics"
     ax.hist(d["fitM"][kin], bins=b, histtype="step", color=BLUE, lw=2,
-            label=f"+ kinematics ({int(kin.sum())})")
+            label=f"{klabel} ({int(kin.sum())})")
     ax.hist(d["fitM"][full_nomass], bins=b, histtype="step", color=ORANGE, lw=2,
-            label=f"+ vtxProb>{vtxprob_cut} ({int(full_nomass.sum())})")
+            label=f"+ B vtxProb>{vtxprob_cut} ({int(full_nomass.sum())})")
     ax.axvline(5.27934, color=INK, ls="--", lw=1.2)
     ax.axvspan(5.2, 5.4, color=ORANGE, alpha=0.06)
     ax.set_xlabel(r"fitted $m(\mu\mu K)$ [GeV]")
