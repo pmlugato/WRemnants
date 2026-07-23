@@ -253,3 +253,11 @@ iterations change the actual chi2 by exactly zero for the median fit.
 
 - [ ] 7.1 Wire real 2016 postVFP corrections once solved.
 - [ ] 7.2 Batch production over the 38,708-file AlCaReco set.
+
+- [x] 5.9 **Full-file shape run (3255 evt, fast path, no CVH refit)**:
+  5741 B+ candidates, kinematic fit 99.7% fitOk, fitted median 5.275
+  (PDG 5.2793). Distribution is FLAT/combinatorial by design -- loose
+  alignment skim, wide window, no signal selection; the peak-producing
+  cuts are the histmaker's job. Kaon dE/dx via the cross-link: median
+  3.17 MeV/cm (physical). Confirms the end-to-end infrastructure; a peak
+  needs the downstream selection, not the nano.
