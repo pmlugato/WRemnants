@@ -226,6 +226,54 @@ invites exactly the misreading above. The reference-block EDM is now
 recordable per iteration, and that is the quantity the tables should
 carry for convergence auditing.
 
+## D5 — The B mass is a raw four-vector sum, not a fit (OPEN)
+
+`BuJpsiK_mass` in the current NanoAOD is the stage-1 candidate's own
+`p4()`, which `JpsiXCandidateProducer` documents as "raw track-based":
+under preset B the producer deliberately keeps "raw track-sum dimuon
+kinematics so that the alignment fit and any Stage-2 CVH refit
+downstream see unconstrained inputs". There is no vertex fit
+(`vertexChi2 == 0`).
+
+`corMass` is the CVH-refit **dimuon** mass (two-track, J/psi
+mass-constrained). **It is not a B mass.** So the NanoAOD currently
+carries *no fitted m(mu mu K) at all* — only a raw sum.
+
+The correct construction is to take the refit muons (J/psi-constrained)
+plus the refit bachelor and run them through a
+`KinematicConstrainedVertexFitter` with a
+`TwoTrackMassKinematicConstraint` — the same RecoVertex/KinematicFit
+family Bmm5 uses. That machinery is available, and stage-1 already
+includes exactly those headers (it is what preset C used).
+
+**Blocker.** The CVH makers do not emit refit *tracks*. They emit
+scalar `ValueMap`s (`corPt/corEta/corPhi/corCharge/corDxy/corDz`) plus
+`momCov`, which is only a **3x3 momentum** covariance
+(`ResidualGlobalCorrectionMakerG4e.cc:3699-3701`, `covfull.topLeftCorner<3,3>()`).
+A `KinematicParticle` needs a `TransientTrack` — i.e. a full
+`reco::Track` with its 5x5 perigee covariance, promoted to 7x7. So the
+maker must first emit refit tracks (or full parameters + covariance)
+before the B fit can run on refit inputs.
+
+## D6 — The persisted `reco::Muon` is a shell
+
+Its `innerTrack()` / `outerTrack()` / `globalTrack()` `Ref`s are
+**set but unresolvable**: the AlCaReco keeps only the
+`ALCARECOTkAl<S>` track collection, not `generalTracks` /
+`globalMuons` / `standAloneMuons`. `isNonnull()` returns true (117/117
+inner, 111/117 outer) because a `Ref` only records ProductID+key, but
+dereferencing throws `RefCore: ... product cannot be found`.
+
+Usable directly from the muon object: kinematics, `isGlobalMuon`,
+`isTrackerMuon`, `isStandaloneMuon`, `isPFMuon`, `numberOfMatches`.
+**Not** usable: `nTrackerLayers`, `standalonePt/Eta/Phi`,
+`innerTrackOriginalAlgo`, `highPurity`, inner-track `dxy`/`dz`.
+
+Inner-track-like quantities are still recoverable, but through the
+**persisted alignment track** via the `TrackToMuon` Association — not
+through `muon.innerTrack()`. That is another argument for the
+Track->Muon cross-link column (Q6).
+
 ## Risks
 
 - **R1.** Multi-bachelor channels (K*0->Kpi, phi->KK, psi2S->J/psi
