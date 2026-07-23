@@ -204,14 +204,19 @@ splitter-free by default. Concretely landed:
 
 ### Selection study (new, folded in as section 8)
 
-`scripts/btojpsik/study_alcareco_nano_selection.py` replays the
-histmaker's AlCaReco-path cuts on the NanoAOD without touching the
-histmaker. Result: stage-1 already applies the preset-A windows;
-`kaon pT>1.5` is the dominant reducer (->5.6%); **the kaon-muon DOCA cut
-is the missing background rejector** and must be exposed as a candidate
-column (task 8.4). This motivates a **loose in-chain candidate
-pre-filter** (task 8.5) to shrink production output for fast histmaker
-iteration, sized from the study once DOCA is available.
+`scripts/btojpsik/study_alcareco_nano_selection.py` applies the real
+B->J/psi K selection to the NanoAOD without touching the histmaker,
+mirroring both authoritative sources -- Bmm5 nano production
+(`../Bmm5/NanoAOD/python/DileptonPlusX_cff.py`) and the histmaker
+ANALYSIS path (`get_bkmm_selections`) -- on the FITTED candidate
+(`cvhFitMass` / `cvhFitVtxProb`). The deprecated preset A/B path is not
+used. Result: the **fitted vertex probability is the real background
+rejector** (`bkmm_jpsimc_vtx_prob>0.1`, which we already emit -- it cuts
+428->223), plus the muon/kaon kinematics and the fitted mass window.
+Task 8.4 adds the remaining fit-quality handles the analysis uses
+(dimuon vtx prob, alphaBS, sl3d -- currently absent from the NanoAOD);
+task 8.5 adds a loose in-chain candidate pre-filter modelled on the
+Bmm5 production selection to shrink output for fast histmaker iteration.
 
 ### Postponed (recorded, not done here)
 

@@ -271,30 +271,38 @@ iterations change the actual chi2 by exactly zero for the median fit.
 
 ## 8. Selection study + loose in-chain pre-filter (this change)
 
-- [x] 8.1 **Selection-study script DONE**:
-  `scripts/btojpsik/study_alcareco_nano_selection.py` replays the
-  histmaker's AlCaReco-path cuts (preset A/B, `get_bkmm_alcareco_selections`)
-  directly on the NanoAOD -- standalone, does NOT touch the histmaker.
-  Rebuilds the dimuon from the `mu0/mu1TrackIdx` cross-links, so it also
-  exercises those links on real cuts.
-- [x] 8.2 **Cutflow measured** (one 2016F file, 5741 candidates): preset
-  A already 100% (stage-1 pre-applies those windows); muon pT>4 -> 75.9%;
-  **kaon pT>1.5 -> 5.6% (dominant reducer, soft kaons)**; |kaon eta|<1.8
-  -> 5.0%; mumu/B pT no further loss. preset B* = 5.0% (287), an UPPER
-  bound since the kaon-mu DOCA<0.03 cut is not applied.
-- [x] 8.3 **Finding: the DOCA cut is the missing background rejector.**
-  Even preset B* leaves a flat m(mumuK) -- no peak on one file without
-  DOCA + BDT + more stats.
-- [ ] 8.4 **Emit kaon-muon DOCA as a candidate column** (`kaonMu0Doca`,
-  `kaonMu1Doca`): the stage-1 producer already computes the straight-line
-  3D DCA; expose it (or recompute in a small producer) so the histmaker's
-  `select_kaon_mu_doca` works on the NanoAOD and the peak can form.
+The study mirrors the TWO authoritative selections -- Bmm5 nano
+production (`../Bmm5/NanoAOD/python/DileptonPlusX_cff.py`) and the
+btojpsik histmaker ANALYSIS path (`get_bkmm_selections`) -- both applied
+to the FITTED candidate. The deprecated preset A/B path
+(`get_bkmm_alcareco_selections`) is NOT used.
+
+- [x] 8.1 **Selection-study script rewritten**:
+  `scripts/btojpsik/study_alcareco_nano_selection.py` applies the real
+  cuts on `cvhFitMass` / `cvhFitVtxProb`, rebuilding the muon legs via the
+  `mu0/mu1TrackIdx` cross-links. Standalone; does NOT touch the histmaker.
+- [x] 8.2 **Cutflow measured** (one 2016F file, 5741 candidates, fitted):
+  muon |eta|<1.4 -> 62%; muon pT>4 -> 57%; dimuon pT>7 -> 57%;
+  kaon pT in (1,8) -> 8.8%; kaon |eta|<1.4 -> 7.5%;
+  **fitted vtxProb>0.1 -> 3.9% (428->223, the fit-quality rejector, which
+  we DO have)**; fitted mass in (5.2,5.4) -> 95 candidates.
+- [x] 8.3 **Correction to the earlier claim**: the real background
+  rejector is the FITTED VERTEX PROBABILITY (`bkmm_jpsimc_vtx_prob>0.1`),
+  which we emit as `cvhFitVtxProb` -- not a tight DOCA. Bmm5's production
+  two-track DOCA cut is LOOSE (0.1), and the histmaker adds no DOCA cut.
+  The deprecated preset's DOCA<0.03 was a red herring.
+- [ ] 8.4 **Add the remaining fit-quality handles the analysis uses**
+  (currently absent from the NanoAOD, so the study lists them as
+  not-applied): dimuon vtx prob (needs a dimuon-only KVF -> emit its
+  prob), dimuon alphaBS / sl3d (need the beamspot/PV + decay length),
+  muon softMVA, the bmm BDT. Prioritise dimuon vtx prob (cheap) and the
+  PV-based flight-length (needs the Track->PV bridge, 4.6c).
 - [ ] 8.5 **Loose in-chain candidate pre-filter to shrink output**: add a
-  configurable `CandViewSelector` (default OFF/loose) on the candidate
-  collection before the tables -- e.g. kaon pT > ~0.8 and the raw mass
-  windows -- so production output shrinks (the study shows kaon pT>1.5
-  alone is ~20x) while staying looser than the analysis cut, for fast
-  histmaker iteration. Threshold set from the study once DOCA is in.
+  configurable `CandViewSelector` (default OFF/loose) before the tables,
+  modelled on Bmm5 production (muon/kaon pT>1, |eta|<2.4, B mass (4,6),
+  DOCA<0.1) plus a loose fitted-vtxProb floor -- so production output
+  shrinks while staying looser than the analysis cut, for fast histmaker
+  iteration. Thresholds set from the study.
 
 ## 7. Follow-up (separate changes)
 
