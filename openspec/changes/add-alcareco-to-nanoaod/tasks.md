@@ -43,10 +43,17 @@
   nValidHits/nValidPixelHits/momCov` unconditionally
   (`ResidualGlobalCorrectionMakerG4e.cc:273-280`). No new C++ needed
   for emission.
-- [ ] 1.5 In-job combiner producer: pair the subsystem ValueMaps per
-  candidate (keyed directly to the candidate collection once 2.4
-  lands), emit the corrected parent mass and a
-  `joinFlags`-equivalent orphan column.
+- [x] 1.5 **DONE (superseded approach)**: rather than an in-job ValueMap
+  combiner, the fitted mother mass now comes from a proper kinematic fit
+  -- `JpsiXKinematicFitProducer` (the Bmm5 chain). It descends the nested
+  candidate to leaf tracks, builds TransientTracks, and runs
+  `KinematicConstrainedVertexFitter` (+ `TwoTrackMassKinematicConstraint`
+  in inFit mode). Three modes: inFit (Bmm5) / upstream / cascade.
+  fitOk = 0 is the orphan flag. Validated (400 evt, stage-1 tracks):
+  inFit 100% fitOk, fitted B+ median 5.2792 vs PDG 5.27934, window rms
+  0.070 (sharper than the raw IQR 0.24); cascade vtxProb>0.01 = 100%.
+  Full driver end-to-end: fitted 5.2800, raw 5.26, dimuon corMass 3.10
+  all coexisting.
 - [ ] 1.6 Retire `scripts/btojpsik/join_cvh_bplus_jpsik.py` from the
   production path.
 
@@ -192,6 +199,24 @@ Measured convergence audit (reference-block criterion), for context:
 The never-converging fits are **limit cycles**: the solver predicts a
 chi2 improvement of ~0.07 (median) every iteration, but 30 extra
 iterations change the actual chi2 by exactly zero for the median fit.
+
+## 6d. B-candidate kinematic fit (Bmm5 chain)
+
+- [x] 6d.1 `JpsiXKinematicFitProducer` new plugin; inFit/upstream/cascade
+  modes; emits fitMass/fitMassErr/fitPt/eta/phi/vtxChi2/vtxNdof/vtxProb +
+  fitOk ValueMaps keyed to the candidate collection.
+- [x] 6d.2 `cvhFit*` columns on the candidate table + driver wiring
+  (`jpsiConstraint`), distinct cvh* names (Q2 answer) so they cannot be
+  confused with BParking's bkmm_jpsimc_*/bkmm_nomc_*.
+- [ ] 6d.3 **OPEN — refit-track substitution into the B fit.** The
+  producer can swap in refit tracks, but only via a product-id-matched
+  refit collection. The single-track maker's output is keyed to the
+  per-candidate bachelor collection (wrong product) and refits only the
+  bachelor, not the muons, so substitution is inert by design here. A
+  key-based lookup mis-indexed collections and gave a garbage fit (28.7%
+  fitOk, median 4.69) -- now guarded by `tref.id() == refitH.id()`.
+  Proper refit-into-fit is the N-body maker's domain (add-nbody-cvh-maker).
+- [ ] 6d.4 Compare the three constraint modes on a larger sample.
 
 ## 6c. Refit-track emission (emitRefitTracks)
 
