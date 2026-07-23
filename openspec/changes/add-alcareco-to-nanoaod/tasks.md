@@ -73,13 +73,17 @@
   Reading the nested `ALCARECOTkAlJpsiXBPlusResonances` directly is
   **bit-identical** to the legacy pre-split input: both
   `attempted=15 succeeded=15`, pixel `seen=110 sizeX1=29 demoted=29`.
-- [ ] 2.4 Route leaf-daughter tracks to the single-track maker from
-  the same candidate collection (no splitter input).
-- [ ] 2.5 Key both makers' ValueMaps to the original candidate
-  collection (retires `bCandIdx`).
-- [ ] 2.6 Delete `JpsiKCandidateSplitter` + its `_cfi` and unit test
-  once 2.3-2.5 are green; push the maker change upstream to David's
-  branch rather than letting it diverge.
+- [x] 2.4 **DONE**: new `CandidateLeafTrackProducer` emits the direct
+  leaf-daughter (bachelor) tracks + a `candIdx` vector; the single-track
+  maker's `src`/`bCandIdxSrc` point at it. Generic across channels
+  (composite daughters -> two-track maker, leaf daughters -> single).
+- [x] 2.5 Single-track maker keyed off the leaf-track producer's
+  `candIdx` (same mechanism as the old `bCandIdx`).
+- [x] 2.6 **Splitter dropped from the default path** (kept only for the
+  legacy pre-split A/B path). Validated splitter-free: single-track maker
+  fed 80 bachelor tracks, B fit unaffected. NOTE: file + `_cfi` are left
+  in place for the legacy path; full deletion + upstream push to David
+  deferred to the multi-channel change.
 
 ## 3. NanoAOD plugins
 
@@ -100,8 +104,13 @@
   ValueMap<int> keyed to the candidate collection, ProductID-guarded.
   `Track_pt[kaonTrackIdx]` reproduces `BuJpsiK_kaonPt` exactly; kaon
   dE/dx now reachable per candidate.
-- [ ] 3.3b Track->Muon (invert `TrackToMuon` Association) and Track->PV
-  index maps -- still to add.
+- [x] 3.3b **Track->Muon DONE + VALIDATED**: `TrackToMuonIndexProducer`
+  (templated `TrackAssocIndexProducer`); 81/688 tracks matched,
+  `Track_pt[muonIdx]` reproduces `Muon_pt` exactly. `Track->PV`
+  producer built (`TrackToVertexIndexProducer`) but the
+  `offlinePrimaryVertices` association is keyed to `generalTracks`, not
+  the persisted alignment tracks, so it returns all -1 here (guarded by
+  `contains(productID)`; no crash). See 4.6b for the fix.
 - [x] 3.4 `scram b` from inside the tou ched packages only -- both
   `Analysis/HitAnalyzer` and `PhysicsTools/NanoAOD` build green.
 
@@ -118,17 +127,28 @@
   `edm::TriggerResults` into `HLT_*` branches itself, so
   `keep edmTriggerResults_*_*_*` in `outputCommands` is the whole change.
   Verified: **534 HLT_* flags** written.
-- [ ] 4.4b **L1 bits still open**: the AlCaReco carries the *legacy*
-  `L1GlobalTriggerReadoutRecord` (2016), not the Run3 `gtStage2Digis`
-  that stock nano L1 tooling expects. Needs a small producer to unpack
-  the decision word into flags -- no stock path exists.
+- [x] 4.4b **L1 producer BUILT** (`L1LegacyDecisionTableProducer`): emits
+  a singleton `L1` table -- `finalOR` + 128-bit algo (`algo0..3`) +
+  64-bit tech (`tech0..1`) packed into uint32. Runs clean. **BUT reads
+  all-zero on this AlCaReco**: the `gtDigis` FDL-word vector is not
+  populated in the persisted stream (shell kept, decision bits dropped).
+  See 4.4c.
+- [ ] 4.4c **VERIFY L1 source content**: confirm whether the legacy L1
+  decision is recoverable from this AlCaReco at all (alternate accessor /
+  BX / a different persisted product), or whether it must be taken from a
+  fuller tier. If unrecoverable, drop the L1 table from the stream.
 - [x] 4.5 **DONE**: `SimpleDcsStatusFlatTableProducer` typedef added
   (+ `DataFormats/Scalers` in the plugins `BuildFile.xml`, without which
   it fails to link on `typeinfo for DcsStatus`). `Dcs` table verified:
   `magnetCurrent = 18164 A` (CMS solenoid nominal for 3.8 T),
   `magnetTemperature`, `ready` mask.
 - [x] 4.6a Candidate daughter->Track columns (mu0/mu1/kaonTrackIdx) on
-  the BuJpsiK table. Track->Muon / Track->PV columns still to add (3.3b).
+  the BuJpsiK table.
+- [x] 4.6b Track->Muon column (`Track_muonIdx`) on the Track table.
+- [ ] 4.6c **Track->PV via the `originalIndex` bridge**: the persisted
+  track->PV association is keyed to `generalTracks`. Map ALCARECO track
+  -> generalTracks index (the persisted `originalIndex` ValueMap) ->
+  look up the PV association on that key, to emit a real `Track_pvIdx`.
 - [ ] 4.7 Branch names matching the histmaker raw contract
   (`bkmm_kaon_*`, `mm_mu*`, `Muon_*`).
 - [ ] 4.8 Top-level config + `NanoAODOutputModule` outputCommands.
@@ -248,6 +268,33 @@ iterations change the actual chi2 by exactly zero for the median fit.
   NOT be cut on as a quality measure. Either carry the CVH chi2 in a
   separate field or document loudly at the consumer.
 - [ ] 6c.6 Same flag on the two-track maker (muon legs).
+
+## 8. Selection study + loose in-chain pre-filter (this change)
+
+- [x] 8.1 **Selection-study script DONE**:
+  `scripts/btojpsik/study_alcareco_nano_selection.py` replays the
+  histmaker's AlCaReco-path cuts (preset A/B, `get_bkmm_alcareco_selections`)
+  directly on the NanoAOD -- standalone, does NOT touch the histmaker.
+  Rebuilds the dimuon from the `mu0/mu1TrackIdx` cross-links, so it also
+  exercises those links on real cuts.
+- [x] 8.2 **Cutflow measured** (one 2016F file, 5741 candidates): preset
+  A already 100% (stage-1 pre-applies those windows); muon pT>4 -> 75.9%;
+  **kaon pT>1.5 -> 5.6% (dominant reducer, soft kaons)**; |kaon eta|<1.8
+  -> 5.0%; mumu/B pT no further loss. preset B* = 5.0% (287), an UPPER
+  bound since the kaon-mu DOCA<0.03 cut is not applied.
+- [x] 8.3 **Finding: the DOCA cut is the missing background rejector.**
+  Even preset B* leaves a flat m(mumuK) -- no peak on one file without
+  DOCA + BDT + more stats.
+- [ ] 8.4 **Emit kaon-muon DOCA as a candidate column** (`kaonMu0Doca`,
+  `kaonMu1Doca`): the stage-1 producer already computes the straight-line
+  3D DCA; expose it (or recompute in a small producer) so the histmaker's
+  `select_kaon_mu_doca` works on the NanoAOD and the peak can form.
+- [ ] 8.5 **Loose in-chain candidate pre-filter to shrink output**: add a
+  configurable `CandViewSelector` (default OFF/loose) on the candidate
+  collection before the tables -- e.g. kaon pT > ~0.8 and the raw mass
+  windows -- so production output shrinks (the study shows kaon pT>1.5
+  alone is ~20x) while staying looser than the analysis cut, for fast
+  histmaker iteration. Threshold set from the study once DOCA is in.
 
 ## 7. Follow-up (separate changes)
 

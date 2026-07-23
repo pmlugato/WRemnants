@@ -207,6 +207,20 @@ identification flags used in the AlCaReco selection (`isGlobalMuon`,
 - **THEN** the `Muon` table row count per event equals the persisted
   `reco::Muon` collection size for that event.
 
+### Requirement: Candidate daughters carry Track cross-link indices
+
+The stream SHALL emit, per candidate, the Track-table row index of each
+leaf daughter, so that a flat-tree reader can join a candidate's kaon or
+muon to its track-level quantities (dE/dx, hits, refit). The index SHALL
+be a sentinel value when the daughter's track is not in the referenced
+Track collection.
+
+#### Scenario: Kaon dE/dx recoverable from the candidate
+
+- **WHEN** a candidate row carries its kaon's Track index
+- **THEN** reading that Track row yields the kaon's dE/dx
+- **AND** the Track pt at that index equals the candidate's kaon pt.
+
 ### Requirement: HLT trigger decision columns
 
 The stream SHALL expose the HLT trigger decisions from the AlCaReco

@@ -181,6 +181,47 @@ the 2-slide version at the same path.
   in one block, not a refactor. See design D2a for the generic
   decomposition rule and the per-channel table.
 
+## Implementation progress and refactoring folded in (2026-07-23)
+
+The B+ end-to-end chain is built and validated; the driver is now
+splitter-free by default. Concretely landed:
+
+- **Kinematic B fit** (`JpsiXKinematicFitProducer`, the Bmm5 chain) with
+  three constraint modes (inFit / upstream / cascade); fitted B+ median
+  5.275 GeV, 99.7% fitOk on a full file.
+- **Splitter removal**: two-track maker descends the nested candidate;
+  new `CandidateLeafTrackProducer` feeds the single-track maker the
+  bachelor tracks generically. `JpsiKCandidateSplitter` off the default
+  path (legacy A/B only).
+- **Cross-links**: `CandidateLeafTrackIndexProducer` (daughter->Track,
+  validated exact) and `TrackAssocIndexProducer` (Track->Muon validated;
+  Track->PV guarded, needs the `originalIndex` bridge, task 4.6c).
+- **`emitRefitTracks`** on the single-track maker (+ `refitMaxRelPtErr`
+  guard cut, default off), for a future refit-into-fit path.
+- **Tables**: reco::Muon, reco::VertexCompositeCandidate, DcsStatus flat
+  producers; HLT flags; legacy-L1 producer built but reading all-zero
+  (source-content issue, task 4.4c).
+
+### Selection study (new, folded in as section 8)
+
+`scripts/btojpsik/study_alcareco_nano_selection.py` replays the
+histmaker's AlCaReco-path cuts on the NanoAOD without touching the
+histmaker. Result: stage-1 already applies the preset-A windows;
+`kaon pT>1.5` is the dominant reducer (->5.6%); **the kaon-muon DOCA cut
+is the missing background rejector** and must be exposed as a candidate
+column (task 8.4). This motivates a **loose in-chain candidate
+pre-filter** (task 8.5) to shrink production output for fast histmaker
+iteration, sized from the study once DOCA is available.
+
+### Postponed (recorded, not done here)
+
+- The other 11 candidate channels (config replication + two-composite
+  channels needing two two-track instances).
+- Histmaker branch-name aliasing (the raw contract mapping).
+- The refit-track covariance-tail investigation (`refitMaxRelPtErr`
+  cut is wired meanwhile).
+- Full deletion of `JpsiKCandidateSplitter` + upstream push to David.
+
 ## Non-goals
 
 - The CVH calibration itself (gradients, aggregate, solve) — separate,
