@@ -281,11 +281,17 @@ to the FITTED candidate. The deprecated preset A/B path
   `scripts/btojpsik/study_alcareco_nano_selection.py` applies the real
   cuts on `cvhFitMass` / `cvhFitVtxProb`, rebuilding the muon legs via the
   `mu0/mu1TrackIdx` cross-links. Standalone; does NOT touch the histmaker.
-- [x] 8.2 **Cutflow measured** (one 2016F file, 5741 candidates, fitted):
-  muon |eta|<1.4 -> 62%; muon pT>4 -> 57%; dimuon pT>7 -> 57%;
-  kaon pT in (1,8) -> 8.8%; kaon |eta|<1.4 -> 7.5%;
-  **fitted vtxProb>0.1 -> 3.9% (428->223, the fit-quality rejector, which
-  we DO have)**; fitted mass in (5.2,5.4) -> 95 candidates.
+- [x] 8.2 **Cutflow measured** (12 files, 45.7k events, 80.2k fitted
+  candidates): muon |eta|<1.4 -> 61%; muon pT>4 -> 57%; dimuon pT>7 ->
+  57%; kaon pT in (1,8) -> 9.3%; kaon |eta|<1.4 -> 8.0%;
+  **fitted vtxProb>0.1 -> 3.8% (6432->3035)**; fitted mass (5.2,5.4) ->
+  1333 candidates.
+- [x] 8.2b **B+ PEAK CONFIRMED**: after kinematics + fitted vtxProb>0.1 a
+  clear B+ peak appears AT THE PDG MASS (5.279) above the combinatorial
+  background (fig `selection_fitB.png`). This validates the whole chain:
+  AlCaReco -> CVH refit -> kinematic B fit -> NanoAOD -> real selection
+  gives the correct thing. Peak is modest because the not-yet-emitted
+  analysis cuts (8.4) would clean the remaining background.
 - [x] 8.3 **Correction to the earlier claim**: the real background
   rejector is the FITTED VERTEX PROBABILITY (`bkmm_jpsimc_vtx_prob>0.1`),
   which we emit as `cvhFitVtxProb` -- not a tight DOCA. Bmm5's production
