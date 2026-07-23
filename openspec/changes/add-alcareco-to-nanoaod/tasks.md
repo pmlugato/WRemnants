@@ -91,7 +91,7 @@
 - [ ] 3.3 Index-map helper producer(s) emitting `ValueMap<int>` for
   all three cross-links: daughter->Track, Track->Muon (invert the
   persisted `TrackToMuon` Association), Track->PV.
-- [x] 3.4 `scram b` from inside the touched packages only -- both
+- [x] 3.4 `scram b` from inside the tou ched packages only -- both
   `Analysis/HitAnalyzer` and `PhysicsTools/NanoAOD` build green.
 
 ## 4. Tables and config
@@ -192,6 +192,32 @@ Measured convergence audit (reference-block criterion), for context:
 The never-converging fits are **limit cycles**: the solver predicts a
 chi2 improvement of ~0.07 (median) every iteration, but 30 extra
 iterations change the actual chi2 by exactly zero for the median fit.
+
+## 6c. Refit-track emission (emitRefitTracks)
+
+- [x] 6c.1 `emitRefitTracks` flag on the single-track maker (default
+  False, nominal untouched). Emits `reco::TrackCollection` "refit"
+  positionally aligned with the input tracks + `ValueMap<int>` "refitOk".
+  Needed because the existing ValueMaps publish only a 3x3 momentum block
+  AND are gated on `doMuonAssoc_` / keyed to `pat::Muon` -- so the
+  bachelor kaon got nothing at all.
+- [x] 6c.2 Covariance guard: non-finite or non-positive-diagonal
+  reference blocks are rejected (track emitted as the input copy with
+  `refitOk = 0`). Without it, clamped fits leaked NaN covariances that
+  would poison a downstream vertex fit.
+- [x] 6c.3 `RefitTrack` nano table + validation. Alignment exact (27
+  refit vs 27 bachelors). pT shift vs raw median +0.3%, max 8%.
+  ptErr median 0.0102 GeV on ~1 GeV tracks (~1%).
+- [ ] 6c.4 **OPEN — covariance tail.** After the NaN guard, a
+  finite-but-absurd tail survives (max ptErr 92 GeV on a ~1 GeV track;
+  3/27 rejected outright). Bulk is sane; the tail must be understood or
+  cut before these tracks feed a kinematic vertex fit.
+- [ ] 6c.5 **OPEN — chi2/ndof is not track quality.** `chisqval` is the
+  CVH full chi2 (all hits + scattering terms) over a nominal tracker
+  ndof, so `normalizedChi2()` on a refit track has median ~1e3 and must
+  NOT be cut on as a quality measure. Either carry the CVH chi2 in a
+  separate field or document loudly at the consumer.
+- [ ] 6c.6 Same flag on the two-track maker (muon legs).
 
 ## 7. Follow-up (separate changes)
 
