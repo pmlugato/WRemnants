@@ -530,6 +530,16 @@ double calculateQopUnc(float pt, float eta, int charge, double AUnc,
   return calculateQopUnc(eta, charge, kUnc);
 }
 
+// handles non-ultra-relativistic case. Note in all of these that a sintheta is absorbed
+// into the definition of e - may want to revisit later.
+double calculateQopUnc(float pt, float eta, int charge, double AUnc,
+                       double eUnc, double MUnc, double mass) {
+  float k = 1 / pt;
+  double theta = calculateTheta(eta);
+  double kUnc = (AUnc - eUnc * k * std::sqrt(1 + pow(k * mass * std::sin(theta), 2))) * k + charge * MUnc;
+  return calculateQopUnc(eta, charge, kUnc);
+}
+
 Eigen::TensorFixedSize<double, Eigen::Sizes<2>>
 calculateSmearingWeightsDownUp(double genQop, double recoQop, double recoQopUnc,
                                double sigma2Qop) {

@@ -49,6 +49,35 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--daughterPtCut",
+    type=float,
+    default=0.0,
+    help="minimum required pt for K and pi",
+)
+parser.add_argument(
+    "--ptDiagnostics",
+    action="store_true",
+    help=(
+        "Save diagnostic histograms of the gen and reco pt of the K and pi, plus "
+        "their qopr = (reco qop)/(gen qop) where qop = charge/(pt*cosh(eta)). "
+        "MC only; filled after gen matching."
+    ),
+)
+parser.add_argument(
+    "--genPtReweightSaturation",
+    type=float,
+    default=None,
+    help=(
+        "If set, replace the gen pt fed into the scale/resolution reweights with "
+        "max(gen pt, VALUE) [GeV]. Use to floor the D0 daughters' gen pt at the "
+        "reweight models' training range (~2 GeV) to avoid low-pt extrapolation. "
+        "Reco pt input fed into the reweight models are scaled such that the "
+        "ratio of reco to gen is preserved"
+        "Affects only the reweight inputs (scale_genPt); the diagnostic, nominal, "
+        "and manual A/e/M histograms are unchanged."
+    ),
+)
+parser.add_argument(
     "--etaBins",
     type=int,
     default=None,
@@ -102,6 +131,12 @@ if args.muonScaleVariation not in ["onnxReweight", "smearingWeightsSplines"]:
 
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
 
+# Daughter masses [GeV]. The D0 histmaker always uses the mass-aware energy-loss
+# term in the ONNX scale reweight (K mass for the K leg, pi mass for the pi leg),
+# so these are passed to the reweight helper below and reused for the four-vectors.
+M_K = 0.493677
+M_PI = 0.139570
+
 calib_filepaths = common.calib_filepaths
 scale_diff_weights_helper = (
     ROOT.wrem.SplinesDifferentialWeightsHelper(calib_filepaths["tflite_file"])
@@ -133,6 +168,7 @@ resolution_diff_weights_helper = (
     smearing=not args.noSmearing,
     fit_muon_scale=args.fitMuonScaleAndResolution,
     variation_eta_bins=args.etaBins,
+    reweight_mass=[M_K, M_PI],
 )
 
 if data_jpsi_crctn_unc_helper is None:
@@ -273,14 +309,23 @@ ROOT.gInterpreter.Declare("""
             return ib;
         }
 
-        // pt of a track after shifting scale parameter iparm in eta bin ieta by sgn*width
-        double shifted_pt(double pt, double q, int track_ieta,
+        // pt of a track after shifting scale parameter iparm in eta bin ieta by sgn*width.
+        // The e (energy-loss) term uses the non-ultra-relativistic correction: its shift
+        // is scaled by 1/beta = E/|p| = sqrt(1 + (mass/|p|)^2), with |p| = pt*cosh(eta),
+        // matching the mass-aware calculateQopUnc. A and M are unchanged.
+        double shifted_pt(double pt, double q, double eta, double mass, int track_ieta,
                           unsigned int ieta, unsigned int iparm, double sgn) const {
             if (track_ieta != static_cast<int>(ieta)) return pt;
             double dpt = 0.0;
-            if (iparm == 0)      dpt = sgn * width_A_ * pt;            // A': dpt = dA'*pt
-            else if (iparm == 1) dpt = -sgn * width_e_;               // e': dpt = -de'
-            else if (iparm == 2) dpt = sgn * width_M_ * q * pt * pt;  // M': dpt = q*dM'*pt^2
+            if (iparm == 0) {
+                dpt = sgn * width_A_ * pt;                              // A': dpt = dA'*pt
+            } else if (iparm == 1) {
+                const double p = pt * std::cosh(eta);
+                const double beta_inv = std::sqrt(1.0 + (mass * mass) / (p * p));
+                dpt = -sgn * width_e_ * beta_inv;                      // e': dpt = -de'/beta
+            } else if (iparm == 2) {
+                dpt = sgn * width_M_ * q * pt * pt;                    // M': dpt = q*dM'*pt^2
+            }
             return pt - dpt; //match reweight sign convention
         }
 
@@ -319,8 +364,10 @@ ROOT.gInterpreter.Declare("""
                 for (unsigned int iparm = 0; iparm < n_scale_params_; ++iparm) {
                     for (int isign = 0; isign < 2; ++isign) {
                         const double sgn = signs[isign];
-                        const double ptKs = shifted_pt(ptK, qK, biK, ieta, iparm, sgn);
-                        const double ptPis = shifted_pt(ptPi, qPi, biPi, ieta, iparm, sgn);
+                        const double ptKs =
+                            shifted_pt(ptK, qK, etaK, mK_, biK, ieta, iparm, sgn);
+                        const double ptPis =
+                            shifted_pt(ptPi, qPi, etaPi, mPi_, biPi, ieta, iparm, sgn);
                         const ROOT::Math::PtEtaPhiMVector vK(ptKs, etaK, phiK, mK_);
                         const ROOT::Math::PtEtaPhiMVector vPi(ptPis, etaPi, phiPi, mPi_);
                         const double m_var = (vK + vPi).M();
@@ -427,8 +474,9 @@ axis_mRK = hist.axis.Variable(
 axis_D0mass = hist.axis.Regular(25, 1.8, 1.93, name="D0mass")
 d0_axes = [axis_etaK, axis_mRK, axis_D0mass]
 
-M_K = 0.493677
-M_PI = 0.139570
+# Axes for the optional --ptDiagnostics histograms.
+axis_diag_pt = hist.axis.Regular(100, 0.0, 20.0, name="pt")
+axis_diag_qopr = hist.axis.Regular(200, 0.5, 1.5, name="qopr")
 
 # Manual A/e/M scale-variation histogram. The per-(eta bin, parameter) construction
 # below is only valid for the diagonal prefit-width configuration (no covariance /
@@ -578,8 +626,8 @@ def define_reco(df):
 
 def reco_selection():
     selection = [
-        "K_CVH_pt0 > 0.0",
-        "pi_CVH_pt0 > 0.0",
+        f"K_CVH_pt0 > {args.daughterPtCut}",
+        f"pi_CVH_pt0 > {args.daughterPtCut}",
         "K_E0 > 0.0",
         "pi_E0 > 0.0",
         "std::fabs(K_CVH_eta0) < 2.4",
@@ -616,12 +664,32 @@ def build_graph(df, dataset):
             )
         )
     else:
+        # Optionally floor the gen pt that feeds the reweights at a saturation value,
+        # so soft daughters are not pushed below the reweight models' training range.
+        # Scale BOTH the reco and gen pt fed to the reweight by the same per-leg factor
+        # max(1, sat/gen_pt): this floors gen pt at sat while preserving
+        # kappa_reco/kappa_gen (qopr), so the network sees an in-domain point instead of
+        # an artificial residual. Only the scale_* reweight inputs are affected; eta/phi
+        # are untouched so the angular residuals are preserved.
+        if args.genPtReweightSaturation is not None:
+            sat = args.genPtReweightSaturation
+            factor_K = f"std::max<float>(1.0f, {sat}f / K_gen_match[0])"
+            factor_pi = f"std::max<float>(1.0f, {sat}f / pi_gen_match[0])"
+            reco_pt_K = f"float(K_CVH_pt0) * {factor_K}"
+            reco_pt_pi = f"float(pi_CVH_pt0) * {factor_pi}"
+            gen_pt_K = f"std::max<float>(K_gen_match[0], {sat}f)"
+            gen_pt_pi = f"std::max<float>(pi_gen_match[0], {sat}f)"
+            logger.info(
+                f"Saturating reweight gen pt at {sat} GeV and scaling reco pt by the "
+                f"same factor to preserve qopr (scale_recoPt, scale_genPt)"
+            )
+        else:
+            reco_pt_K = "float(K_CVH_pt0)"
+            reco_pt_pi = "float(pi_CVH_pt0)"
+            gen_pt_K = "K_gen_match[0]"
+            gen_pt_pi = "pi_gen_match[0]"
         df = (
             df.Define("nominal_weight", "weight")
-            .Define(
-                "scale_recoPt",
-                "ROOT::VecOps::RVec<float>{float(K_CVH_pt0), float(pi_CVH_pt0)}",
-            )
             .Define(
                 "scale_recoEta",
                 "ROOT::VecOps::RVec<float>{float(K_CVH_eta0), float(pi_CVH_eta0)}",
@@ -647,8 +715,12 @@ def build_graph(df, dataset):
                 "gen_pt, gen_eta, gen_phi, gen_charge, gen_pdgId, 211)",
             )
             .Define(
+                "scale_recoPt",
+                f"ROOT::VecOps::RVec<float>{{{reco_pt_K}, {reco_pt_pi}}}",
+            )
+            .Define(
                 "scale_genPt",
-                "ROOT::VecOps::RVec<float>{K_gen_match[0], pi_gen_match[0]}",
+                f"ROOT::VecOps::RVec<float>{{{gen_pt_K}, {gen_pt_pi}}}",
             )
             .Define(
                 "scale_genEta",
@@ -677,6 +749,33 @@ def build_graph(df, dataset):
                 ["K_CVH_eta0", "mRK", "D0_mass", "weight"],
             )
         )
+
+        if args.ptDiagnostics:
+            # gen/reco pt and qopr of each daughter. qopr = (reco qop)/(gen qop),
+            # with p = pt*cosh(eta) and qop = charge/p (gen or reco consistently).
+            df = (
+                df.Define("K_gen_pt", "K_gen_match[0]")
+                .Define("pi_gen_pt", "pi_gen_match[0]")
+                .Define("K_reco_p", "K_CVH_pt0 * std::cosh(K_CVH_eta0)")
+                .Define("K_gen_p", "K_gen_match[0] * std::cosh(K_gen_match[1])")
+                .Define("K_qop_reco", "K_charge0 / K_reco_p")
+                .Define("K_qop_gen", "K_gen_match[3] / K_gen_p")
+                .Define("K_qopr", "K_qop_reco / K_qop_gen")
+                .Define("pi_reco_p", "pi_CVH_pt0 * std::cosh(pi_CVH_eta0)")
+                .Define("pi_gen_p", "pi_gen_match[0] * std::cosh(pi_gen_match[1])")
+                .Define("pi_qop_reco", "pi_charge0 / pi_reco_p")
+                .Define("pi_qop_gen", "pi_gen_match[3] / pi_gen_p")
+                .Define("pi_qopr", "pi_qop_reco / pi_qop_gen")
+            )
+            for name, col, axis in [
+                ("hK_gen_pt", "K_gen_pt", axis_diag_pt),
+                ("hK_reco_pt", "K_CVH_pt0", axis_diag_pt),
+                ("hpi_gen_pt", "pi_gen_pt", axis_diag_pt),
+                ("hpi_reco_pt", "pi_CVH_pt0", axis_diag_pt),
+                ("hK_qopr", "K_qopr", axis_diag_qopr),
+                ("hpi_qopr", "pi_qopr", axis_diag_qopr),
+            ]:
+                results.append(df.HistoBoost(name, [axis], [col, "weight"]))
 
         input_kinematics = [
             "scale_recoPt",

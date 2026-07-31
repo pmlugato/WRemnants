@@ -271,11 +271,27 @@ public:
   using out_tensor_t = Eigen::TensorFixedSize<double, Eigen::Sizes<nUnc, 2>>;
   using evaluator_t = shift_smear_reweight::ReweightEvaluator<NVar>;
 
+  // ``masses`` (GeV, per reconstructed leg in input order) enables the
+  // mass-aware energy-loss term in ``calculateQopUnc``. Semantics:
+  //   empty (default) -> massless (ultra-relativistic) for every leg;
+  //   size 1          -> that single mass broadcast to every leg;
+  //   size == nlegs   -> per-leg mass, indexed by position.
+  // A non-positive entry falls back to the massless calculateQopUnc.
   JpsiCorrectionsUncReweightHelper(T &&corrections,
                                    const std::string &onnx_path,
-                                   unsigned int nslots = 1)
+                                   unsigned int nslots = 1,
+                                   std::vector<double> masses = {})
       : correctionHist_(std::make_shared<const T>(std::move(corrections))),
-        evaluator_(onnx_path, nslots) {}
+        evaluator_(onnx_path, nslots), masses_(std::move(masses)) {}
+
+  // Per-leg energy-loss mass (see constructor); <= 0 means "massless".
+  double mass_for_leg(std::size_t i) const {
+    if (masses_.empty())
+      return -1.0;
+    if (masses_.size() == 1)
+      return masses_[0];
+    return (i < masses_.size()) ? masses_[i] : -1.0;
+  }
 
   // Variadic templated bin lookup (lifted from JpsiCorrectionsUncHelperSplines
   // so the lookup interface stays identical).
@@ -312,6 +328,7 @@ public:
       const float genPt = genPts[i];
       const float genEta = genEtas[i];
       const int genCharge = genCharges[i];
+      const double legMass = mass_for_leg(i);
 
       // δr_kappa per variation (in raw r_κ units; the ONNX preproc
       // divides by target_std internally):
@@ -330,7 +347,10 @@ public:
         const double eUnc = params(1, ivar);
         const double MUnc = params(2, ivar);
         const double recoQopUnc =
-            calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc);
+            (legMass > 0.0)
+                ? calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc,
+                                  legMass)
+                : calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc);
         const float dr =
             static_cast<float>(recoQopUnc * pgen * sign_qgen);
         delta_r_kappa[ivar * 2 + 0] = -dr;
@@ -357,6 +377,7 @@ public:
 private:
   std::shared_ptr<const T> correctionHist_;
   evaluator_t evaluator_;
+  std::vector<double> masses_;
 };
 
 // ---------------------------------------------------------------------------

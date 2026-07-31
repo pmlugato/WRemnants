@@ -106,6 +106,7 @@ def make_jpsi_crctn_helpers(
     smearing=True,
     fit_muon_scale=False,
     variation_eta_bins=None,
+    reweight_mass=None,
 ):
     if muon_corr_mc in ["idealMC_massfit", "idealMC_lbltruth_massfit"]:
         mc_corrfile = calib_filepaths["mc_corrfile"][muon_corr_mc]
@@ -141,6 +142,7 @@ def make_jpsi_crctn_helpers(
                 smearing=smearing,
                 fit_muon_scale=fit_muon_scale,
                 variation_eta_bins=variation_eta_bins,
+                reweight_mass=reweight_mass,
             )
             if mc_corrfile
             else None
@@ -159,6 +161,7 @@ def make_jpsi_crctn_helpers(
                 smearing=smearing,
                 fit_muon_scale=fit_muon_scale,
                 variation_eta_bins=variation_eta_bins,
+                reweight_mass=reweight_mass,
             )
             if data_corrfile
             else None
@@ -788,6 +791,7 @@ def make_jpsi_crctn_unc_helper(
     onnx_nslots=None,
     fit_muon_scale=False,
     variation_eta_bins=None,
+    reweight_mass=None,
 ):
     if onnx_path is None:
         onnx_path = default_shift_smear_reweight_onnx(smearing=smearing)
@@ -934,6 +938,7 @@ def make_jpsi_crctn_unc_helper(
             scale_var_method,
             onnx_path,
             onnx_nslots,
+            reweight_mass=reweight_mass,
         )
     elif scale_var_method == "massWeights":
         nweights = 21 if isW else 23
@@ -994,6 +999,7 @@ def _make_muon_reweight_unc_helper(
     scale_var_method,
     onnx_path,
     onnx_nslots,
+    reweight_mass=None,
 ):
     """Instantiate a per-muon scale-uncertainty helper from a packed
     ``[eta × scale_params × unc]`` boost histogram.
@@ -1010,10 +1016,28 @@ def _make_muon_reweight_unc_helper(
             if onnx_nslots is not None
             else (ROOT.GetThreadPoolSize() if ROOT.IsImplicitMTEnabled() else 1)
         )
+        # reweight_mass: None -> massless (default); scalar -> broadcast to all
+        # legs; sequence -> per-leg masses (by input order). Packed into the
+        # helper's std::vector<double> (empty == massless).
+        if reweight_mass is None:
+            mass_seq = []
+        elif isinstance(reweight_mass, (int, float)):
+            mass_seq = [reweight_mass]
+        else:
+            mass_seq = list(reweight_mass)
+        masses = ROOT.std.vector["double"]()
+        for m in mass_seq:
+            masses.push_back(float(m))
         return ROOT.wrem.JpsiCorrectionsUncReweightHelper[type_str](
             ROOT.std.move(hist_scale_params_unc_cpp),
             str(onnx_path),
             max(int(n), 1),
+            masses,
+        )
+    if reweight_mass is not None:
+        logger.warning(
+            "reweight_mass (mass-aware energy loss) is only implemented for "
+            "scale_var_method='onnxReweight'; ignoring it for the splines helper."
         )
     return ROOT.wrem.JpsiCorrectionsUncHelperSplines[type_str](
         ROOT.std.move(hist_scale_params_unc_cpp),
