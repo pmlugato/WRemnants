@@ -125,6 +125,16 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--dummyData",
+    default=None,
+    type=float,
+    help=(
+        "If set, replace the data with a scaled copy of the nominal MC (hD0_nom) "
+        "whose total event count equals this value, instead of using the actual "
+        "hD0_data histogram. Produces an Asimov-like dataset of controllable size."
+    ),
+)
+parser.add_argument(
     "--rescaleScaleAndResolution",
     default=1.0,
     type=float,
@@ -138,6 +148,9 @@ args = parser.parse_args()
 
 if args.rescaleScaleAndResolution <= 0:
     raise ValueError("--rescaleScaleAndResolution must be positive")
+
+if args.dummyData is not None and args.dummyData <= 0:
+    raise ValueError("--dummyData must be positive")
 
 
 # modifies the input histogram variable and then returns it for convenience
@@ -370,6 +383,20 @@ print(f"processing {sample}")
 
 hist_mc = resultdict["D0_mc"]
 hist_data = resultdict["D0_data"]
+
+if args.dummyData is not None:
+    # Replace the data with a scaled copy of the nominal MC (hD0_nom) whose total
+    # event count equals --dummyData (values scaled by s, variances by s^2). Yields
+    # an Asimov-like dataset of controllable size for expected-sensitivity studies.
+    mc_total = float(np.sum(hist_mc.values()))
+    if mc_total <= 0:
+        raise RuntimeError("Nominal MC has no events; cannot build --dummyData")
+    dummy_scale = args.dummyData / mc_total
+    hist_data = hist_mc * dummy_scale
+    print(
+        f"--dummyData: data replaced by nominal MC scaled to {args.dummyData:g} "
+        f"events (factor {dummy_scale:.6g})"
+    )
 
 scaling_factor = np.sum(hist_data.values()) / np.sum(hist_mc.values())
 print("scaling factor:", scaling_factor)

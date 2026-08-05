@@ -181,16 +181,25 @@ public:
   // along r_kappa (zero is fine for shift-only or smear-only cases).
   // Both arrays are in raw r_kappa units; the ONNX preproc divides
   // by target_std internally.
+  // ``condGenPt`` (GeV, > 0) overrides the gen pt used *only* for the
+  // conditioning input c_raw (log pt_gen). The response residual y_raw and the
+  // caller-supplied delta_r_kappa keep the real gen/reco pt, so only the
+  // network's conditioning is moved (e.g. into its training range). A
+  // non-positive value (the default) uses the real gen pt for c_raw too.
   alt_weights_t
   evaluate(float recPt, float recEta, float recPhi, int recCharge,
            float genPt, float genEta, float genPhi, int genCharge,
            int muonSource_raw,
            const delta_r_t &delta_r_kappa,
-           const delta_r_t &sigma_r_kappa) const {
+           const delta_r_t &sigma_r_kappa,
+           float condGenPt = -1.0f) const {
     const float kappa_reco =
         static_cast<float>(recCharge) / (recPt * std::cosh(recEta));
     const float kappa_gen =
         static_cast<float>(genCharge) / (genPt * std::cosh(genEta));
+    const float condPt = (condGenPt > 0.0f) ? condGenPt : genPt;
+    const float kappa_gen_cond =
+        static_cast<float>(genCharge) / (condPt * std::cosh(genEta));
     const int muon_source =
         muon_source_from_gen_part_flav(muonSource_raw);
 
@@ -206,7 +215,7 @@ public:
     std::array<float, NCond> c;
     compute_y_raw(kappa_reco, recEta, recPhi,
                   kappa_gen, genEta, genPhi, y);
-    compute_c_raw(kappa_gen, genEta, genPhi, muon_source, c);
+    compute_c_raw(kappa_gen_cond, genEta, genPhi, muon_source, c);
     for (std::size_t k = 0; k < F; ++k) y_t(0, k) = y[k];
     for (std::size_t k = 0; k < NCond; ++k) c_t(0, k) = c[k];
 
@@ -232,11 +241,12 @@ public:
   evaluate(float recPt, float recEta, float recPhi, int recCharge,
            float genPt, float genEta, float genPhi, int genCharge,
            int muonSource_raw,
-           const delta_r_t &delta_r_kappa) const {
+           const delta_r_t &delta_r_kappa,
+           float condGenPt = -1.0f) const {
     const delta_r_t sigma_zero{};
     return evaluate(recPt, recEta, recPhi, recCharge,
                     genPt, genEta, genPhi, genCharge,
-                    muonSource_raw, delta_r_kappa, sigma_zero);
+                    muonSource_raw, delta_r_kappa, sigma_zero, condGenPt);
   }
 
 private:
@@ -277,12 +287,18 @@ public:
   //   size 1          -> that single mass broadcast to every leg;
   //   size == nlegs   -> per-leg mass, indexed by position.
   // A non-positive entry falls back to the massless calculateQopUnc.
+  // ``cond_pt_gen_min`` (GeV, > 0) floors the gen pt used only for the network's
+  // conditioning input (log pt_gen) at that value, while the response residual and
+  // delta_r_kappa keep the real pt. Use to move the conditioning into the model's
+  // training range without distorting the (real) shift. <= 0 (default) disables it.
   JpsiCorrectionsUncReweightHelper(T &&corrections,
                                    const std::string &onnx_path,
                                    unsigned int nslots = 1,
-                                   std::vector<double> masses = {})
+                                   std::vector<double> masses = {},
+                                   double cond_pt_gen_min = -1.0)
       : correctionHist_(std::make_shared<const T>(std::move(corrections))),
-        evaluator_(onnx_path, nslots), masses_(std::move(masses)) {}
+        evaluator_(onnx_path, nslots), masses_(std::move(masses)),
+        cond_pt_gen_min_(cond_pt_gen_min) {}
 
   // Per-leg energy-loss mass (see constructor); <= 0 means "massless".
   double mass_for_leg(std::size_t i) const {
@@ -357,10 +373,15 @@ public:
         delta_r_kappa[ivar * 2 + 1] = +dr;
       }
 
+      // Conditioning-only gen-pt floor (real pt kept for delta_r_kappa and y_raw).
+      const float condGenPt =
+          (cond_pt_gen_min_ > 0.0)
+              ? std::max<float>(genPt, static_cast<float>(cond_pt_gen_min_))
+              : -1.0f;
       const auto alt_weights_flat = evaluator_.evaluate(
           recPt, recEta, recPhis[i], recCharge,
           genPt, genEta, genPhis[i], genCharge,
-          muonSources[i], delta_r_kappa);
+          muonSources[i], delta_r_kappa, condGenPt);
 
       out_tensor_t alt_weights;
       for (std::ptrdiff_t ivar = 0; ivar < nUnc; ++ivar) {
@@ -378,6 +399,7 @@ private:
   std::shared_ptr<const T> correctionHist_;
   evaluator_t evaluator_;
   std::vector<double> masses_;
+  double cond_pt_gen_min_;
 };
 
 // ---------------------------------------------------------------------------

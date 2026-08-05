@@ -107,6 +107,7 @@ def make_jpsi_crctn_helpers(
     fit_muon_scale=False,
     variation_eta_bins=None,
     reweight_mass=None,
+    cond_pt_gen_min=None,
 ):
     if muon_corr_mc in ["idealMC_massfit", "idealMC_lbltruth_massfit"]:
         mc_corrfile = calib_filepaths["mc_corrfile"][muon_corr_mc]
@@ -143,6 +144,7 @@ def make_jpsi_crctn_helpers(
                 fit_muon_scale=fit_muon_scale,
                 variation_eta_bins=variation_eta_bins,
                 reweight_mass=reweight_mass,
+                cond_pt_gen_min=cond_pt_gen_min,
             )
             if mc_corrfile
             else None
@@ -162,6 +164,7 @@ def make_jpsi_crctn_helpers(
                 fit_muon_scale=fit_muon_scale,
                 variation_eta_bins=variation_eta_bins,
                 reweight_mass=reweight_mass,
+                cond_pt_gen_min=cond_pt_gen_min,
             )
             if data_corrfile
             else None
@@ -792,6 +795,7 @@ def make_jpsi_crctn_unc_helper(
     fit_muon_scale=False,
     variation_eta_bins=None,
     reweight_mass=None,
+    cond_pt_gen_min=None,
 ):
     if onnx_path is None:
         onnx_path = default_shift_smear_reweight_onnx(smearing=smearing)
@@ -939,6 +943,7 @@ def make_jpsi_crctn_unc_helper(
             onnx_path,
             onnx_nslots,
             reweight_mass=reweight_mass,
+            cond_pt_gen_min=cond_pt_gen_min,
         )
     elif scale_var_method == "massWeights":
         nweights = 21 if isW else 23
@@ -1000,6 +1005,7 @@ def _make_muon_reweight_unc_helper(
     onnx_path,
     onnx_nslots,
     reweight_mass=None,
+    cond_pt_gen_min=None,
 ):
     """Instantiate a per-muon scale-uncertainty helper from a packed
     ``[eta × scale_params × unc]`` boost histogram.
@@ -1033,11 +1039,12 @@ def _make_muon_reweight_unc_helper(
             str(onnx_path),
             max(int(n), 1),
             masses,
+            float(cond_pt_gen_min) if cond_pt_gen_min is not None else -1.0,
         )
-    if reweight_mass is not None:
+    if reweight_mass is not None or cond_pt_gen_min is not None:
         logger.warning(
-            "reweight_mass (mass-aware energy loss) is only implemented for "
-            "scale_var_method='onnxReweight'; ignoring it for the splines helper."
+            "reweight_mass / cond_pt_gen_min are only implemented for "
+            "scale_var_method='onnxReweight'; ignoring them for the splines helper."
         )
     return ROOT.wrem.JpsiCorrectionsUncHelperSplines[type_str](
         ROOT.std.move(hist_scale_params_unc_cpp),

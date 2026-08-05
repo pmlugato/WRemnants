@@ -803,7 +803,7 @@ for resultdict in load_jpsi_channels_from_calinput(args.calinputHdf5):
         hist_mc = project_to_axes_with_mass(hist_mc, projection_axes)
         hist_data = project_to_axes_with_mass(hist_data, projection_axes)
 
-    signal_active_cells = populated_cells(hist_mc, event_thresh=args.eventThresh)
+    signal_active_cells = populated_cells(hist_mc, event_thresh=args.mcEventThresh)
     if args.dataEventThresh > 0:
         data_active_cells = populated_cells(
             hist_data, event_thresh=args.dataEventThresh

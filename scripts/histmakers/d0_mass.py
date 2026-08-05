@@ -55,12 +55,13 @@ parser.add_argument(
     help="minimum required pt for K and pi",
 )
 parser.add_argument(
-    "--ptDiagnostics",
+    "--kinDiagnostics",
     action="store_true",
     help=(
-        "Save diagnostic histograms of the gen and reco pt of the K and pi, plus "
-        "their qopr = (reco qop)/(gen qop) where qop = charge/(pt*cosh(eta)). "
-        "MC only; filled after gen matching."
+        "Save kinematic diagnostic histograms (MC only, filled after gen matching): "
+        "the gen and reco pt of the K and pi with their qopr = (reco qop)/(gen qop) "
+        "(qop = charge/(pt*cosh(eta))), and the analogous gen and reco mRK with their "
+        "ratio mRK_reco/mRK_gen."
     ),
 )
 parser.add_argument(
@@ -75,6 +76,20 @@ parser.add_argument(
         "ratio of reco to gen is preserved"
         "Affects only the reweight inputs (scale_genPt); the diagnostic, nominal, "
         "and manual A/e/M histograms are unchanged."
+    ),
+)
+parser.add_argument(
+    "--genPtReweightSaturationMode",
+    type=str,
+    default="rescale",
+    choices=["rescale", "condition"],
+    help=(
+        "How --genPtReweightSaturation is applied to the ONNX reweight. 'rescale' "
+        "(default): scale both reco and gen pt columns by max(1, sat/gen_pt), "
+        "preserving qopr (delta_r_kappa is evaluated at the saturated pt). "
+        "'condition': feed the real reco/gen pt (so y_raw and delta_r_kappa use the "
+        "true pt) and floor the gen pt only for the network's conditioning input "
+        "(log pt_gen). Only affects --muonScaleVariation onnxReweight."
     ),
 )
 parser.add_argument(
@@ -169,6 +184,16 @@ resolution_diff_weights_helper = (
     fit_muon_scale=args.fitMuonScaleAndResolution,
     variation_eta_bins=args.etaBins,
     reweight_mass=[M_K, M_PI],
+    # "condition" mode: keep the reweight columns real and floor the gen pt only for
+    # the network's conditioning input, inside the helper. Off for "rescale"/no-sat.
+    cond_pt_gen_min=(
+        args.genPtReweightSaturation
+        if (
+            args.genPtReweightSaturation is not None
+            and args.genPtReweightSaturationMode == "condition"
+        )
+        else None
+    ),
 )
 
 if data_jpsi_crctn_unc_helper is None:
@@ -474,9 +499,12 @@ axis_mRK = hist.axis.Variable(
 axis_D0mass = hist.axis.Regular(25, 1.8, 1.93, name="D0mass")
 d0_axes = [axis_etaK, axis_mRK, axis_D0mass]
 
-# Axes for the optional --ptDiagnostics histograms.
+# Axes for the optional --kinDiagnostics histograms. gen/reco mRK reuse the analysis
+# axis_mRK binning; the mRK ratio gets its own axis (analogous to qopr).
 axis_diag_pt = hist.axis.Regular(100, 0.0, 20.0, name="pt")
+axis_diag_mRK = hist.axis.Regular(100, 0.0, 1.80, name="mRK")
 axis_diag_qopr = hist.axis.Regular(200, 0.5, 1.5, name="qopr")
+axis_diag_mRK_ratio = hist.axis.Regular(200, 0.0, 2.0, name="mRKr")
 
 # Manual A/e/M scale-variation histogram. The per-(eta bin, parameter) construction
 # below is only valid for the diagonal prefit-width configuration (no covariance /
@@ -664,14 +692,18 @@ def build_graph(df, dataset):
             )
         )
     else:
-        # Optionally floor the gen pt that feeds the reweights at a saturation value,
-        # so soft daughters are not pushed below the reweight models' training range.
-        # Scale BOTH the reco and gen pt fed to the reweight by the same per-leg factor
-        # max(1, sat/gen_pt): this floors gen pt at sat while preserving
+        # Gen-pt saturation for the reweights (see --genPtReweightSaturation[Mode]).
+        # In "rescale" mode we scale BOTH the reco and gen pt columns by the per-leg
+        # factor max(1, sat/gen_pt): this floors gen pt at sat while preserving
         # kappa_reco/kappa_gen (qopr), so the network sees an in-domain point instead of
-        # an artificial residual. Only the scale_* reweight inputs are affected; eta/phi
-        # are untouched so the angular residuals are preserved.
-        if args.genPtReweightSaturation is not None:
+        # an artificial residual. In "condition" mode (or no saturation) the columns
+        # stay real and the gen-pt floor is applied inside the helper to the network's
+        # conditioning input only. Only the scale_* reweight inputs are ever affected;
+        # eta/phi are untouched so the angular residuals are preserved.
+        if (
+            args.genPtReweightSaturation is not None
+            and args.genPtReweightSaturationMode == "rescale"
+        ):
             sat = args.genPtReweightSaturation
             factor_K = f"std::max<float>(1.0f, {sat}f / K_gen_match[0])"
             factor_pi = f"std::max<float>(1.0f, {sat}f / pi_gen_match[0])"
@@ -750,9 +782,9 @@ def build_graph(df, dataset):
             )
         )
 
-        if args.ptDiagnostics:
-            # gen/reco pt and qopr of each daughter. qopr = (reco qop)/(gen qop),
-            # with p = pt*cosh(eta) and qop = charge/p (gen or reco consistently).
+        if args.kinDiagnostics:
+            # gen/reco pt and qopr of each daughter, plus gen/reco mRK and their ratio.
+            # qopr = (reco qop)/(gen qop), with p = pt*cosh(eta), qop = charge/p.
             df = (
                 df.Define("K_gen_pt", "K_gen_match[0]")
                 .Define("pi_gen_pt", "pi_gen_match[0]")
@@ -766,6 +798,20 @@ def build_graph(df, dataset):
                 .Define("pi_qop_reco", "pi_charge0 / pi_reco_p")
                 .Define("pi_qop_gen", "pi_gen_match[3] / pi_gen_p")
                 .Define("pi_qopr", "pi_qop_reco / pi_qop_gen")
+                # gen mRK: same form as the reco mRK column but from gen kinematics,
+                # with the gen D0 mass = invariant mass of the gen K/pi four-vectors.
+                # reco mRK is the existing analysis column "mRK".
+                .Define("K_E_gen", f"std::sqrt(K_gen_p*K_gen_p + {M_K}*{M_K})")
+                .Define("pi_E_gen", f"std::sqrt(pi_gen_p*pi_gen_p + {M_PI}*{M_PI})")
+                .Define(
+                    "D0_mass_gen",
+                    "(ROOT::Math::PtEtaPhiMVector("
+                    f"K_gen_match[0], K_gen_match[1], K_gen_match[2], {M_K}) + "
+                    "ROOT::Math::PtEtaPhiMVector("
+                    f"pi_gen_match[0], pi_gen_match[1], pi_gen_match[2], {M_PI})).M()",
+                )
+                .Define("mRK_gen", f"{M_K}*{M_K}*(pi_E_gen/K_E_gen)/D0_mass_gen")
+                .Define("mRK_ratio", "mRK / mRK_gen")
             )
             for name, col, axis in [
                 ("hK_gen_pt", "K_gen_pt", axis_diag_pt),
@@ -774,6 +820,9 @@ def build_graph(df, dataset):
                 ("hpi_reco_pt", "pi_CVH_pt0", axis_diag_pt),
                 ("hK_qopr", "K_qopr", axis_diag_qopr),
                 ("hpi_qopr", "pi_qopr", axis_diag_qopr),
+                ("hmRK_gen", "mRK_gen", axis_diag_mRK),
+                ("hmRK_reco", "mRK", axis_diag_mRK),
+                ("hmRK_ratio", "mRK_ratio", axis_diag_mRK_ratio),
             ]:
                 results.append(df.HistoBoost(name, [axis], [col, "weight"]))
 
