@@ -96,7 +96,7 @@ parser.add_argument(
     "--manualScaleVariations",
     default=False,
     action="store_true",
-    help="Use manual scale variations instead of reweights"
+    help="Use manual scale variations instead of reweights",
 )
 parser.add_argument(
     "--clip",
@@ -280,7 +280,13 @@ def load_d0_histograms(path):
         "D0_data": data["hD0_data"],
         "D0_mc": mc["hD0_nom"],
         "D0_scale_syst": (
-            None if args.skipMuonScale else (mc["nominal_muonScaleSyst_responseWeights"] if not args.manualScaleVariations else mc["nominal_muonScaleSyst_manual"])
+            None
+            if args.skipMuonScale
+            else (
+                mc["nominal_muonScaleSyst_responseWeights"]
+                if not args.manualScaleVariations
+                else mc["nominal_muonScaleSyst_manual"]
+            )
         ),
         "D0_resolution_syst": (
             None
@@ -398,7 +404,13 @@ if args.dummyData is not None:
         f"events (factor {dummy_scale:.6g})"
     )
 
-scaling_factor = np.sum(hist_data.values()) / np.sum(hist_mc.values())
+data_total = float(np.sum(hist_data.values()))
+mc_total = float(np.sum(hist_mc.values()))
+if not np.isfinite(data_total) or data_total < 0:
+    raise RuntimeError(f"Nominal data integral is invalid: {data_total}")
+if not np.isfinite(mc_total) or mc_total <= 0:
+    raise RuntimeError(f"Nominal MC integral is invalid: {mc_total}")
+scaling_factor = data_total / mc_total
 print("scaling factor:", scaling_factor)
 hist_mc = hist_mc * scaling_factor
 

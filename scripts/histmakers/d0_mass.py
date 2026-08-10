@@ -6,6 +6,7 @@ import ROOT
 
 import narf
 from wremnants.production import muon_calibration
+from wremnants.production.d0_axes import make_d0_template_axes
 from wremnants.production.histmaker_tools import write_analysis_output
 from wremnants.utilities import common, parsing
 from wums import logging
@@ -14,44 +15,76 @@ analysis_label = common.analysis_label(os.path.basename(__file__))
 parser, initargs = parsing.common_parser(analysis_label)
 parser.add_argument(
     "--dataFile",
-    default="/scratch/submit/cms/emanca/D0Data_v4",
+    default="/scratch/submit/cms/emanca/DstMiniAODTransientEmulationCVHShared_v1",
     help="Input ROOT file for data",
 )
 parser.add_argument(
     "--mcFile",
-    default="/scratch/submit/cms/emanca/D0MC",
-    help="Input ROOT file, glob, or directory for MC",
+    nargs="+",
+    default=[
+        "/scratch/submit/cms/emanca/DStarTransientCVHTruth_v1",
+        "/scratch/submit/cms/emanca/DStarTransientCVHTruth_prod500M_v1",
+    ],
+    help="One or more input ROOT files, globs, or directories for MC",
 )
 parser.add_argument(
     "--treeName",
-    default="tree",
-    help="Input tree name",
+    default=None,
+    help=(
+        "Override the input tree path for both data and MC. The selected trees must "
+        "still provide either the native or supported legacy D0 branch schema."
+    ),
 )
 parser.add_argument(
-    "--applyFitDeltaM",
-    action="store_true",
+    "--dataTreeName",
+    default="dstToD0PiProducer/Events",
+    help="Input tree name for data",
+)
+parser.add_argument(
+    "--mcTreeName",
+    default="dstToD0PiMCTruthProducer/MatchedCandidates",
+    help="Input tree name for MC",
+)
+parser.add_argument(
+    "--mcSelection",
+    choices=["truthMatched", "dataLike"],
+    default="truthMatched",
     help=(
-        "Also apply the later fitted DeltaM cut "
-        "abs(deltaM_D0pis_piK - 0.14543) < 0.003."
+        "MC candidate selection. 'truthMatched' uses directly matched D* chains with "
+        "valid CVH refits and basic acceptance; 'dataLike' additionally requires the "
+        "producer's full transient-fit data selection."
     ),
+)
+fit_delta_m_group = parser.add_mutually_exclusive_group()
+fit_delta_m_group.add_argument(
+    "--applyFitDeltaM",
+    dest="applyFitDeltaM",
+    action="store_true",
+    default=True,
+    help=("Apply the fitted DeltaM cut " "abs(deltaM_D0pis_piK - 0.14543) < 0.003."),
+)
+fit_delta_m_group.add_argument(
+    "--noApplyFitDeltaM",
+    dest="applyFitDeltaM",
+    action="store_false",
+    help="Disable the fitted DeltaM cut in the data-like selection",
 )
 parser.add_argument(
     "--pvalCut",
     type=float,
-    default=0.005,
+    default=None,
     help=(
         "Minimum vertex-fit p-value required for both the piK (D0) and D0pis (D*) "
-        "vertices. Disabled by default: the current ntuples store an unfilled -99 "
-        "sentinel in pval_piK/pval_D0pis, so any positive cut would reject every "
-        "event. Set e.g. 0.005 once valid p-values are produced. When enabled the "
-        "cut is guarded so sentinel (-99) values are never rejected, and the "
+        "vertices. Disabled by default because some ntuples store an unfilled -99 "
+        "sentinel in pval_piK/pval_D0pis. Set e.g. 0.005 once valid p-values are "
+        "produced. When enabled, sentinel (-99) values are retained and the "
         "pval_piK/pval_D0pis branches are only required in that case."
     ),
 )
 parser.add_argument(
     "--daughterPtCut",
     type=float,
-    default=0.0,
+    default=1.0,
     help="minimum required pt for K and pi",
 )
 parser.add_argument(
@@ -72,24 +105,25 @@ parser.add_argument(
         "If set, replace the gen pt fed into the scale/resolution reweights with "
         "max(gen pt, VALUE) [GeV]. Use to floor the D0 daughters' gen pt at the "
         "reweight models' training range (~2 GeV) to avoid low-pt extrapolation. "
-        "Reco pt input fed into the reweight models are scaled such that the "
-        "ratio of reco to gen is preserved"
-        "Affects only the reweight inputs (scale_genPt); the diagnostic, nominal, "
+        "The exact treatment is controlled by --genPtReweightSaturationMode. "
+        "Affects only the reweight inputs; the diagnostic, nominal, "
         "and manual A/e/M histograms are unchanged."
     ),
 )
 parser.add_argument(
     "--genPtReweightSaturationMode",
     type=str,
-    default="rescale",
+    default="condition",
     choices=["rescale", "condition"],
     help=(
-        "How --genPtReweightSaturation is applied to the ONNX reweight. 'rescale' "
-        "(default): scale both reco and gen pt columns by max(1, sat/gen_pt), "
+        "How --genPtReweightSaturation is applied to the ONNX reweight. 'rescale': "
+        "scale both reco and gen pt columns by max(1, sat/gen_pt), "
         "preserving qopr (delta_r_kappa is evaluated at the saturated pt). "
-        "'condition': feed the real reco/gen pt (so y_raw and delta_r_kappa use the "
+        "'condition' (default): feed the real reco/gen pt (so y_raw and "
+        "delta_r_kappa use the "
         "true pt) and floor the gen pt only for the network's conditioning input "
-        "(log pt_gen). Only affects --muonScaleVariation onnxReweight."
+        "(log pt_gen). Applied consistently to the scale and resolution ONNX "
+        "helpers; it has no effect with the spline backend."
     ),
 )
 parser.add_argument(
@@ -97,6 +131,21 @@ parser.add_argument(
     type=int,
     default=None,
     help="Override the number of eta bins used by fitted scale/resolution variations",
+)
+parser.add_argument(
+    "--templateEtaKBins",
+    type=int,
+    default=24,
+    help="Number of regular etaK template bins over [-2.4, 2.4]",
+)
+parser.add_argument(
+    "--templateMRKBins",
+    type=int,
+    default=None,
+    help=(
+        "Use this many regular mRK template bins over [0, 1.8]. If omitted, "
+        "retain the legacy 19-bin variable-width axis."
+    ),
 )
 parser.add_argument(
     "--resolutionPrefitUncertainty",
@@ -120,7 +169,7 @@ parser.add_argument(
 parser.add_argument(
     "--buildManualScaleVariations",
     action="store_true",
-    help="Include manual scale variations in addition to reweights"
+    help="Include manual scale variations in addition to reweights",
 )
 parser = parsing.set_parser_default(parser, "theoryCorr", [])
 parser = parsing.set_parser_default(parser, "scale_A", 1.0)
@@ -131,6 +180,10 @@ args = parser.parse_args()
 
 if args.etaBins is not None and args.etaBins <= 0:
     raise ValueError("--etaBins must be a positive integer")
+if args.templateEtaKBins <= 0:
+    raise ValueError("--templateEtaKBins must be a positive integer")
+if args.templateMRKBins is not None and args.templateMRKBins <= 0:
+    raise ValueError("--templateMRKBins must be a positive integer")
 if args.resolutionPrefitUncertainty <= 0:
     raise ValueError("--resolutionPrefitUncertainty must be positive")
 if (
@@ -214,6 +267,14 @@ _smearing_helper, smearing_uncertainty_helper = (
             args.resolutionPrefitUncertainty,
         ],
         resolution_prefit_uncertainties_mode="relative",
+        cond_pt_gen_min=(
+            args.genPtReweightSaturation
+            if (
+                args.genPtReweightSaturation is not None
+                and args.genPtReweightSaturationMode == "condition"
+            )
+            else None
+        ),
     )
 )
 
@@ -242,7 +303,9 @@ ROOT.gInterpreter.Declare("""
         return dphi;
     }
 
-    template <typename PtVec, typename EtaVec, typename PhiVec, typename ChargeVec, typename PdgIdVec>
+    template <typename PtVec, typename EtaVec, typename PhiVec, typename ChargeVec,
+              typename PdgIdVec, typename MotherPdgIdVec,
+              typename GrandmotherPdgIdVec>
     ROOT::VecOps::RVec<float> matched_gen_kinematics(
         double reco_pt,
         double reco_eta,
@@ -253,16 +316,25 @@ ROOT.gInterpreter.Declare("""
         const PhiVec &gen_phi,
         const ChargeVec &gen_charge,
         const PdgIdVec &gen_pdgId,
+        const MotherPdgIdVec &gen_motherPdgId,
+        const GrandmotherPdgIdVec &gen_grandmotherPdgId,
         int abs_pdgid,
+        int abs_mother_pdgid,
+        int abs_grandmother_pdgid,
         double max_dr = 0.03
     ) {
         const auto size = std::min({gen_pt.size(), gen_eta.size(), gen_phi.size(),
-                                    gen_charge.size(), gen_pdgId.size()});
+                                    gen_charge.size(), gen_pdgId.size(),
+                                    gen_motherPdgId.size(),
+                                    gen_grandmotherPdgId.size()});
         const double max_dr2 = max_dr*max_dr;
         double best_dr2 = max_dr2;
         int best = -1;
         for (std::size_t i = 0; i < size; ++i) {
             if (std::abs(static_cast<int>(gen_pdgId[i])) != abs_pdgid) continue;
+            if (std::abs(static_cast<int>(gen_motherPdgId[i])) != abs_mother_pdgid) continue;
+            if (std::abs(static_cast<int>(gen_grandmotherPdgId[i])) !=
+                abs_grandmother_pdgid) continue;
             if (static_cast<int>(gen_charge[i]) != reco_charge) continue;
 
             const double deta = reco_eta - static_cast<double>(gen_eta[i]);
@@ -290,13 +362,10 @@ ROOT.gInterpreter.Declare("""
     """)
 
 # Manual A/e/M scale variations: recompute the D0 mass (and mRK) from the K/pi
-# four-vectors under an independent +-1 prefit-width shift of each (eta bin, scale
-# parameter), instead of reweighting. The correction model matches
-# muon_calibration.define_AeM_data_corrections:
-#     pt_cor = (1 + A' - e'/pt + q*M'*pt) * pt   (primed = physical units)
-# The D0 mass is linear in each of A', e', M', so the per-variation pt shift is
-# independent of the (unknown here) central A/e/M values and we propagate the shift
-# directly:  dpt_A = dA'*pt,  dpt_e = -de',  dpt_M = q*dM'*pt^2.
+# four-vectors under an independent +-1 prefit-width shift of each (eta bin,
+# scale parameter), instead of reweighting. The finite shift is evaluated exactly:
+# A and M modify curvature, while e shifts total energy before converting back to
+# pt with the required 1/cosh(eta). No first-order dpt approximation is used.
 # Both the varied mass and mRK are expressed as a shift on top of their authoritative
 # nominal values (D0_CVH_mass0 and the nominal mRK column), so a variation that touches
 # neither track's eta bin lands exactly on the nominal histogram. Mass and mRK share the
@@ -334,24 +403,16 @@ ROOT.gInterpreter.Declare("""
             return ib;
         }
 
-        // pt of a track after shifting scale parameter iparm in eta bin ieta by sgn*width.
-        // The e (energy-loss) term uses the non-ultra-relativistic correction: its shift
-        // is scaled by 1/beta = E/|p| = sqrt(1 + (mass/|p|)^2), with |p| = pt*cosh(eta),
-        // matching the mass-aware calculateQopUnc. A and M are unchanged.
+        // pt after a finite scale-parameter shift. The shared implementation
+        // applies A/M in curvature and e in total energy, including /cosh(eta).
         double shifted_pt(double pt, double q, double eta, double mass, int track_ieta,
                           unsigned int ieta, unsigned int iparm, double sgn) const {
             if (track_ieta != static_cast<int>(ieta)) return pt;
-            double dpt = 0.0;
-            if (iparm == 0) {
-                dpt = sgn * width_A_ * pt;                              // A': dpt = dA'*pt
-            } else if (iparm == 1) {
-                const double p = pt * std::cosh(eta);
-                const double beta_inv = std::sqrt(1.0 + (mass * mass) / (p * p));
-                dpt = -sgn * width_e_ * beta_inv;                      // e': dpt = -de'/beta
-            } else if (iparm == 2) {
-                dpt = sgn * width_M_ * q * pt * pt;                    // M': dpt = q*dM'*pt^2
-            }
-            return pt - dpt; //match reweight sign convention
+            const double AShift = iparm == 0 ? sgn * width_A_ : 0.0;
+            const double eShift = iparm == 1 ? sgn * width_e_ : 0.0;
+            const double MShift = iparm == 2 ? sgn * width_M_ : 0.0;
+            return wrem::calculateShiftedPtExact(
+                pt, eta, static_cast<int>(q), AShift, eShift, MShift, mass);
         }
 
         // mRK observable, matching the nominal column M_K^2 * (pi_E/K_E) / mass.
@@ -443,14 +504,25 @@ def limited_files(files):
     return files
 
 
-def input_files(path):
-    if os.path.isdir(path):
-        files = sorted(glob.glob(os.path.join(path, "**", "*.root"), recursive=True))
-    else:
-        files = sorted(glob.glob(path))
-    if not files:
-        raise ValueError(f"No input ROOT files found for {path}")
-    return limited_files(files)
+def input_files(paths):
+    """Expand all roots, then deduplicate and apply the global file limit."""
+    if isinstance(paths, (str, os.PathLike)):
+        paths = [paths]
+
+    resolved_files = []
+    for path in paths:
+        if os.path.isdir(path):
+            matches = glob.glob(os.path.join(path, "**", "*.root"), recursive=True)
+        else:
+            matches = glob.glob(path)
+        files = sorted(
+            os.path.realpath(match) for match in matches if os.path.isfile(match)
+        )
+        if not files:
+            raise ValueError(f"No input ROOT files found for {path}")
+        resolved_files.extend(files)
+
+    return limited_files(sorted(set(resolved_files)))
 
 
 datasets = [
@@ -470,33 +542,10 @@ datasets = [
     ),
 ]
 
-axis_etaK = hist.axis.Regular(24, -2.4, 2.4, name="etaK")
-axis_mRK = hist.axis.Variable(
-    [
-        0.00,
-        0.06,
-        0.10,
-        0.14,
-        0.18,
-        0.22,
-        0.26,
-        0.30,
-        0.34,
-        0.38,
-        0.42,
-        0.46,
-        0.50,
-        0.60,
-        0.70,
-        0.85,
-        1.05,
-        1.30,
-        1.55,
-        1.80,
-    ],
-    name="mRK",
+axis_etaK, axis_mRK, axis_D0mass = make_d0_template_axes(
+    eta_bins=args.templateEtaKBins,
+    mrk_bins=args.templateMRKBins,
 )
-axis_D0mass = hist.axis.Regular(25, 1.8, 1.93, name="D0mass")
 d0_axes = [axis_etaK, axis_mRK, axis_D0mass]
 
 # Axes for the optional --kinDiagnostics histograms. gen/reco mRK reuse the analysis
@@ -516,6 +565,12 @@ build_manual_scale_variations = args.buildManualScaleVariations
 d0_scale_var_helper = None
 manual_scale_axes = None
 if build_manual_scale_variations:
+    if not args.fitMuonScaleAndResolution:
+        raise ValueError(
+            "--buildManualScaleVariations requires "
+            "--fitMuonScaleAndResolution so the nuisance axis is the direct "
+            "eta-bin x (A,e,M) basis"
+        )
     _scale_var_axis, _updown_axis = data_jpsi_crctn_unc_helper.tensor_axes
     _nvars = _scale_var_axis.size
     if _nvars % 3 != 0:
@@ -537,9 +592,10 @@ if build_manual_scale_variations:
     )
     manual_scale_axes = [_scale_var_axis, _updown_axis]
     logger.info(
-        f"Manual A/e/M scale variations enabled: {_nvars} nuisances "
+        f"Manual scale variations enabled: {_nvars} nuisances "
         f"({_n_eta_bins_scale} eta bins x 3 parameters), down/up each."
     )
+
 
 def bool_filter(expression):
     return f"static_cast<bool>({expression})"
@@ -570,6 +626,61 @@ def available_first(columns, names, label):
     return available
 
 
+def adapt_ntuple_schema(df, dataset):
+    """Map the native ALCARECO data/MC trees onto one calibration schema."""
+    aliases = {
+        "K_CVH_pt": ["CVH_K_CVH_pt"],
+        "K_CVH_eta": ["CVH_K_CVH_eta"],
+        "K_CVH_phi": ["CVH_K_CVH_phi"],
+        "K_charge": ["CVH_K_charge", "MC_reco_K_charge"],
+        "pi_CVH_pt": ["CVH_pi_CVH_pt"],
+        "pi_CVH_eta": ["CVH_pi_CVH_eta"],
+        "pi_CVH_phi": ["CVH_pi_CVH_phi"],
+        "pi_charge": ["CVH_pi_charge", "MC_reco_pi_charge"],
+        "pis_CVH_pt": ["CVH_pis_CVH_pt"],
+        "chi2_piK": ["MC_D0_fit_chi2", "CVH_chi2_piK"],
+        "pval_piK": ["MC_D0_fit_pval", "CVH_pval_piK"],
+        "mass_piK": ["MC_D0_fit_mass", "CVH_mass_piK"],
+        "chi2_D0pis": ["MC_Dst_fit_chi2", "CVH_chi2_D0pis"],
+        "pval_D0pis": ["MC_Dst_fit_pval", "CVH_pval_D0pis"],
+        "mass_D0pis": ["MC_Dst_fit_mass", "CVH_mass_D0pis"],
+        "deltaM_D0pis_piK": ["deltaMass_D0pis"],
+        "Dst_pt": ["CVH_Dst_pt", "truth_Dst_pt"],
+        "Dst_iso": ["CVH_Dst_iso"],
+        "pis_dR_D0": ["CVH_pis_dR_D0", "CVH_pis_dR_D0raw"],
+        "D0_CVH_mass": ["CVH_D0_CVH_mass"],
+        "D0_CVH_valid": ["CVH_D0_CVH_valid"],
+        "pis_CVH_edmval": ["CVH_pis_CVH_edmval"],
+    }
+    columns = available_columns(df)
+    for target, sources in aliases.items():
+        if target in columns:
+            continue
+        source = next((name for name in sources if name in columns), None)
+        if source is not None:
+            df = df.Define(target, source)
+            columns.add(target)
+
+    # The data production predates the explicit CVH-valid boolean. A positive mass
+    # is the corresponding persisted validity condition there.
+    if "D0_CVH_valid" not in columns and "D0_CVH_mass" in columns:
+        df = df.Define("D0_CVH_valid", "D0_CVH_mass > 0.0")
+        columns.add("D0_CVH_valid")
+
+    # The matched-candidate tree stores both fitted masses but not their difference.
+    if (
+        "deltaM_D0pis_piK" not in columns
+        and "mass_D0pis" in columns
+        and "mass_piK" in columns
+    ):
+        df = df.Define("deltaM_D0pis_piK", "mass_D0pis - mass_piK")
+
+    logger.info(
+        f"Using {'data' if dataset.is_data else 'MC'} tree schema for {dataset.name}"
+    )
+    return df
+
+
 def define_reco(df):
     columns = available_columns(df)
     require_columns(
@@ -583,6 +694,13 @@ def define_reco(df):
             "pi_CVH_eta",
             "pi_CVH_phi",
             "pi_charge",
+            "pis_CVH_pt",
+            "chi2_piK",
+            "chi2_D0pis",
+            "Dst_pt",
+            "Dst_iso",
+            "pis_dR_D0",
+            "D0_CVH_valid",
         ],
     )
     # The vertex-fit p-value branches are only needed when the cut is enabled;
@@ -590,8 +708,11 @@ def define_reco(df):
     pval_cols = ["pval_piK", "pval_D0pis"] if args.pvalCut is not None else []
     if pval_cols:
         require_columns(columns, pval_cols)
-    d0_mass_cols = available_first(
-        columns, ["mass_piK", "D0_fit_mass", "D0_CVH_mass"], "D0 fitted mass"
+    d0_fit_mass_cols = available_first(
+        columns, ["mass_piK", "D0_fit_mass"], "transient D0 fitted mass"
+    )
+    d0_cvh_mass_cols = available_first(
+        columns, ["D0_CVH_mass", "mass_piK", "D0_fit_mass"], "CVH D0 mass"
     )
     dst_mass_cols = available_first(
         columns,
@@ -602,24 +723,39 @@ def define_reco(df):
         name for name in ["deltaM_D0pis_piK", "Dst_fit_deltaM"] if name in columns
     ]
 
-    reco_cols = [
-        "K_CVH_pt",
-        "K_CVH_eta",
-        "K_CVH_phi",
-        "K_charge",
-        "pi_CVH_pt",
-        "pi_CVH_eta",
-        "pi_CVH_phi",
-        "pi_charge",
-        *pval_cols,
-        *d0_mass_cols,
-        *dst_mass_cols,
-        *delta_m_cols,
-    ]
+    reco_cols = list(
+        dict.fromkeys(
+            [
+                "K_CVH_pt",
+                "K_CVH_eta",
+                "K_CVH_phi",
+                "K_charge",
+                "pi_CVH_pt",
+                "pi_CVH_eta",
+                "pi_CVH_phi",
+                "pi_charge",
+                *pval_cols,
+                "pis_CVH_pt",
+                "chi2_piK",
+                "chi2_D0pis",
+                "Dst_pt",
+                "Dst_iso",
+                "pis_dR_D0",
+                "D0_CVH_valid",
+                *d0_fit_mass_cols,
+                *d0_cvh_mass_cols,
+                *dst_mass_cols,
+                *delta_m_cols,
+            ]
+        )
+    )
     df = scalarize(df, reco_cols)
-    d0_expr = f"{d0_mass_cols[-1]}0"
-    for name in reversed(d0_mass_cols[:-1]):
-        d0_expr = f"({name}0 > 0.0 ? {name}0 : {d0_expr})"
+    d0_fit_expr = f"{d0_fit_mass_cols[-1]}0"
+    for name in reversed(d0_fit_mass_cols[:-1]):
+        d0_fit_expr = f"({name}0 > 0.0 ? {name}0 : {d0_fit_expr})"
+    d0_cvh_expr = f"{d0_cvh_mass_cols[-1]}0"
+    for name in reversed(d0_cvh_mass_cols[:-1]):
+        d0_cvh_expr = f"({name}0 > 0.0 ? {name}0 : {d0_cvh_expr})"
     dst_expr = f"{dst_mass_cols[-1]}0"
     for name in reversed(dst_mass_cols[:-1]):
         dst_expr = f"({name}0 > 0.0 ? {name}0 : {dst_expr})"
@@ -639,10 +775,10 @@ def define_reco(df):
             "pi_E0",
             f"std::sqrt(std::pow(pi_CVH_pt0*std::cosh(pi_CVH_eta0), 2) + {M_PI}*{M_PI})",
         )
-        .Define("D0_fit_mass_for_selection", d0_expr)
+        .Define("D0_fit_mass_for_selection", d0_fit_expr)
         .Define("Dst_fit_mass_for_selection", dst_expr)
         .Define("Dst_fit_deltaM_for_selection", delta_m_expr)
-        .Define("D0_mass", "D0_fit_mass_for_selection")
+        .Define("D0_mass", d0_cvh_expr)
         .Define("mRK", f"{M_K}*{M_K}*(pi_E0/K_E0)/D0_mass")
     )
     if args.applyFitDeltaM and not delta_m_cols:
@@ -652,17 +788,25 @@ def define_reco(df):
     return df
 
 
-def reco_selection():
+def data_selection():
     selection = [
         f"K_CVH_pt0 > {args.daughterPtCut}",
         f"pi_CVH_pt0 > {args.daughterPtCut}",
+        "pis_CVH_pt0 > 0.35",
         "K_E0 > 0.0",
         "pi_E0 > 0.0",
         "std::fabs(K_CVH_eta0) < 2.4",
+        "std::fabs(pi_CVH_eta0) < 2.4",
+        "D0_CVH_valid0 > 0.5",
         "D0_fit_mass_for_selection > 0.0",
         "Dst_fit_mass_for_selection > 0.0",
-        "std::fabs(D0_fit_mass_for_selection - 1.86483) < 0.05",
-        "std::fabs(Dst_fit_mass_for_selection - 2.01026) < 0.15",
+        "Dst_fit_deltaM_for_selection > 0.0",
+        "chi2_piK0 > 0.0",
+        "chi2_D0pis0 > 0.0",
+        "std::fabs(D0_fit_mass_for_selection - 1.86483) < 0.035",
+        "pis_dR_D00 < 0.12",
+        "Dst_pt0 > 5.0",
+        "Dst_iso0 > 0.20",
     ]
     if args.pvalCut is not None:
         # Guard against the unfilled -99 sentinel: reject a candidate only when its
@@ -674,14 +818,39 @@ def reco_selection():
     return " && ".join(selection)
 
 
+def truth_matched_mc_selection():
+    return " && ".join(
+        [
+            f"K_CVH_pt0 > {args.daughterPtCut}",
+            f"pi_CVH_pt0 > {args.daughterPtCut}",
+            "pis_CVH_pt0 > 0.35",
+            "std::fabs(K_CVH_eta0) < 2.4",
+            "std::fabs(pi_CVH_eta0) < 2.4",
+            "D0_CVH_valid0 > 0.5",
+            "D0_mass > 0.0",
+        ]
+    )
+
+
 def build_graph(df, dataset):
     logger.info(f"build graph for dataset: {dataset.name}")
 
     results = []
     df = df.DefinePerSample("weight", "1.0")
     weightsum = df.SumAndCount("weight")
+    df = adapt_ntuple_schema(df, dataset)
     df = define_reco(df)
-    df = df.Filter(bool_filter(reco_selection()))
+    if dataset.is_data:
+        df = df.Filter(bool_filter(data_selection()))
+    elif args.mcSelection == "dataLike":
+        columns = available_columns(df)
+        if "MC_passDataSelection" not in columns:
+            raise ValueError(
+                "--mcSelection dataLike requires MC_passDataSelection in the MC tree"
+            )
+        df = df.Filter("MC_passDataSelection").Filter(bool_filter(data_selection()))
+    else:
+        df = df.Filter(bool_filter(truth_matched_mc_selection()))
 
     if dataset.is_data:
         results.append(
@@ -734,19 +903,65 @@ def build_graph(df, dataset):
                 "scale_recoCharge",
                 "ROOT::VecOps::RVec<int>{int(K_charge0), int(pi_charge0)}",
             )
-            .Define(
+        )
+        direct_truth_columns = {
+            "truth_K_pt",
+            "truth_K_eta",
+            "truth_K_phi",
+            "truth_K_charge",
+            "truth_pi_pt",
+            "truth_pi_eta",
+            "truth_pi_phi",
+            "truth_pi_charge",
+        }
+        if direct_truth_columns.issubset(available_columns(df)):
+            logger.info("Using direct K/pi truth from the matched-candidate MC tree")
+            df = df.Define(
+                "K_gen_match",
+                "ROOT::VecOps::RVec<float>{float(truth_K_pt), "
+                "float(truth_K_eta), float(truth_K_phi), "
+                "float(truth_K_charge), 1.f}",
+            ).Define(
+                "pi_gen_match",
+                "ROOT::VecOps::RVec<float>{float(truth_pi_pt), "
+                "float(truth_pi_eta), float(truth_pi_phi), "
+                "float(truth_pi_charge), 1.f}",
+            )
+        else:
+            logger.warning(
+                "Direct matched truth is unavailable; falling back to ancestry-aware "
+                "DeltaR matching against the legacy gen-particle vectors"
+            )
+            legacy_truth_columns = {
+                "gen_pt",
+                "gen_eta",
+                "gen_phi",
+                "gen_charge",
+                "gen_pdgId",
+                "gen_motherPdgId",
+                "gen_grandmotherPdgId",
+            }
+            missing_truth = sorted(legacy_truth_columns - available_columns(df))
+            if missing_truth:
+                raise ValueError(
+                    "Legacy MC truth matching requires branches: "
+                    + ", ".join(missing_truth)
+                )
+            df = df.Define(
                 "K_gen_match",
                 "wrem::d0::matched_gen_kinematics("
                 "K_CVH_pt0, K_CVH_eta0, K_CVH_phi0, int(K_charge0), "
-                "gen_pt, gen_eta, gen_phi, gen_charge, gen_pdgId, 321)",
-            )
-            .Define(
+                "gen_pt, gen_eta, gen_phi, gen_charge, gen_pdgId, "
+                "gen_motherPdgId, gen_grandmotherPdgId, 321, 421, 413)",
+            ).Define(
                 "pi_gen_match",
                 "wrem::d0::matched_gen_kinematics("
                 "pi_CVH_pt0, pi_CVH_eta0, pi_CVH_phi0, int(pi_charge0), "
-                "gen_pt, gen_eta, gen_phi, gen_charge, gen_pdgId, 211)",
+                "gen_pt, gen_eta, gen_phi, gen_charge, gen_pdgId, "
+                "gen_motherPdgId, gen_grandmotherPdgId, 211, 421, 413)",
             )
-            .Define(
+        df = (
+            df.Define(
                 "scale_recoPt",
                 f"ROOT::VecOps::RVec<float>{{{reco_pt_K}, {reco_pt_pi}}}",
             )
@@ -874,11 +1089,6 @@ def build_graph(df, dataset):
         )
 
         if build_manual_scale_variations:
-            # Manual scale variations: recompute the D0 mass and mRK under each +-1
-            # prefit-width A/e/M shift and fill a single histogram in one pass. The mass
-            # and mRK coordinates are RVecs of length nvars*2 (both varied, sharing the
-            # same shifted momenta); etaK is held at its nominal reco value since a pt
-            # scale does not change eta.
             df = df.Define(
                 "d0_scale_var",
                 d0_scale_var_helper,
@@ -935,6 +1145,9 @@ def build_graph(df, dataset):
     return results, weightsum
 
 
-resultdict = narf.build_and_run(datasets, build_graph, event_tree=args.treeName)
+data_tree = args.treeName if args.treeName is not None else args.dataTreeName
+mc_tree = args.treeName if args.treeName is not None else args.mcTreeName
+resultdict = narf.build_and_run([datasets[0]], build_graph, event_tree=data_tree)
+resultdict.update(narf.build_and_run([datasets[1]], build_graph, event_tree=mc_tree))
 fout = f"{os.path.basename(__file__).replace('py', 'hdf5')}"
 write_analysis_output(resultdict, fout, args, name_append=[args.era])

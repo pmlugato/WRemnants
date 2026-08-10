@@ -12,6 +12,7 @@
 #include <fstream>
 #include <math.h>
 #include <memory>
+#include <stdexcept>
 #include <stdlib.h>
 #include <typeinfo>
 
@@ -530,14 +531,46 @@ double calculateQopUnc(float pt, float eta, int charge, double AUnc,
   return calculateQopUnc(eta, charge, kUnc);
 }
 
-// handles non-ultra-relativistic case. Note in all of these that a sintheta is absorbed
-// into the definition of e - may want to revisit later.
+// Linearized non-ultra-relativistic uncertainty. The e parameter is an
+// absolute energy shift, so dpt/dE = 1/(beta*cosh(eta)).
 double calculateQopUnc(float pt, float eta, int charge, double AUnc,
                        double eUnc, double MUnc, double mass) {
-  float k = 1 / pt;
-  double theta = calculateTheta(eta);
-  double kUnc = (AUnc - eUnc * k * std::sqrt(1 + pow(k * mass * std::sin(theta), 2))) * k + charge * MUnc;
+  const double k = 1. / pt;
+  const double coshEta = std::cosh(eta);
+  const double momentum = pt * coshEta;
+  const double betaInv = std::sqrt(1. + mass * mass / (momentum * momentum));
+  const double kUnc = (AUnc - eUnc * k * betaInv / coshEta) * k + charge * MUnc;
   return calculateQopUnc(eta, charge, kUnc);
+}
+
+// Apply finite A/e/M shifts without linearizing the transformed momentum.
+// A and M act on 1/pt, while e is a shift of the particle's total energy.
+double calculateShiftedPtExact(float pt, float eta, int charge, double AShift,
+                               double eShift, double MShift, double mass) {
+  const double coshEta = std::cosh(eta);
+  const double momentum = pt * coshEta;
+  const double energy = std::sqrt(momentum * momentum + mass * mass);
+  const double shiftedEnergy = energy + eShift;
+  if (shiftedEnergy <= mass)
+    throw std::domain_error("Nonphysical energy in calculateShiftedPtExact");
+  const double shiftedMomentum2 = shiftedEnergy * shiftedEnergy - mass * mass;
+  if (shiftedMomentum2 <= 0.)
+    throw std::domain_error("Nonphysical energy in calculateShiftedPtExact");
+
+  const double ptAfterEnergyShift = std::sqrt(shiftedMomentum2) / coshEta;
+  const double shiftedK = (1. + AShift) / ptAfterEnergyShift + charge * MShift;
+  if (shiftedK <= 0.)
+    throw std::domain_error("Nonpositive curvature in calculateShiftedPtExact");
+  return 1. / shiftedK;
+}
+
+double calculateQopShiftExact(float pt, float eta, int charge, double AShift,
+                              double eShift, double MShift, double mass) {
+  const double shiftedPt =
+      calculateShiftedPtExact(pt, eta, charge, AShift, eShift, MShift, mass);
+  const double shiftedK = 1. / shiftedPt;
+  const double nominalK = 1. / pt;
+  return calculateQopUnc(eta, charge, shiftedK - nominalK);
 }
 
 Eigen::TensorFixedSize<double, Eigen::Sizes<2>>
@@ -1729,9 +1762,10 @@ public:
 
       const double qop = charge / pt / std::cosh(eta);
 
-      // ``sigmarel_ * qop`` is signed (qop is negative for q<0); std::normal_distribution
-      // requires stddev > 0. Sigmarel == 0 (legitimate "no smearing") collapses
-      // to a δ-function -- pass pt through unchanged in that case.
+      // ``sigmarel_ * qop`` is signed (qop is negative for q<0);
+      // std::normal_distribution requires stddev > 0. Sigmarel == 0 (legitimate
+      // "no smearing") collapses to a δ-function -- pass pt through unchanged
+      // in that case.
       const double dsigma = std::abs(sigmarel_ * qop);
 
       if (dsigma > 0.) {
