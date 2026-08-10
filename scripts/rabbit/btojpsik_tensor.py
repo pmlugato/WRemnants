@@ -111,7 +111,16 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--massAxis", default="bkmm_jpsimc_mass", help="Name of the mass axis."
+        "--nomc",
+        action="store_true",
+        help="Switch to nomc mode: use bkmm_nomc_mass as fit observable and add "
+        "A/e/M nuisances for each J/psi muon.",
+    )
+    parser.add_argument(
+        "--massAxis",
+        default=None,
+        help="Name of the mass axis. Defaults to bkmm_nomc_mass when --nomc is set, "
+        "bkmm_jpsimc_mass otherwise.",
     )
     parser.add_argument(
         "--ptAxis",
@@ -205,6 +214,15 @@ def parse_args():
         help="Print debug summaries for variation templates.",
     )
     parser.add_argument(
+        "--normalizeAeM",
+        action="store_true",
+        help="Normalize A/e/M variation templates so the mass-integrated yield per "
+        "(pt, eta, charge) cell equals the nominal. Makes A/e/M pure mass-shape "
+        "variations, removing the normalization redundancy with AxisNormModel POIs "
+        "and preventing non-positive-definite Hessian failures when using "
+        "--signalNormPOI.",
+    )
+    parser.add_argument(
         "--etaBins",
         type=int,
         default=None,
@@ -217,6 +235,93 @@ def parse_args():
         help="Rebin the mass axis to this many bins before writing. Set to the nominal axis size to disable mass rebinning.",
     )
     return parser.parse_args()
+
+
+def _add_aem_systematics(
+    writer, variation_hist, signal_hist, args, labels, n_eta_bins, name_suffix=""
+):
+    for eta_idx in range(n_eta_bins):
+        for label in labels:
+            offset = labels.index(label)
+            systematic_bin = len(labels) * eta_idx + offset
+
+            up_selection = {
+                args.systematicAxis: systematic_bin,
+                args.variationAxis: args.variationUpIndex,
+            }
+            down_selection = {
+                args.systematicAxis: systematic_bin,
+                args.variationAxis: args.variationDownIndex,
+            }
+
+            up_variation = collapse_axes(
+                variation_hist[up_selection],
+                [args.systematicAxis, args.variationAxis],
+            )
+            down_variation = collapse_axes(
+                variation_hist[down_selection],
+                [args.systematicAxis, args.variationAxis],
+            )
+
+            target_axes = signal_hist.axes.name
+            up_variation = _reorder_hist_axes(up_variation, target_axes)
+            down_variation = _reorder_hist_axes(down_variation, target_axes)
+
+            if up_variation.axes.name != signal_hist.axes.name:
+                raise RuntimeError(
+                    f"Up variation axes {up_variation.axes.name} do not match "
+                    f"nominal axes {signal_hist.axes.name}."
+                )
+            if down_variation.axes.name != signal_hist.axes.name:
+                raise RuntimeError(
+                    f"Down variation axes {down_variation.axes.name} do not match "
+                    f"nominal axes {signal_hist.axes.name}."
+                )
+
+            up_hist = signal_hist.copy()
+            down_hist = signal_hist.copy()
+
+            eta_target = [slice(None)] * up_hist.values().ndim
+            eta_axis_idx = up_hist.axes.name.index(args.etaAxis)
+            eta_target[eta_axis_idx] = eta_idx
+            eta_target = tuple(eta_target)
+
+            up_hist.values()[eta_target] = up_variation.values()[eta_target]
+            down_hist.values()[eta_target] = down_variation.values()[eta_target]
+
+            up_vars = up_variation.variances()
+            down_vars = down_variation.variances()
+            if up_vars is not None:
+                up_hist.variances()[eta_target] = up_vars[eta_target]
+            if down_vars is not None:
+                down_hist.variances()[eta_target] = down_vars[eta_target]
+
+            if args.normalizeAeM:
+                mass_ax = up_hist.axes.name.index(args.massAxis)
+                # After eta_target fixes eta with an integer index, the mass axis
+                # position in the reduced array shifts left by 1 if it was after eta.
+                mass_ax_r = mass_ax if mass_ax < eta_axis_idx else mass_ax - 1
+                nom_sum = signal_hist.values()[eta_target].sum(
+                    axis=mass_ax_r, keepdims=True
+                )
+                up_slice = up_hist.values()[eta_target].copy()
+                up_sum = up_slice.sum(axis=mass_ax_r, keepdims=True)
+                up_scale = np.where(up_sum > 0, nom_sum / up_sum, 1.0)
+                up_hist.values()[eta_target] = up_slice * up_scale
+
+                down_slice = down_hist.values()[eta_target].copy()
+                down_sum = down_slice.sum(axis=mass_ax_r, keepdims=True)
+                down_scale = np.where(down_sum > 0, nom_sum / down_sum, 1.0)
+                down_hist.values()[eta_target] = down_slice * down_scale
+
+            writer.add_systematic(
+                [up_hist, down_hist],
+                name=f"{label}{name_suffix}_eta{eta_idx}",
+                process=args.signalProcess,
+                channel=args.channel,
+                constrained=False,
+                noi=True,
+            )
 
 
 def main():
@@ -238,6 +343,8 @@ def main():
     args.variation_axis = args.variationAxis
     args.variation_down_index = args.variationDownIndex
     args.variation_up_index = args.variationUpIndex
+    if args.massAxis is None:
+        args.massAxis = "bkmm_nomc_mass" if args.nomc else "bkmm_jpsimc_mass"
 
     outname = os.path.splitext(os.path.basename(__file__))[0]
     if args.postfix:
@@ -653,7 +760,6 @@ def main():
     #        noi=True
     #    )
 
-    # A e M bitchhhh
     labels = tuple(args.systematicLabels)
 
     plot_labels = _resolve_plot_labels(args)
@@ -684,69 +790,7 @@ def main():
             bin_axis=args.binPlotVariation,
         )
 
-    # A/e/M variations — always added as template-morph NOIs.
-    for eta_idx in range(n_eta_bins):
-        for label in labels:
-            offset = labels.index(label)
-            systematic_bin = len(labels) * eta_idx + offset
-
-            up_selection = {
-                args.systematicAxis: systematic_bin,
-                args.variationAxis: args.variationUpIndex,
-            }
-            down_selection = {
-                args.systematicAxis: systematic_bin,
-                args.variationAxis: args.variationDownIndex,
-            }
-
-            up_variation = collapse_axes(
-                variation_hist[up_selection],
-                [args.systematicAxis, args.variationAxis],
-            )
-            down_variation = collapse_axes(
-                variation_hist[down_selection],
-                [args.systematicAxis, args.variationAxis],
-            )
-
-            target_axes = signal_hist.axes.name
-            up_variation = _reorder_hist_axes(up_variation, target_axes)
-            down_variation = _reorder_hist_axes(down_variation, target_axes)
-
-            if up_variation.axes.name != signal_hist.axes.name:
-                raise RuntimeError(
-                    f"Up variation axes {up_variation.axes.name} do not match nominal axes {signal_hist.axes.name}."
-                )
-            if down_variation.axes.name != signal_hist.axes.name:
-                raise RuntimeError(
-                    f"Down variation axes {down_variation.axes.name} do not match nominal axes {signal_hist.axes.name}."
-                )
-
-            up_hist = signal_hist.copy()
-            down_hist = signal_hist.copy()
-
-            eta_target = [slice(None)] * up_hist.values().ndim
-            eta_axis_idx = up_hist.axes.name.index(args.etaAxis)
-            eta_target[eta_axis_idx] = eta_idx
-            eta_target = tuple(eta_target)
-
-            up_hist.values()[eta_target] = up_variation.values()[eta_target]
-            down_hist.values()[eta_target] = down_variation.values()[eta_target]
-
-            up_vars = up_variation.variances()
-            down_vars = down_variation.variances()
-            if up_vars is not None:
-                up_hist.variances()[eta_target] = up_vars[eta_target]
-            if down_vars is not None:
-                down_hist.variances()[eta_target] = down_vars[eta_target]
-
-            writer.add_systematic(
-                [up_hist, down_hist],
-                name=f"{label}_eta{eta_idx}",
-                process=args.signalProcess,
-                channel=args.channel,
-                constrained=False,
-                noi=True,
-            )
+    _add_aem_systematics(writer, variation_hist, signal_hist, args, labels, n_eta_bins)
 
     meta_data_dict = {}
     if args.signalNormPOI:
