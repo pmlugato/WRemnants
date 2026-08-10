@@ -204,12 +204,17 @@ def common_parser(analysis_label=""):
         help="Add EW theory corrections without modifying the default theoryCorr list. Will be appended to args.theoryCorr",
     )
     parser.add_argument(
-        "--skipHelicity",
+        "--skipByHelicityCorrection",
         action="store_true",
-        help="Skip the qcdScaleByHelicity histogram (it can be huge)",
+        help="Apply the QCD corrections and uncertainties from MiNNLO event weights, otherwise use by-helicity reweighting",
     )
     parser.add_argument(
-        "--noRecoil", action="store_true", help="Don't apply recoild correction"
+        "--skipHelicity",
+        action="store_true",
+        help="Skip the qcdScaleByHelicity histogram production (it can be huge)",
+    )
+    parser.add_argument(
+        "--noRecoil", action="store_true", help="Don't apply recoil correction"
     )
     parser.add_argument(
         "--recoilHists",
@@ -511,10 +516,29 @@ def common_parser(analysis_label=""):
             help="Lower threshold for muon pt in the veto definition",
         )
         parser.add_argument(
+            "--vetoRecoStaPt",
+            default=15,
+            type=float,
+            help="Lower threshold for muon standalone pt in the veto definition (should typically match vetoRecoPt, but not necessary)",
+        )
+        parser.add_argument(
             "--vetoRecoEta",
             default=2.4,
             type=float,
             help="Upper threshold for muon absolute eta in the veto definition",
+        )
+        parser.add_argument(
+            "--dxybs",
+            default=0.05,
+            type=float,
+            help="Upper threshold for muon absolute dxy with respect to beamspot",
+        )
+        parser.add_argument(
+            "--dxybsVeto",
+            default=-1,
+            type=float,
+            help="""Upper threshold for muon absolute dxy with respect to beamspot for veto muons.
+            If negative, use the same value as in --dxybs""",
         )
         parser.add_argument(
             "--oneMCfileEveryN",
@@ -574,6 +598,17 @@ def common_parser(analysis_label=""):
             To be used together with --addNvtxAxis, if desired.
             Specify a list of weights (one less item than --addNvtxAxis)
             """,
+        )
+        parser.add_argument(
+            "--addMuonDxybsAxis",
+            type=float,
+            default=None,
+            nargs="+",
+            help="""
+            Add another fit axis with the muon dxybs (absolute value).
+            Specify a list of bin edges (the number of bins is inferred accordingly).
+            The overflow bin is created to contain everything above the last edge.
+        """,
         )
 
     commonargs, _ = parser.parse_known_args()
@@ -692,6 +727,7 @@ def common_parser(analysis_label=""):
                 "qVGen",
                 "ptVGen",
                 "absYVGen",
+                "massVGen",
                 "helicitySig",
             ],
             help="Generator level variable",
@@ -912,6 +948,11 @@ def plot_parser():
         type=float,
         default=None,
         help="Use a custom figure width, otherwise chosen automatic",
+    )
+    parser.add_argument(
+        "--noBinWidthNorm",
+        action="store_true",
+        help="Do not normalize bin yields by bin width",
     )
 
     return parser

@@ -121,6 +121,12 @@ def parse_args():
         help="Normalize the corrections",
     )
     parser.add_argument(
+        "--dyturboScale",
+        type=float,
+        default=1e-3,
+        help="Scale factor applied when reading DYTurbo text files (default 1e-3, the standard nb->pb conversion). Set to 1.0 if the file is already in the correct units.",
+    )
+    parser.add_argument(
         "--eras",
         type=str,
         nargs="+",
@@ -128,12 +134,28 @@ def parse_args():
         help="Data set to process",
         default=["13TeVGen"],
     )
+    parser.add_argument(
+        "--nnlojetMassEdges",
+        nargs=2,
+        type=float,
+        default=None,
+        help="Explicit Q-axis edges to attach for NNLOjet inputs when Q is requested but not present in the raw NNLOjet histogram",
+    )
     args = parser.parse_args()
 
     return args
 
 
-def read_corr(procName, generator, corrFiles, axes, qt_cutoff=1.0, smooth=None):
+def read_corr(
+    procName,
+    generator,
+    corrFiles,
+    axes,
+    qt_cutoff=1.0,
+    smooth=None,
+    nnlojet_mass_edges=None,
+    dyturbo_scale=1.0,
+):
     logger = logging.child_logger("read_corr")
     charge = 0 if procName[0] == "Z" else (1 if "Wplus" in procName else -1)
     corr_file = corrFiles[0]
@@ -162,9 +184,11 @@ def read_corr(procName, generator, corrFiles, axes, qt_cutoff=1.0, smooth=None):
             fo_func = getattr(input_tools, f"read_matched_scetlib_{fo_generator}_hist")
 
             # TODO: Should probably be more general...
-            smooth_args = {}
+            fo_args = {}
             if smooth == "fo_sing":
-                smooth_args = {"smooth_nnlojet": True}
+                fo_args["smooth_nnlojet"] = True
+            if fo_generator == "nnlojet":
+                fo_args["mass_edges"] = nnlojet_mass_edges
             numh = fo_func(
                 resumf,
                 nnlo_singf,
@@ -174,7 +198,7 @@ def read_corr(procName, generator, corrFiles, axes, qt_cutoff=1.0, smooth=None):
                 zero_nons_bins=slice(
                     0j, complex(0, qt_cutoff)
                 ),  # set bins with qT < qtCutoff GeV to 0
-                **smooth_args,
+                **fo_args,
             )
         else:
             nons = "auto"
@@ -192,7 +216,9 @@ def read_corr(procName, generator, corrFiles, axes, qt_cutoff=1.0, smooth=None):
             axnames = axes
             if not axnames:
                 axnames = ("Y", "qT") if "2d" in corr_file else ("qT")
-            h = input_tools.read_dyturbo_hist(corrFiles, axes=axnames, charge=charge)
+            h = input_tools.read_dyturbo_hist(
+                corrFiles, axes=axnames, charge=charge, scale=dyturbo_scale
+            )
             if "Y" in h.axes.name:
                 h = hh.makeAbsHist(h, "Y")
 
@@ -225,7 +251,7 @@ def main():
     }
 
     if args.proc == "z":
-        eventgen_procs = ["Zmumu"]  # , "DYJetsToMuMuMass10to50"]
+        eventgen_procs = ["Zmumu", "Zmumu10to50"]
         filesByProc = {"Zmumu": args.corrFiles}
     else:
         wpfiles = list(
@@ -264,18 +290,18 @@ def main():
                 "WtoNMuMN50V0p001",
             ]
 
-    minnloh = hh.sumHists(
-        [
-            input_tools.read_mu_hist_combine_tau(
-                args.minnloFile,
-                proc,
-                args.minnloh,
-                eras=args.eras,
-                combine_with_tau=args.proc != "bsm",
-            )
-            for proc in eventgen_procs
-        ]
-    )
+    minnlohists = [
+        input_tools.read_mu_hist_combine_tau(
+            args.minnloFile,
+            proc,
+            args.minnloh,
+            eras=args.eras,
+            combine_with_tau=args.proc != "bsm",
+        )
+        for proc in eventgen_procs
+    ]
+
+    minnloh = hh.sumHists(minnlohists)
 
     if "y" in minnloh.axes.name:
         minnloh = hh.makeAbsHist(minnloh, "y")
@@ -285,19 +311,20 @@ def main():
         if ax.name in ax_map:
             hh.renameAxis(minnloh, ax.name, ax_map[ax.name])
 
-    numh = hh.sumHists(
-        [
-            read_corr(
-                procName,
-                args.generator,
-                corr_file,
-                args.axes,
-                qt_cutoff=args.qtCutoff,
-                smooth=args.smooth,
-            )
-            for procName, corr_file in filesByProc.items()
-        ]
-    )
+    numhists = [
+        read_corr(
+            procName,
+            args.generator,
+            corr_file,
+            args.axes,
+            qt_cutoff=args.qtCutoff,
+            smooth=args.smooth,
+            nnlojet_mass_edges=args.nnlojetMassEdges,
+        )
+        for procName, corr_file in filesByProc.items()
+    ]
+
+    numh = hh.sumHists(numhists)
 
     if args.selectVars:
         numh = numh[{"vars": args.selectVars}]
@@ -346,12 +373,18 @@ def main():
         minnloh = hh.rebinHist(
             minnloh,
             args.integrateAxis,
-            minnloh.axes[args.integrateAxis].edges[np.array((0, -1))],
+            [
+                minnloh.axes[args.integrateAxis].edges[0],
+                minnloh.axes[args.integrateAxis].edges[-1],
+            ],
         )
         numh = hh.rebinHist(
             numh,
             args.integrateAxis,
-            numh.axes[args.integrateAxis].edges[np.array((0, -1))],
+            [
+                numh.axes[args.integrateAxis].edges[0],
+                numh.axes[args.integrateAxis].edges[-1],
+            ],
         )
 
     corrh_unc, minnloh, numh = theory_corrections.make_corr_from_ratio(
@@ -398,6 +431,10 @@ def main():
     output_tools.write_lz4_pkl_output(
         outfile, args.proc.upper(), output_dict, common.base_dir, args, meta_dict
     )
+
+    corrh = hh.disableFlow(corrh)
+    numh = hh.disableFlow(numh)
+    minnloh = hh.disableFlow(minnloh)
 
     logger.info("Correction binning is")
     for ax in corrh.axes:
@@ -481,14 +518,20 @@ def main():
                     )
 
                     for varm, varn in zip(iminnloh.axes.name, inumh.axes.name):
+                        # Restrict both to common range in the axis being integrated over,
+                        # so the 1D projections integrate over the same physical region.
+                        mproj = hh.projectNoFlow(iminnloh, varm)
+                        nproj = hh.projectNoFlow(inumh, varn)
                         fig = plot_tools.makePlotWithRatioToRef(
                             [
-                                iminnloh.project(varm),
-                                inumh.project(varn),
+                                mproj,
+                                nproj,
                             ],
                             [
                                 "MiNNLO",
-                                generator.replace("_", " ").replace("FineBins ", ""),
+                                args.generator.replace("_", " ").replace(
+                                    "FineBins ", ""
+                                ),
                             ],
                             colors=["orange", "mediumpurple"],
                             linestyles=[
@@ -500,13 +543,13 @@ def main():
                             rlabel="x/MiNNLO",
                             legtext_size=24,
                             nlegcols=1,
-                            rrange=[0.8, 1.2],
+                            rrange=[0.71, 1.29] if varm in ["qT"] else [0.81, 1.19],
                             yscale=1.1,
                             xlim=None,
                             binwnorm=1.0,
                             baseline=True,
                             extra_text=extra_text,
-                            extra_text_loc=(0.5, 0.7) if varm == "qT" else (0.1, 0.2),
+                            extra_text_loc=(0.3, 0.7) if varm == "qT" else (0.1, 0.2),
                         )
                         plot_name = f"{varm}_{generator}_MiNNLO_{proc}{suffix}"
                         plot_tools.save_pdf_and_png(outdir, plot_name)

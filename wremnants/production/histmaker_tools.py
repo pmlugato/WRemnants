@@ -130,7 +130,9 @@ def aggregate_groups(datasets, result_dict, groups_to_aggregate):
 def writeMetaInfoToRootFile(rtfile, exclude_diff="notebooks", args=None):
     import ROOT
 
-    meta_dict = ioutils.make_meta_info_dict(exclude_diff, args=args, wd=common.base_dir)
+    meta_dict = output_tools.make_meta_info_dict(
+        exclude_diff, args=args, wd=common.base_dir
+    )
     d = rtfile.mkdir("meta_info")
     d.cd()
 
@@ -349,6 +351,14 @@ def make_muon_phi_axis(phi_bins, ax_name="phi", flows=False):
     )
 
     return phi_axis
+
+
+def make_muon_dxybs_axis(edges, ax_name="dxybs", overflow=True):
+    ret_axis = hist.axis.Variable(
+        np.array(edges), name=ax_name, underflow=False, overflow=overflow
+    )
+
+    return ret_axis
 
 
 def define_norm_weight_nRecoVtx(

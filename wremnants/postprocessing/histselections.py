@@ -2,12 +2,15 @@
 Implementing various configurations for (extended) ABCD methods for nonprompt muon estimation.
 """
 
+import pickle
+
 import hist
+import lz4.frame
 import numpy as np
 from scipy import interpolate
 
 from wremnants.postprocessing.regression import Regressor, Regressor2D
-from wremnants.utilities import binning
+from wremnants.utilities import binning, common
 from wums import boostHistHelpers as hh
 from wums import logging
 
@@ -127,6 +130,13 @@ class HistselectorABCD(object):
         name_x=None,
         name_y=None,
         fakerate_axes=["eta", "pt", "charge"],
+        fakeTransferAxis="",
+        fakeTransferCorrFileName="fakeTransferTemplates",  # only with fakeTransferAxis
+        # histAxesRemovedBeforeFakes is needed when some axes are in the histograms,
+        # but are not supposed to be fit or used as fakerate axes, and are sliced/integrated and removed
+        # before computing the fakes, so they are technically not "fake integration axes", which is
+        # needed to make the full smoothing work (integration axes within the method are not implemented)
+        histAxesRemovedBeforeFakes=[],
         smoothing_axis_name="pt",
         rebin_smoothing_axis="automatic",  # can be a list of bin edges, "automatic", or None
         upper_bound_y=None,  # using an upper bound on the abcd y-axis (e.g. isolation)
@@ -142,9 +152,9 @@ class HistselectorABCD(object):
         # or if abcdExplicitAxisEdges is provided from outside
         self.abcd_thresholds = {
             "pt": [26, 28, 30],
-            "mt": [0, 40] if self.ABCDmode == "simple" else [0, 20, 40],
+            "mt": [0, 40, np.inf] if self.ABCDmode == "simple" else [0, 20, 40, np.inf],
             "iso": [0, 4, 8, 12],
-            "relIso": [0, 0.15, 0.3, 0.45],
+            "relIso": [0, 0.15, 0.3, np.inf],
             "relJetLeptonDiff": [0, 0.2, 0.35, 0.5],
             "dxy": [0, 0.01, 0.02, 0.03],
         }
@@ -199,17 +209,28 @@ class HistselectorABCD(object):
         self.sel_dy = None
         self.set_selections_x()
         self.set_selections_y()
+        self.fakeTransferAxis = fakeTransferAxis
+        self.fakeTransferCorrFileName = fakeTransferCorrFileName
+        self.histAxesRemovedBeforeFakes = histAxesRemovedBeforeFakes
 
         if fakerate_axes is not None:
-            self.fakerate_axes = fakerate_axes
+            self.fakerate_axes = fakerate_axes  # list of axes names where to perform independent fakerate computation
             self.fakerate_integration_axes = [
                 n
                 for n in h.axes.name
-                if n not in [self.name_x, self.name_y, *fakerate_axes]
+                if n
+                not in [
+                    self.name_x,
+                    self.name_y,
+                    *fakerate_axes,
+                    *histAxesRemovedBeforeFakes,
+                ]
             ]
             logger.debug(
                 f"Setting fakerate integration axes to {self.fakerate_integration_axes}"
             )
+        logger.debug(f"histAxesRemovedBeforeFakes = {histAxesRemovedBeforeFakes}")
+        logger.debug(f"fakerate_integration_axes = {self.fakerate_integration_axes}")
 
         self.smoothing_axis_name = smoothing_axis_name
         edges = h.axes[smoothing_axis_name].edges
@@ -225,11 +246,18 @@ class HistselectorABCD(object):
         self.smoothing_axis_min = edges[0]
         self.smoothing_axis_max = edges[-1]
 
-    def get_selection_edges(self, axis_name, upper_bound=False, hist_axis_edges=None):
+    def get_selection_edges(self, axis_name, upper_bound=False, hist_axis=None):
         # returns edges from pass to fail regions [x0, x1, x2, x3] e.g. x=[x0,x1], dx=[x1,x2], d2x=[x2,x3]
         if axis_name in self.abcd_thresholds:
             ts = self.abcd_thresholds[axis_name]
-            if hist_axis_edges is not None:
+            if hist_axis is not None:
+                hist_axis_edges = list(hist_axis.edges)
+                # treat underflow / overflow as explicit edge with +/- np.inf
+                if hist_axis.traits.overflow:
+                    hist_axis_edges.append(np.inf)
+                if hist_axis.traits.underflow:
+                    hist_axis_edges.insert(0, -np.inf)
+
                 if len(ts) == len(hist_axis_edges):
                     # consistent number of edges: take them from axis
                     ts = [x for x in hist_axis_edges]
@@ -237,23 +265,18 @@ class HistselectorABCD(object):
                         f"ABCD method: using edges {ts} for axis {axis_name}"
                     )
                 elif len(ts) < len(hist_axis_edges):
-                    if all(tsi in hist_axis_edges for i, tsi in enumerate(ts)):
+                    if all(tsi in hist_axis_edges for tsi in ts):
                         # more edges in axis, but default ones are a subset: keep edges from default
                         logger.warning(
                             f"ABCD method: using subset of edges {ts} for axis {axis_name}, out of {hist_axis_edges}"
                         )
                     else:
-                        logger.warning(
-                            f"Axis {axis_name} has inconsistent edges ({hist_axis_edges}): expected {ts}"
-                        )
-                        logger.warning(
-                            f"Please, explicitly provide the edges to be used for ABCD method."
-                        )
-                        raise RuntimeError(
-                            f"Inconsistent edges for ABCD method with axis {axis_name}."
-                        )
+                        raise RuntimeError(f"""
+                            Axis {axis_name} has inconsistent edges ({hist_axis_edges}): expected {ts}.
+                            Please, explicitly provide the edges to use for ABCD method.
+                            """)
                 else:
-                    if all(xi in ts for i, xi in enumerate(hist_axis_edges)):
+                    if all(xi in ts for xi in hist_axis_edges):
                         # less edges in axis, but subset of default ones: use them filling remaining elements with None
                         ts = [x for x in hist_axis_edges]
                         ts.extend([None] * (len(ts) - len(hist_axis_edges)))
@@ -262,15 +285,10 @@ class HistselectorABCD(object):
                         )
                     else:
                         # less edges in axis but also inconsistent: request the user to explicitly provide what to use
-                        logger.warning(
-                            f"ABCD method: axis {axis_name} has less edges ({hist_axis_edges}) than expected ({ts})"
-                        )
-                        logger.warning(
-                            f"and inconsistent too. Please, explicitly provide the edges to use"
-                        )
-                        raise RuntimeError(
-                            f"Inconsistent edges for ABCD method with axis {axis_name}."
-                        )
+                        raise RuntimeError(f"""
+                            Axis {axis_name} has less edges ({hist_axis_edges}) than expected ({ts}) and inconsistent too. 
+                            Please, explicitly provide the edges to use for ABCD method.
+                            """)
 
             if axis_name in ["mt", "pt"]:
                 # low: failing, high: passing, no upper bound
@@ -336,7 +354,7 @@ class HistselectorABCD(object):
             self.sel_dx = 0
         else:
             x0, x1, x2, x3 = self.get_selection_edges(
-                self.name_x, hist_axis_edges=self.axis_x.edges
+                self.name_x, hist_axis=self.axis_x
             )
             s = hist.tag.Slicer()
             do = hist.sum if self.integrate_x else None
@@ -357,7 +375,7 @@ class HistselectorABCD(object):
             y0, y1, y2, y3 = self.get_selection_edges(
                 self.name_y,
                 upper_bound=self.upper_bound_y,
-                hist_axis_edges=self.axis_y.edges,
+                hist_axis=self.axis_y,
             )
             s = hist.tag.Slicer()
             self.sel_y = (
@@ -382,6 +400,83 @@ class SignalSelectorABCD(HistselectorABCD):
         return self.get_hist_passX_passY(h)
 
 
+class OnesSelector(HistselectorABCD):
+    """
+    Flat-ones fake template for the simultaneous (extended)ABCD fit, where the
+    rabbit model carries the absolute scale and per-region polynomial shape.
+    The (sel_x, sel_y) signal-region slice is scaled by 'global_scalefactor' as a closure-test
+    correction.
+
+    Setting ``external_params`` to a Chebyshev coefficient vector before calling
+    ``get_hist`` reweights the signal-region slice by
+    ``exp(sum_k p_k T_k(x_norm))`` along the smoothing axis on top of the
+    nominal scale, so a single non-zero coefficient produces a Param_k
+    systematic shape analogous to the polynomial-coefficient variations used
+    with FakeSelector*ExtendedABCD.
+    """
+
+    def __init__(
+        self,
+        h,
+        *args,
+        global_scalefactor=1,  # apply global correction factor on prediction
+        **kwargs,
+    ):
+        super().__init__(h, *args, **kwargs)
+        self.external_params = None
+        self.global_scalefactor = global_scalefactor
+
+    @staticmethod
+    def _uhi_to_numpy(sel, axis):
+        # hist UHI uses imaginary numbers for axis coordinates and hist.sum as
+        # a step to collapse the axis; numpy understands neither.
+        if isinstance(sel, slice):
+            start, stop = sel.start, sel.stop
+            if isinstance(start, complex):
+                start = axis.index(start.imag)
+            if isinstance(stop, complex):
+                stop = axis.index(stop.imag)
+            return slice(start, stop)
+        if isinstance(sel, complex):
+            return axis.index(sel.imag)
+        return sel
+
+    def _signal_region_slice(self, h):
+        sl = [slice(None)] * h.ndim
+        for name, sel in [(self.name_x, self.sel_x), (self.name_y, self.sel_y)]:
+            i = h.axes.name.index(name)
+            sl[i] = self._uhi_to_numpy(sel, h.axes[i])
+        return tuple(sl)
+
+    def _apply_cheb_reweight(self, h):
+        if self.external_params is None or not np.any(self.external_params):
+            return
+        edges = h.axes[self.smoothing_axis_name].edges
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        x_norm = (
+            2
+            * (centers - self.smoothing_axis_min)
+            / (self.smoothing_axis_max - self.smoothing_axis_min)
+            - 1
+        )
+        weight = np.exp(np.polynomial.chebyshev.chebval(x_norm, self.external_params))
+        sm_idx = h.axes.name.index(self.smoothing_axis_name)
+        bcast = [1] * h.ndim
+        bcast[sm_idx] = -1
+        sl = self._signal_region_slice(h)
+        h.values()[sl] *= weight.reshape(bcast)
+
+    # signal region selection
+    def get_hist(self, h, is_nominal=False):
+        h_new = h.copy()
+        h_new.values()[...] = 1.0
+        h_new.variances()[...] = 0.0
+        # Closure-test correction: scale the signal region template.
+        h_new.values()[self._signal_region_slice(h_new)] = self.global_scalefactor
+        self._apply_cheb_reweight(h_new)
+        return h_new
+
+
 class FakeSelectorSimpleABCD(HistselectorABCD):
     # supported smoothing mode choices
     smoothing_modes = ["binned", "fakerate", "hybrid", "full"]
@@ -402,6 +497,7 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
         super().__init__(h, *args, **kwargs)
 
         # nominal histogram to be used to transfer variances for systematic variations
+        logger.debug("Setting h_nominal to None")
         self.h_nominal = None
         self.global_scalefactor = global_scalefactor
 
@@ -438,12 +534,25 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
         else:
             self.spectrum_regressor = None
 
+        if self.fakeTransferAxis in h.axes.name:
+            data_dir = common.data_dir
+            trTensorPath = (
+                f"{data_dir}/fakesWmass/{self.fakeTransferCorrFileName}.pkl.lz4"
+            )
+            logger.info(f"Loaded transfer tensor for fakes: {trTensorPath}")
+            with lz4.frame.open(trTensorPath) as fTens:
+                resultDict = pickle.load(fTens)
+            self.fakeTransferTensor = resultDict["fakeCorr"]
+
         if self.smoothing_mode in ["binned"]:
             # rebinning doesn't make sense for binned estimation
             self.rebin_smoothing_axis = None
 
         if hasattr(self, "fakerate_integration_axes"):
-            if smoothing_mode == "full" and self.fakerate_integration_axes:
+            logger.info(
+                f"self.fakerate_integration_axes = {self.fakerate_integration_axes}"
+            )
+            if smoothing_mode == "full" and len(self.fakerate_integration_axes):
                 raise NotImplementedError(
                     "Smoothing of full fake prediction is not currently supported together with integration axes."
                 )
@@ -547,8 +656,12 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
 
     def transfer_variances(self, h, set_nominal=False):
         if set_nominal:
+            logger.debug("Setting h_nominal to h")
             self.h_nominal = h.copy()
         elif self.h_nominal is not None:
+            logger.debug("Setting variances in h from h_nominal")
+            logger.debug(f"Shape of h: {h.values().shape}")
+            logger.debug(f"Shape of h_nominal: {self.h_nominal.values().shape}")
             h = hh.transfer_variances(h, self.h_nominal)
         elif h.storage_type == hist.storage.Weight:
             logger.warning(
@@ -588,7 +701,7 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
 
             if not self.integrate_x and self.swap_regions:
                 logger.warning(
-                    f"Regions for fakerate estiamation can only be swapped if abcd-x axis is integrated"
+                    f"Regions for fakerate estimation can only be swapped if abcd-x axis is integrated"
                 )
             if self.swap_regions and self.integrate_x:
                 if type(self) == FakeSelectorSimpleABCD:
@@ -625,14 +738,22 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
             elif variations_frf:
                 dvar = cval[..., np.newaxis, np.newaxis] * y_frf_var[..., :, :]
             elif self.smoothing_mode in ["hybrid"]:
-                # noo bin by bin statistical uncertainty, all regions covered by smoothing
+                # no bin by bin statistical uncertainty, all regions covered by smoothing
                 dvar = np.zeros_like(cvar)
             else:
                 # only take bin by bin uncertainty from c region
                 dvar = y_frf**2 * cvar
 
         elif self.smoothing_mode == "full":
-            h = self.transfer_variances(h, set_nominal=is_nominal)
+            if not (variations_frf or variations_smoothing):
+                logger.debug(
+                    "Transferring variances for full smoothing without systematic variations"
+                )
+                h = self.transfer_variances(h, set_nominal=is_nominal)
+            else:
+                logger.warning(
+                    "Not transferring variances before full smoothing, since systematic variations are requested"
+                )
             d, dvar = self.calculate_fullABCD_smoothed(
                 h, flow=flow, syst_variations=variations_smoothing, use_spline=False
             )
@@ -757,8 +878,17 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
             y = np.moveaxis(y, idx_ax_smoothing, -1)
             w = np.moveaxis(w, idx_ax_smoothing, -1)
 
+        logger.debug("Sorted axes for smoothing: " + ", ".join(axes))
+
         # smoothen
         regressor.solve(x, y, w)
+
+        logger.debug("Reduce is " + str(reduce))
+
+        # Always save params before (optional) reduction so the dump can access
+        # per-region polynomial coefficients for both signal_region=False and
+        # signal_region=True calls.
+        self._params_before_reduce = regressor.params.copy()
 
         if reduce:
             # add up parameters from smoothing of individual sideband regions
@@ -810,6 +940,55 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
 
         return y_smooth_orig, y_smooth_var_orig
 
+    def get_smoothed_tensor(self, h, sel, sval, svar, syst_variations=False, flow=True):
+        # get output shape from original hist axes, but as for result histogram
+
+        hOut = (
+            h[{self.name_x: self.sel_x if not self.integrate_x else hist.sum}]
+            if self.name_x in h.axes.name
+            else h
+        )
+        out = np.zeros(
+            [
+                a.extent if flow else a.shape
+                for a in hOut.axes
+                if a.name not in [self.name_y, self.fakeTransferAxis]
+            ],
+            dtype=sval.dtype,
+        )
+        # leave the underflow and overflow unchanged if present
+        out[*sel[:-1]] = sval
+        if syst_variations:
+            outvar = np.zeros_like(out)
+            outvar = outvar[..., None, None] * np.ones(
+                (*outvar.shape, *svar.shape[-2:]), dtype=outvar.dtype
+            )
+
+            logger.debug("Doing syst_variations... something might be wrong here")
+            logger.debug(
+                "Shapes of outvar and svar: "
+                + str(outvar.shape)
+                + " "
+                + str(svar.shape)
+            )
+
+            # leave the underflow and overflow unchanged if present
+            outvar[*sel[:-1], :, :] = svar
+
+            logger.debug(
+                "Shapes of outvar and svar: "
+                + str(outvar.shape)
+                + " "
+                + str(svar.shape)
+            )
+
+        else:
+            # with full smoothing all of the statistical uncertainty is included in the
+            # explicit variations, so the remaining binned uncertainty is zero
+            outvar = np.zeros_like(out)
+
+        return out, outvar
+
     def smoothen_spectrum(
         self,
         h,
@@ -826,6 +1005,8 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
         ].index(self.smoothing_axis_name)
         smoothing_axis = h.axes[self.smoothing_axis_name]
         nax = sval.ndim
+
+        logger.debug("Smoothing spectrum along axis " + self.smoothing_axis_name)
 
         # underflow and overflow are left unchanged along the smoothing axis
         # so we need to exclude them if they have been otherwise included
@@ -869,6 +1050,9 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
             sval *= 1.0 / xwidth
             svar *= 1.0 / xwidth**2
 
+            logger.debug("Sval shape after xwidth scaling: " + str(sval.shape))
+            logger.debug("Svar shape after xwidth scaling: " + str(svar.shape))
+
             goodbin = (sval > 0.0) & (svar > 0.0)
             if goodbin.size - np.sum(goodbin) > 0:
                 logger.warning(
@@ -892,6 +1076,12 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
                 reduce=reduce,
             )
 
+            logger.debug(
+                "Svar shape after smoothing: "
+                + (str(svar.shape) if svar is not None else "None")
+            )
+            logger.debug("xwidthgt shape: " + str(xwidthtgt.shape))
+
             sval = np.exp(sval) * xwidthtgt
             sval = np.where(np.isfinite(sval), sval, 0.0)
             if syst_variations:
@@ -902,29 +1092,13 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
                     sval[..., None, None],
                 )
 
-        # get output shape from original hist axes, but as for result histogram
-        hOut = (
-            h[{self.name_x: self.sel_x if not self.integrate_x else hist.sum}]
-            if self.name_x in h.axes.name
-            else h
+        logger.debug("Smoothing completed. Getting output tensors.")
+
+        out, outvar = self.get_smoothed_tensor(
+            h, sel, sval, svar, syst_variations, flow=flow
         )
-        out = np.zeros(
-            [a.extent if flow else a.shape for a in hOut.axes if a.name != self.name_y],
-            dtype=sval.dtype,
-        )
-        # leave the underflow and overflow unchanged if present
-        out[*sel[:-1]] = sval
-        if syst_variations:
-            outvar = np.zeros_like(out)
-            outvar = outvar[..., None, None] * np.ones(
-                (*outvar.shape, *svar.shape[-2:]), dtype=outvar.dtype
-            )
-            # leave the underflow and overflow unchanged if present
-            outvar[*sel[:-1], :, :] = svar
-        else:
-            # with full smoothing all of the statistical uncertainty is included in the
-            # explicit variations, so the remaining binned uncertainty is zero
-            outvar = np.zeros_like(out)
+
+        logger.debug("Smoothing completed.")
 
         return out, outvar
 
@@ -1046,16 +1220,174 @@ class FakeSelectorSimpleABCD(HistselectorABCD):
                 ..., :-1
             ]
 
-        return self.smoothen_spectrum(
-            h,
-            hNew.axes[self.smoothing_axis_name].edges,
-            sval,
-            svar,
-            syst_variations=syst_variations,
-            use_spline=use_spline,
-            reduce=not signal_region,
-            flow=flow,
+        logger.debug("X and Y axes: " + self.name_x + ", " + self.name_y)
+        logger.debug("hNew axes: " + ", ".join(hNew.axes.name))
+        logger.debug(f"Sval shape after flattening: {sval.shape}")
+        logger.debug(f"Svar shape after flattening: {svar.shape}")
+
+        baseOutTensor = np.zeros(sval.shape[:-1])
+        baseOutVarTensor = (
+            np.zeros(svar.shape[:-1])  # if not syst_variations
+            # else np.zeros((*svar.shape[:-1], svar.shape[-1], svar.shape[-1]))
         )
+
+        logger.debug(f"baseOutTensor shape: {baseOutTensor.shape}")
+        logger.debug(f"baseOutVarTensor shape: {baseOutVarTensor.shape}")
+
+        if self.fakeTransferAxis != "" and self.fakeTransferAxis in hNew.axes.name:
+            fakeTransferAxis_idx = [n for n in hNew.axes.name].index(
+                self.fakeTransferAxis
+            )
+            nbins_separateFakes = hNew.axes[self.fakeTransferAxis].size
+            logger.debug(
+                f"Found decorrelation axis {self.fakeTransferAxis} with {nbins_separateFakes} bins, applying smoothing independently in each bin."
+            )
+        else:
+            nbins_separateFakes = 1
+            fakeTransferAxis_idx = -1
+
+        logger.debug(f"Decorrelation axis index: {fakeTransferAxis_idx}")
+
+        for idx_fakeSep in range(nbins_separateFakes):
+            fakeSep_slices = [slice(None)] * (sval.ndim)
+            outTensor_slices = [slice(None)] * (baseOutTensor.ndim)
+            outVarTensor_slices = [slice(None)] * (baseOutVarTensor.ndim)
+            if fakeTransferAxis_idx >= 0:
+                fakeSep_slices[fakeTransferAxis_idx] = idx_fakeSep
+                outTensor_slices[fakeTransferAxis_idx] = idx_fakeSep
+                outVarTensor_slices[fakeTransferAxis_idx] = idx_fakeSep
+
+            sval_sliced = sval[tuple(fakeSep_slices)]
+            svar_sliced = svar[tuple(fakeSep_slices)]
+
+            logger.debug(f"Shape of sval_sliced: {sval_sliced.shape}")
+            logger.debug(f"Shape of svar_sliced: {svar_sliced.shape}")
+            logger.debug(
+                f"Number of nonvalid bins in sval AFTER the first SELECTION: {np.sum(sval<=0.0)} out of {sval.size}"
+            )
+            logger.debug(f"Starting smoothing for decorrelation bin {idx_fakeSep}.")
+
+            goodbin = (sval_sliced > 0.0) & (svar_sliced > 0.0)
+            if goodbin.size - np.sum(goodbin) > 0:
+                logger.warning(
+                    f"Found {goodbin.size-np.sum(goodbin)} of {goodbin.size} bins with 0 or negative bin content, those will be set to 0 and a large error"
+                )
+
+            logd = np.where(goodbin, np.log(sval_sliced), 0.0)
+            if np.all(logd[..., :4] == 0.0):
+
+                if fakeTransferAxis_idx < 0:
+                    logger.debug(
+                        f"All ABCD values are zeros! Returning zero as nonprompt estimate."
+                    )
+                    logger.debug(f"Syst variations: {syst_variations}")
+                    sval_sliced = np.zeros_like(sval_sliced[..., 0])
+                    svar_sliced = np.zeros_like(
+                        svar_sliced[..., 0]
+                        if not syst_variations
+                        else svar_sliced[..., 0][..., None, None]
+                    )
+
+                    out, outvar = self.get_smoothed_tensor(
+                        h,
+                        (sval_sliced.ndim) * [slice(None)],
+                        sval_sliced,
+                        svar_sliced,
+                        syst_variations=syst_variations,
+                        flow=flow,
+                    )
+
+                else:
+                    logger.debug(
+                        f"All ABCD values are zeros! Returning nonprompt estimate obtained from another bin, with a correction factor"
+                    )
+                    logger.debug(f"Syst variations: {syst_variations}")
+                    compl_mask = np.array(
+                        [
+                            True if j != idx_fakeSep else False
+                            for j in range(nbins_separateFakes)
+                        ]
+                    )
+
+                    logger.debug(f"Complement mask: {compl_mask}")
+                    logger.debug(f"APPLIED 'np.where'; {np.where(compl_mask)[0]}")
+
+                    sval_slicedCompl = sval.take(
+                        indices=np.where(compl_mask)[0], axis=fakeTransferAxis_idx
+                    ).sum(axis=fakeTransferAxis_idx)
+                    svar_slicedCompl = svar.take(
+                        indices=np.where(compl_mask)[0], axis=fakeTransferAxis_idx
+                    ).sum(axis=fakeTransferAxis_idx)
+
+                    logger.debug(f"Sval_slicedCompl shape: {sval_slicedCompl.shape}")
+                    count_nonvalid = np.sum(sval_slicedCompl <= 0.0)
+                    logger.debug(
+                        f"Number of nonvalid bins in complement: {count_nonvalid} out of {sval_slicedCompl.size}"
+                    )
+
+                    out_other, outvar_other = self.smoothen_spectrum(
+                        h,
+                        hNew.axes[self.smoothing_axis_name].edges,
+                        sval_slicedCompl,
+                        svar_slicedCompl,
+                        syst_variations=syst_variations,
+                        use_spline=use_spline,
+                        reduce=not signal_region,
+                        flow=flow,
+                    )
+
+                    out = (
+                        out_other
+                        * self.fakeTransferTensor.values()[
+                            ..., *[None] * (out_other.ndim - 3)
+                        ]
+                    )
+                    outvar = outvar_other * (
+                        self.fakeTransferTensor.values()[
+                            ..., *[None] * (outvar_other.ndim - 3)
+                        ]
+                        ** 2
+                    )
+
+            else:
+                out, outvar = self.smoothen_spectrum(
+                    h,
+                    hNew.axes[self.smoothing_axis_name].edges,
+                    sval_sliced,
+                    svar_sliced,
+                    syst_variations=syst_variations,
+                    use_spline=use_spline,
+                    reduce=not signal_region,
+                    flow=flow,
+                )
+
+            if syst_variations and idx_fakeSep == 0:
+                logger.debug(
+                    "Updating baseOutVarTensor to correctly include syst variations"
+                )
+                logger.debug(f"Current outvar shape: {outvar.shape}")
+                logger.debug(
+                    f"Current baseOutVarTensor shape: {baseOutVarTensor.shape}"
+                )
+                baseOutVarTensor = np.zeros(
+                    (*baseOutVarTensor.shape, *outvar.shape[-2:]),
+                    dtype=baseOutVarTensor.dtype,
+                )
+                outVarTensor_slices += [slice(None), slice(None)]
+
+            logger.debug(f"Smoothing completed for decorrelation bin {idx_fakeSep}.")
+            logger.debug(f"Smoothing output shape: {out.shape}")
+            logger.debug(f"Smoothing output var shape: {outvar.shape}")
+            logger.debug(f"Smoothing baseOutTensor shape: {baseOutTensor.shape}")
+            logger.debug(f"Smoothing baseOutVarTensor shape: {baseOutVarTensor.shape}")
+
+            baseOutTensor[tuple(outTensor_slices)] = out
+            baseOutVarTensor[tuple(outVarTensor_slices)] = outvar
+
+        out = baseOutTensor
+        outvar = baseOutVarTensor
+
+        return out, outvar
 
 
 class FakeSelector1DExtendedABCD(FakeSelectorSimpleABCD):
@@ -1067,9 +1399,7 @@ class FakeSelector1DExtendedABCD(FakeSelectorSimpleABCD):
 
     # set slices object for selection of sideband regions
     def set_selections_x(self, integrate_x=True):
-        x0, x1, x2, x3 = self.get_selection_edges(
-            self.name_x, hist_axis_edges=self.axis_x.edges
-        )
+        x0, x1, x2, x3 = self.get_selection_edges(self.name_x, hist_axis=self.axis_x)
         s = hist.tag.Slicer()
         do = hist.sum if integrate_x else None
         self.sel_x = (
@@ -1299,13 +1629,14 @@ class FakeSelector2DExtendedABCD(FakeSelector1DExtendedABCD):
                 # min and max (in application region) for transformation of bernstain polynomials into interval [0,1]
                 axis_x_min = h[{self.name_x: self.sel_x}].axes[self.name_x].edges[0]
                 if self.name_x == "mt":
-                    # mt does not have an upper bound, cap at 100
+                    # mt may extend to infinity; use the last finite edge for the regressor
                     edges = (
                         self.rebin_x
                         if self.rebin_x is not None
                         else h.axes[self.name_x].edges
                     )
-                    axis_x_max = extend_edges(h.axes[self.name_x].traits, edges)[-1]
+                    all_edges = extend_edges(h.axes[self.name_x].traits, edges)
+                    axis_x_max = all_edges[np.isfinite(all_edges)][-1]
                 elif self.name_x in ["iso", "relIso", "relJetLeptonDiff", "dxy"]:
                     # iso and dxy have a finite lower and upper bound in the application region
                     axis_x_max = self.abcd_thresholds[self.name_x][1]
@@ -1341,7 +1672,7 @@ class FakeSelector2DExtendedABCD(FakeSelector1DExtendedABCD):
         y0, y1, y2, y3 = self.get_selection_edges(
             self.name_y,
             upper_bound=self.upper_bound_y,
-            hist_axis_edges=self.axis_y.edges,
+            hist_axis=self.axis_y,
         )
         s = hist.tag.Slicer()
         self.sel_y = (

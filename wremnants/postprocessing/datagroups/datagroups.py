@@ -79,6 +79,15 @@ class Datagroups(object):
         self.gen_axes = {}
         self.fit_axes = []
         self.fakerate_axes = ["pt", "eta", "charge"]
+        self.fakeTransferAxis = "utAngleSign"
+        self.fakeTransferCorrFileName = "fakeTransferTemplates"
+        # in case some fit axes are integrated out, to make full smoothing work,
+        # we need to warn the class that these don't belong to fit axes nor fakerate axes,
+        # but are also not "integration axes" because they are removed before entering
+        # the fake estimate, this can happen for example
+        # with option --select in setupRabbit.py or --presel in makeDataMCStackPlot.py,
+        # which slice and remove the axis
+        self.histAxesRemovedBeforeFakes = []
 
         self.setGenAxes()
 
@@ -118,6 +127,29 @@ class Datagroups(object):
 
         # if the histograms should be normalized to cross section (otherwise expected events)
         self.xnorm = xnorm
+
+        # if True, force systematics added via addSystematic to be written
+        # to the tensor without symmetrization, regardless of the per-call
+        # `symmetrize` argument. If `force_asymmetric_patterns` is None, all
+        # systematics are affected; otherwise only nuisance names matched
+        # (via re.search) by any compiled pattern in the list are affected.
+        self.force_asymmetric = False
+        self.force_asymmetric_patterns = None
+
+        # List of (compiled regex, float factor) pairs. For each systematic
+        # variation written via addSystematic, if its per-direction name
+        # (e.g. <name>Up / <name>Down) matches a pattern (re.search), its
+        # kfactor is multiplied by the corresponding factor. At most one
+        # pattern may match a given var_name; overlapping matches raise
+        # ValueError.
+        self.scale_params_patterns = []
+
+        # List of compiled regex patterns. For each systematic variation
+        # written via addSystematic, if its per-direction name matches any
+        # pattern (re.search), the Gaussian prior on that nuisance is
+        # removed (noConstraint=True). Mirrors the --scaleParams /
+        # --noSymmetrize wiring.
+        self.no_constraint_patterns = []
 
         self.writer = None
 
@@ -276,6 +308,21 @@ class Datagroups(object):
                 "histselectors only implemented for single lepton (with fakes)"
             )
             return  # histselectors only implemented for single lepton (with fakes)
+
+        if mode in ["none", None]:
+            g = self.fakeName
+            members = self.groups[g].members[:]
+            if len(members) == 0:
+                raise RuntimeError(f"No member found for group {g}")
+            base_member = members[0].name
+            h = self.results[base_member]["output"][histToRead].get()
+            if forceGlobalScaleFakes is not None:
+                scale = forceGlobalScaleFakes
+            else:
+                scale = 0.85
+            self.groups[g].histselector = sel.OnesSelector(h, global_scalefactor=scale)
+            return
+
         auxiliary_info = {"ABCDmode": mode}
         signalselector = sel.SignalSelectorABCD
         scale = 1
@@ -558,20 +605,20 @@ class Datagroups(object):
                     )
                     h = preOpMap[member.name](h, **preOpArgs)
 
-                sum_axes = [x for x in self.sum_gen_axes if x in h.axes.name]
-                if len(sum_axes) > 0:
+                if self.globalAction:
+                    logger.debug("Applying global action")
+                    h = self.globalAction(h)
+
+                sum_gen_axes = [x for x in self.sum_gen_axes if x in h.axes.name]
+                if len(sum_gen_axes) > 0:
                     # sum over remaining axes (avoid integrating over fit axes & fakerate axes)
-                    logger.debug(f"Sum over axes {sum_axes}")
-                    h = h.project(*[x for x in h.axes.name if x not in sum_axes])
+                    logger.debug(f"Sum over axes {sum_gen_axes}")
+                    h = h.project(*[x for x in h.axes.name if x not in sum_gen_axes])
                     logger.debug(f"Hist axes are now {h.axes.name}")
 
                 if h_id == id(h):
                     logger.debug(f"Make explicit copy")
                     h = h.copy()
-
-                if self.globalAction:
-                    logger.debug("Applying global action")
-                    h = self.globalAction(h)
 
                 if forceNonzero:
                     logger.debug("force non zero")
@@ -661,7 +708,6 @@ class Datagroups(object):
             if self.rebinOp and self.rebinBeforeSelection:
                 logger.debug(f"Apply rebin operation for process {procName}")
                 group.hists[label] = self.rebinOp(group.hists[label])
-
             if group.histselector is not None:
                 if not applySelection:
                     logger.warning(
@@ -1074,11 +1120,12 @@ class Datagroups(object):
         rename=True,
     ):
         if len(ax_lim):
-            if not all(x.real == 0 or x.imag == 0 for x in ax_lim):
+            specified_ax_lim = [x for x in ax_lim if x is not None]
+            if not all(x.real == 0 or x.imag == 0 for x in specified_ax_lim):
                 raise ValueError(
                     "In set_rebin_action(): ax_lim only accepts pure real or imaginary numbers"
                 )
-            if any(x.imag == 0 and (x.real % 1) != 0.0 for x in ax_lim):
+            if any(x.imag == 0 and (x.real % 1) != 0.0 for x in specified_ax_lim):
                 raise ValueError(
                     "In set_rebin_action(): ax_lim requires real numbers to be of integer type"
                 )
@@ -1334,12 +1381,17 @@ class Datagroups(object):
         action=None,
         actionArgs={},
         actionRequiresNomi=False,
+        lastAction=None,
+        lastActionArgs={},
+        lastActionRequiresNomi=False,
         **kwargs,
     ):
         """
         'preOp': Operation that is applied on each member before members are summed up to groups and before the selection is performed
         'action': Operation that is applied after everything else
         """
+
+        s = hist.tag.Slicer()
 
         if group is not None:
             groups = [*groups, group]
@@ -1361,7 +1413,9 @@ class Datagroups(object):
             else:
                 name = histname
 
-        logger.info(f"Now in channel {self.channel} at shape systematic group {name}")
+        logger.info(
+            f"Now in channel {self.channel} at shape systematic group {name} (constraint: {not noConstraint})"
+        )
 
         if self.isExcludedNuisance(name):
             return
@@ -1420,9 +1474,11 @@ class Datagroups(object):
         )
 
         for proc in procs_to_add:
-            logger.debug(f"Now at proc {proc}!")
+            logger.debug(f"Now doing syst {name} for proc {proc}!")
 
             hvar = self.groups[proc].hists["syst"]
+            logger.debug(f"Actions: {action}, args: {actionArgs}")
+            logger.debug(f"hvar shape: {hvar.values().shape}")
 
             if action is not None:
                 if actionRequiresNomi:
@@ -1453,6 +1509,69 @@ class Datagroups(object):
                         ]
 
                 logger.debug(f"Add systematic {var_name}")
+
+                effective_symmetrize = symmetrize
+                if self.force_asymmetric and effective_symmetrize is not None:
+                    patterns = getattr(self, "force_asymmetric_patterns", None)
+                    if patterns is None or any(p.search(var_name) for p in patterns):
+                        match_info = (
+                            "all systematics"
+                            if patterns is None
+                            else f"matched pattern(s) {[p.pattern for p in patterns if p.search(var_name)]}"
+                        )
+                        logger.info(
+                            f"force_asymmetric: overriding symmetrize="
+                            f"{effective_symmetrize!r} -> None for systematic "
+                            f"{var_name} ({match_info})"
+                        )
+                        effective_symmetrize = None
+
+                # --scaleParams: multiply kfactor for matching nuisances.
+                # At most one pattern may match a given var_name; overlap is
+                # an error (specify a more precise regex if needed).
+                effective_scale = scale
+                scale_patterns = getattr(self, "scale_params_patterns", [])
+                matched = [(p, f) for p, f in scale_patterns if p.search(var_name)]
+                if len(matched) > 1:
+                    raise ValueError(
+                        f"scaleParams: var_name {var_name!r} matched multiple "
+                        f"patterns: {[p.pattern for p, _ in matched]}. "
+                        "Tighten the regexes so each var_name matches at most one."
+                    )
+                if matched:
+                    pat, fac = matched[0]
+                    effective_scale = scale * fac
+                    logger.info(
+                        f"scaleParams: {var_name} kfactor {scale} -> "
+                        f"{effective_scale} (pattern '{pat.pattern}' x {fac})"
+                    )
+
+                # --noConstrainParams: remove Gaussian prior for matching
+                # nuisances. Mirrors --scaleParams / --noSymmetrize.
+                effective_noConstraint = noConstraint
+                no_const_patterns = getattr(self, "no_constraint_patterns", [])
+                nc_matched = [p for p in no_const_patterns if p.search(var_name)]
+                if nc_matched and not noConstraint:
+                    effective_noConstraint = True
+                    logger.info(
+                        f"noConstrainParams: removing prior on {var_name} "
+                        f"(pattern(s) {[p.pattern for p in nc_matched]})"
+                    )
+
+                if lastAction is not None:
+                    if lastActionRequiresNomi:
+                        hnom = self.groups[proc].hists[self.nominalName]
+                        apply_last_action = lambda h: lastAction(
+                            h, hnom, **lastActionArgs
+                        )
+                    else:
+                        apply_last_action = lambda h: lastAction(h, **lastActionArgs)
+
+                    if isinstance(hists, hist.Hist):
+                        hists = apply_last_action(hists)
+                    else:
+                        hists = tuple(apply_last_action(h) for h in hists)
+
                 self.writer.add_systematic(
                     hists,
                     var_name,
@@ -1460,10 +1579,10 @@ class Datagroups(object):
                     self.channel,
                     groups=matched_groups,
                     mirror=mirror,
-                    symmetrize=symmetrize,
-                    kfactor=scale,
+                    symmetrize=effective_symmetrize,
+                    kfactor=effective_scale,
                     noi=noi,
-                    constrained=not noConstraint,
+                    constrained=not effective_noConstraint,
                     add_to_data_covariance=self.isAbsorbedNuisance(name),
                 )
 

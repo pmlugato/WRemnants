@@ -259,11 +259,12 @@ def read_nnlojet_file(
         axes.append(var_ax)
 
     h = hist.Hist(*axes, storage=hist.storage.Weight())
-    # Switch y and pT order
+    # Switch y and pT order.  With all_scales=False keep only the central (value, err)
+    # pair (cols 3,4), so central-only reads work even on files that carry the full
+    # 7-scale set (e.g. a member0 symlinked to the nominal).
+    vals = data[:, 3:] if all_scales else data[:, 3:5]
     ax_idx = len(other_axes)
-    res = data[:, 3:].reshape(
-        h.shape[ax_idx], *h.shape[:ax_idx], *h.shape[ax_idx + 1 :], 2
-    )
+    res = vals.reshape(h.shape[ax_idx], *h.shape[:ax_idx], *h.shape[ax_idx + 1 :], 2)
     h[...] = np.moveaxis(res, 0, ax_idx)
 
     # Text file stores errors, convert to variance
@@ -275,15 +276,35 @@ def read_nnlojet_file(
     return h * 1e-3
 
 
-def read_nnlojet_ybin(refname, ybins, charge=None):
+def resolve_nnlojet_ybin_filename(refname, ybins):
     format_decimal = lambda x: (
         "0" if x == 0 else f"{round(x, 1+(x % 1 in [0.25, 0.75]))}".replace(".", "p")
     )
+
+    def alternate_decimal(value):
+        formatted = format_decimal(value)
+        return formatted[:-1] if formatted.endswith("p0") else formatted
+
+    bounds = tuple(format_decimal(y) for y in ybins)
+    candidates = [
+        f"{refname}__{bounds[0]}__{bounds[1]}.dat",
+        f"{refname}__{alternate_decimal(ybins[0])}__{bounds[1]}.dat",
+        f"{refname}__{bounds[0]}__{alternate_decimal(ybins[1])}.dat",
+        f"{refname}__{alternate_decimal(ybins[0])}__{alternate_decimal(ybins[1])}.dat",
+    ]
+    for candidate in dict.fromkeys(candidates):
+        if os.path.isfile(candidate):
+            return candidate
+    return candidates[0]
+
+
+def read_nnlojet_ybin(refname, ybins, charge=None, all_scales=True):
     yax = hist.axis.Variable(ybins, name="Y")
     return read_nnlojet_file(
-        f"{refname}__{format_decimal(ybins[0])}__{format_decimal(ybins[1])}.dat",
+        resolve_nnlojet_ybin_filename(refname, ybins),
         other_axes=[yax],
         charge=charge,
+        all_scales=all_scales,
     )
 
 
@@ -294,23 +315,60 @@ def read_nnlojet_pty_hist(
         np.array((4.0, 5.0)),
     ),
     charge=None,
+    all_scales=True,
 ):
 
-    h = read_nnlojet_ybin(reffile, ybins[:2], charge=charge)
+    h = read_nnlojet_ybin(reffile, ybins[:2], charge=charge, all_scales=all_scales)
 
     for pair in zip(ybins[1:-1], ybins[2:]):
         h = hh.concatenateHists(
-            h, read_nnlojet_ybin(reffile, pair, charge=charge), allowBroadcast=False
+            h,
+            read_nnlojet_ybin(reffile, pair, charge=charge, all_scales=all_scales),
+            allowBroadcast=False,
         )
 
     return h
 
 
-def read_dyturbo_hist(filenames, path="", axes=("y", "pt"), charge=None, coeff=None):
+def read_nnlojet_vars_hist(base_name, var_axis, ybins=None, charge=None):
+    # Read one *central-scale* NNLOjet prediction per variation and stack them on
+    # the vars axis, mirroring read_dyturbo_vars_hist.  base_name carries an "{i}"
+    # placeholder for the member index; each member file is central-scale only
+    # (single value+error per bin, i.e. all_scales=False).  Used e.g. for synthetic
+    # alpha_s variations generated in the NNLOjet text format.  ybins defaults to the
+    # NNLOjet native y-binning; read_matched_scetlib_hist rebins to the common grid.
+    ybin_kw = {} if ybins is None else {"ybins": ybins}
+    var_hist = None
+    for i, var in enumerate(var_axis):
+        if var.startswith("pdf"):
+            index = var.removeprefix("pdf")
+            pdf_member = int(index) if index.isnumeric() else i
+        else:
+            pdf_member = 0
+        nnlojet_name = base_name.format(i=pdf_member)
+        h = read_nnlojet_pty_hist(
+            nnlojet_name, charge=charge, all_scales=False, **ybin_kw
+        )
+        if var_hist is None:
+            var_hist = hist.Hist(*h.axes, var_axis, storage=h.storage_type())
+        var_hist[..., i] = h.view()
+
+    return var_hist
+
+
+def read_dyturbo_hist(
+    filenames, path="", axes=("y", "pt"), charge=None, coeff=None, scale=1e-3
+):
     filenames = [os.path.expanduser(os.path.join(path, f)) for f in filenames]
 
     hists = []
     for fn in filenames:
+
+        if "-mur0p5-" in fn.split("/")[-1]:
+            fn = fn.replace("-mur0p5-", "-murH-")
+        if "-muf0p5-" in fn.split("/")[-1]:
+            fn = fn.replace("-muf0p5-", "-mufH-")
+
         expandedf = fn.split("+")
 
         hs = []
@@ -319,11 +377,14 @@ def read_dyturbo_hist(filenames, path="", axes=("y", "pt"), charge=None, coeff=N
                 raise ValueError(f"{f} is not a valid file!")
 
         if len(expandedf) == 1:
-            hs.append(read_dyturbo_file(fn, axes, charge, coeff))
+            hs.append(read_dyturbo_file(fn, axes, charge, coeff, scale=scale))
         elif len(expandedf) == 2:
             hs.append(
                 hh.concatenateHists(
-                    *[read_dyturbo_file(f, axes, charge, coeff) for f in expandedf]
+                    *[
+                        read_dyturbo_file(f, axes, charge, coeff, scale=scale)
+                        for f in expandedf
+                    ]
                 )
             )
         else:
@@ -427,7 +488,9 @@ def read_text_data(filename):
     return np.array(data, dtype=float)
 
 
-def read_dyturbo_file(filename, axnames=("Y", "qT"), charge=None, coeff=None):
+def read_dyturbo_file(
+    filename, axnames=("Y", "qT"), charge=None, coeff=None, scale=1e-3
+):
     if filename.endswith(".root"):
         import uproot
 
@@ -472,7 +535,7 @@ def read_dyturbo_file(filename, axnames=("Y", "qT"), charge=None, coeff=None):
     if charge is not None:
         h = binning.add_charge_axis(h, charge)
 
-    return h * 1 / 1000
+    return h * scale
 
 
 def read_scetlib_resum_and_fosing(
@@ -559,6 +622,7 @@ def read_matched_scetlib_nnlojet_hist(
     zero_nons_bins=0,
     coeff=None,
     smooth_nnlojet=False,
+    mass_edges=None,
 ):
     hresum, hfo_sing = read_scetlib_resum_and_fosing(
         scetlib_resum,
@@ -571,12 +635,40 @@ def read_matched_scetlib_nnlojet_hist(
     if not axes:
         axes = hresum.axes[:-1].name
 
-    if "Y" in axes and "qT" in axes:
-        nnlojeth = read_nnlojet_pty_hist(
-            nnlojet_fo, ybins=hresum.axes["Y"].edges, charge=charge
+    # Read the NNLOjet FO at its native y-binning (not the resummation's edges):
+    # read_matched_scetlib_hist rebins Y/Q/qT to the common intersection, so a coarser
+    # NNLOjet input matches a finer SCETlib resummation without interpolation.
+    nnlojet_vars = "{i}" in nnlojet_fo and hfo_sing.axes["vars"].size > 1
+    if nnlojet_vars:
+        nnlojeth = read_nnlojet_vars_hist(
+            nnlojet_fo, var_axis=hfo_sing.axes["vars"], charge=charge
         )
+    elif "Y" in axes and "qT" in axes:
+        nnlojeth = read_nnlojet_pty_hist(nnlojet_fo, charge=charge)
     else:
         nnlojeth = read_nnlojet_file(nnlojet_fo, axnames=axes, charge=charge)
+
+    if "Q" in axes and "Q" not in nnlojeth.axes.name:
+        if mass_edges is None:
+            raise ValueError(
+                "Requested axis 'Q' for matched NNLOjet input, but the raw NNLOjet histogram "
+                "does not contain a Q axis. Pass explicit edges with --nnlojetMassEdges, "
+                "for example '--nnlojetMassEdges 60 120'."
+            )
+        if len(mass_edges) != 2 or mass_edges[0] >= mass_edges[1]:
+            raise ValueError(
+                f"Invalid NNLOjet mass edges {mass_edges}; expected two increasing values"
+            )
+
+        insert_idx = hfo_sing.axes.name.index("Q")
+        qax = hist.axis.Variable(mass_edges, name="Q", flow=False)
+        new_axes = list(nnlojeth.axes)
+        new_axes.insert(insert_idx, qax)
+        nnlojeth = hist.Hist(
+            *new_axes,
+            storage=nnlojeth.storage_type(),
+            data=np.expand_dims(nnlojeth.view(flow=True), insert_idx),
+        )
 
     if smooth_nnlojet:
         if "Y" in axes:
@@ -599,7 +691,10 @@ def read_matched_scetlib_hist(
     hfo,
     zero_nons_bins=0,
 ):
-    for ax in ["Y", "Q"]:
+    # Rebin shared physics axes to the common edge intersection so a coarser
+    # fixed-order input can be combined with finer SCETlib histograms without
+    # interpolation.
+    for ax in ["Y", "Q", "qT"]:
         if ax in set(hfo.axes.name).intersection(set(hfo_sing.axes.name)).intersection(
             set(hresum.axes.name)
         ):
@@ -619,13 +714,16 @@ def read_matched_scetlib_hist(
         def translate_slice(ax, s):
             if not isinstance(s, slice):
                 return s
+            # values(flow=True) prepends the underflow bin (if present), so shift
+            # axis-coordinate indices by ax.traits.underflow to address real bins.
+            uflow = int(ax.traits.underflow)
             start = (
-                int(ax.index(s.start.imag) + s.start.real)
+                int(ax.index(s.start.imag) + s.start.real + uflow)
                 if isinstance(s.start, complex)
                 else s.start
             )
             stop = (
-                int(ax.index(s.stop.imag) + s.stop.real + 1)
+                int(ax.index(s.stop.imag) + s.stop.real + uflow)
                 if isinstance(s.stop, complex)
                 else s.stop
             )

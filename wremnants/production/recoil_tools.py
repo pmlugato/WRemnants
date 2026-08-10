@@ -17,6 +17,15 @@ except:
 
     Interpreter = tf.lite.Interpreter
 
+# prefer newer package if available
+# (This avoids the requirement to rebuild the tensorflow python library to fix the symbol collisions)
+try:
+    from ai_edge_litert.interpreter import Interpreter
+except:
+    import tensorflow as tf
+
+    Interpreter = tf.lite.Interpreter
+
 ROOT.gInterpreter.Declare('#include "recoil_tools.hpp"')
 ROOT.gInterpreter.Declare('#include "recoil_helper.hpp"')
 logger = logging.getLogger("wremnants").getChild(__name__.split(".")[-1])
@@ -92,6 +101,9 @@ class Recoil:
         self.storeHists = args.recoilHists
         self.pu_type = pu_type
         self.isW = False
+        self.recoil_unc_stat_weights_with_nom = ""
+        self.recoil_var_ax_stat = None
+        self.recoil_var_ax_syst = None
 
         self.met_xy_helper_data, self.met_xy_helper_mc = METXYCorrectionHelper(
             f"{common.data_dir}/recoil/{pu_type}_{self.met}/met_xy_{self.flavor}.json"
@@ -1460,7 +1472,7 @@ class Recoil:
         return df
 
     def setup_recoil_Z_unc(self):
-        if not self.dataset.name in self.datasets_to_apply or not self.storeHists:
+        if not self.dataset.name in self.datasets_to_apply:
             return
 
         hNames, cols, axes = [], [], []
@@ -1550,7 +1562,7 @@ class Recoil:
                 )
 
     def setup_recoil_W_unc(self):
-        if not self.dataset.name in self.datasets_to_apply or not self.storeHists:
+        if not self.dataset.name in self.datasets_to_apply:
             return
 
         hNames, cols, axes = [], [], []
