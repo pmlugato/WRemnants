@@ -397,7 +397,7 @@ class Datagroups(object):
         if not self.xnorm:
             scale *= self.lumi * 1000
         gen_filter_eff = self.results[proc.name].get("gen_filter_eff", 1)
-        scale * gen_filter_eff
+        scale *= gen_filter_eff
 
         return scale
 

@@ -69,6 +69,7 @@ def select_only_passing_bkmm_candidates(
     gen_match_nonsignal: bool = False,
     gen_filter_stats=None,
     dataset_name: Optional[str] = None,
+    vertex_prefix: str = "jpsimc",
 ):
     logger.info("Selecting passing bkmm candidates")
 
@@ -127,17 +128,17 @@ def select_only_passing_bkmm_candidates(
 
         df = df.Define(
             "bkmm_best_idx",
-            """
+            f"""
             int best_idx = -1;
             float best_prob = -1.f;
-            for (size_t i = 0; i < bkmm_passes.size(); ++i) {
+            for (size_t i = 0; i < bkmm_passes.size(); ++i) {{
                 if (!bkmm_passes[i]) continue;
-                float prob = bkmm_jpsimc_vtx_prob[i];
-                if (prob > best_prob) {
+                float prob = bkmm_{vertex_prefix}_vtx_prob[i];
+                if (prob > best_prob) {{
                     best_prob = prob;
                     best_idx = static_cast<int>(i);
-                }
-            }
+                }}
+            }}
             return best_idx;
             """,
         )
@@ -291,17 +292,17 @@ def select_opposite_sign_dimuon(df):
     return df.Redefine("bkmm_passes", condition)
 
 
-def select_kaon_eta(df, max_eta):
+def select_kaon_eta(df, max_eta, vertex_prefix: str = "jpsimc"):
     """Require |eta| < max_eta for kaon."""
-    # condition = _generate_abs_kaon_condition("bkmm_kaon_eta", "<", max_eta)
-    condition = _generate_abs_kaon_condition("bkmm_jpsimc_kaon1eta", "<", max_eta)
+    condition = _generate_abs_kaon_condition(
+        f"bkmm_{vertex_prefix}_kaon1eta", "<", max_eta
+    )
     return df.Redefine("bkmm_passes", condition)
 
 
-def select_kaon_pt(df, max_pt):
+def select_kaon_pt(df, max_pt, vertex_prefix: str = "jpsimc"):
     """Require pT < max_pt GeV for kaon."""
-    # condition = _generate_kaon_condition("bkmm_kaon_pt", "<", max_pt)
-    condition = _generate_kaon_condition("bkmm_jpsimc_kaon1pt", "<", max_pt)
+    condition = _generate_kaon_condition(f"bkmm_{vertex_prefix}_kaon1pt", "<", max_pt)
     return df.Redefine("bkmm_passes", condition)
 
 
@@ -347,15 +348,19 @@ def select_dimuon_sl3d(df, min_sl3d):
     return df.Redefine("bkmm_passes", condition)
 
 
-def select_bkmm_vtx_prob(df, min_prob):
-    """Require bkmm J/psi+MC vertex probability > min_prob."""
-    condition = _generate_bkmm_condition("bkmm_jpsimc_vtx_prob", ">", min_prob)
+def select_bkmm_vtx_prob(df, min_prob, vertex_prefix: str = "jpsimc"):
+    """Require bkmm vertex probability > min_prob."""
+    condition = _generate_bkmm_condition(
+        f"bkmm_{vertex_prefix}_vtx_prob", ">", min_prob
+    )
     return df.Redefine("bkmm_passes", condition)
 
 
-def select_bkmm_mass_window(df, center, width):
+def select_bkmm_mass_window(df, center, width, vertex_prefix: str = "jpsimc"):
     """Require |bkmm mass - center| < width GeV."""
-    condition = _generate_mass_window_condition("bkmm_jpsimc_mass", center, width)
+    condition = _generate_mass_window_condition(
+        f"bkmm_{vertex_prefix}_mass", center, width
+    )
     return df.Redefine("bkmm_passes", condition)
 
 
@@ -519,6 +524,131 @@ def _generate_bdt_condition(fit, value):
     }}
     return passes
     """
+
+
+def define_raw_kinematics(df):
+    """Per-bkmm-candidate raw 4-vector quantities (no vertex fit).
+
+    For each bkmm candidate, builds three Lorentz vectors from raw
+    track variables (mm_mu{1,2}_pt/eta/phi for the muons,
+    bkmm_kaon_pt/eta/phi for the kaon) using PDG muon and kaon masses,
+    and stores:
+      raw_mumu_mass  : m(mu+ mu-)
+      raw_mumu_pt    : pT(mu+ mu-)
+      raw_b_mass     : m(mu+ mu- K)
+      raw_b_pt       : pT(mu+ mu- K)
+    Used by the AlCaReco-emulation Phase 1 selections — all four
+    columns avoid the bkmm_jpsimc_* / bkmm_nomc_* / mm_kin_* vertex
+    fits.
+    """
+    body = """
+    ROOT::VecOps::RVec<float> out(bkmm_mm_index.size());
+    constexpr double MU_M = 0.10565837;
+    constexpr double K_M  = 0.49367700;
+    for (size_t i = 0; i < bkmm_mm_index.size(); ++i) {
+        int mm = bkmm_mm_index[i];
+        if (mm < 0 || (size_t)mm >= mm_mu1_pt.size() ||
+            i >= bkmm_kaon_pt.size()) { out[i] = -1.f; continue; }
+        ROOT::Math::PtEtaPhiMVector mu1(mm_mu1_pt[mm], mm_mu1_eta[mm], mm_mu1_phi[mm], MU_M);
+        ROOT::Math::PtEtaPhiMVector mu2(mm_mu2_pt[mm], mm_mu2_eta[mm], mm_mu2_phi[mm], MU_M);
+        ROOT::Math::PtEtaPhiMVector k  (bkmm_kaon_pt[i], bkmm_kaon_eta[i], bkmm_kaon_phi[i], K_M);
+        auto mumu = mu1 + mu2;
+        auto b    = mumu + k;
+        out[i] = TO_FETCH;
+    }
+    return out;
+    """
+    df = df.Define(
+        "raw_mumu_mass", body.replace("TO_FETCH", "static_cast<float>(mumu.M())")
+    )
+    df = df.Define(
+        "raw_mumu_pt", body.replace("TO_FETCH", "static_cast<float>(mumu.Pt())")
+    )
+    df = df.Define("raw_b_mass", body.replace("TO_FETCH", "static_cast<float>(b.M())"))
+    df = df.Define("raw_b_pt", body.replace("TO_FETCH", "static_cast<float>(b.Pt())"))
+    return df
+
+
+def select_raw_mumu_mass_window(df, low, high):
+    """Require J/psi mass window on m(mu+ mu-) from raw 4-vectors."""
+    cond = f"""
+    ROOT::VecOps::RVec<bool> passes = bkmm_passes;
+    for (size_t i = 0; i < passes.size(); ++i) {{
+        if (!passes[i]) continue;
+        if (i >= raw_mumu_mass.size() || raw_mumu_mass[i] < {low}f || raw_mumu_mass[i] > {high}f) passes[i] = false;
+    }}
+    return passes;
+    """
+    return df.Redefine("bkmm_passes", cond)
+
+
+def select_raw_b_mass_window(df, low, high):
+    """Require B+ mass window on m(mu+ mu- K) from raw 4-vectors."""
+    cond = f"""
+    ROOT::VecOps::RVec<bool> passes = bkmm_passes;
+    for (size_t i = 0; i < passes.size(); ++i) {{
+        if (!passes[i]) continue;
+        if (i >= raw_b_mass.size() || raw_b_mass[i] < {low}f || raw_b_mass[i] > {high}f) passes[i] = false;
+    }}
+    return passes;
+    """
+    return df.Redefine("bkmm_passes", cond)
+
+
+def select_raw_mumu_pt(df, min_pt):
+    """Require raw dimuon pT > min_pt GeV."""
+    cond = f"""
+    ROOT::VecOps::RVec<bool> passes = bkmm_passes;
+    for (size_t i = 0; i < passes.size(); ++i) {{
+        if (!passes[i]) continue;
+        if (i >= raw_mumu_pt.size() || !(raw_mumu_pt[i] > {min_pt}f)) passes[i] = false;
+    }}
+    return passes;
+    """
+    return df.Redefine("bkmm_passes", cond)
+
+
+def select_raw_b_pt(df, min_pt):
+    """Require raw B+ pT > min_pt GeV."""
+    cond = f"""
+    ROOT::VecOps::RVec<bool> passes = bkmm_passes;
+    for (size_t i = 0; i < passes.size(); ++i) {{
+        if (!passes[i]) continue;
+        if (i >= raw_b_pt.size() || !(raw_b_pt[i] > {min_pt}f)) passes[i] = false;
+    }}
+    return passes;
+    """
+    return df.Redefine("bkmm_passes", cond)
+
+
+def select_raw_kaon_pt(df, min_pt):
+    """Require raw kaon track pT > min_pt GeV (bkmm_kaon_pt, not the fit-refit value)."""
+    return df.Redefine(
+        "bkmm_passes",
+        _generate_kaon_condition("bkmm_kaon_pt", ">", min_pt),
+    )
+
+
+def select_raw_kaon_eta(df, max_abs_eta):
+    """Require |raw kaon eta| < max_abs_eta (bkmm_kaon_eta, not the fit-refit value)."""
+    return df.Redefine(
+        "bkmm_passes",
+        _generate_abs_kaon_condition("bkmm_kaon_eta", "<", max_abs_eta),
+    )
+
+
+def select_kaon_mu_doca(df, max_doca):
+    """Require kaon-to-muon track-track DCA < max_doca cm for BOTH muons."""
+    cond = f"""
+    ROOT::VecOps::RVec<bool> passes = bkmm_passes;
+    for (size_t i = 0; i < passes.size(); ++i) {{
+        if (!passes[i]) continue;
+        if (i >= bkmm_kaon_mu1_doca.size() || i >= bkmm_kaon_mu2_doca.size() ||
+            !(bkmm_kaon_mu1_doca[i] < {max_doca}f && bkmm_kaon_mu2_doca[i] < {max_doca}f)) passes[i] = false;
+    }}
+    return passes;
+    """
+    return df.Redefine("bkmm_passes", cond)
 
 
 def _apply_filter(df, cutflow_name):

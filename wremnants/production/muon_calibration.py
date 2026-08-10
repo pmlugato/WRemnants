@@ -81,6 +81,7 @@ def make_jpsi_crctn_helpers(
     fixed_A_unc=None,
     fixed_e_unc=None,
     fixed_M_unc=None,
+    particle_masses=None,
 ):
     if muon_corr_mc in ["idealMC_massfit", "idealMC_lbltruth_massfit"]:
         mc_corrfile = calib_filepaths["mc_corrfile"][muon_corr_mc]
@@ -110,6 +111,7 @@ def make_jpsi_crctn_helpers(
                 fixed_A_unc=fixed_A_unc,
                 fixed_e_unc=fixed_e_unc,
                 fixed_M_unc=fixed_M_unc,
+                particle_masses=particle_masses,
             )
             if mc_corrfile
             else None
@@ -128,6 +130,7 @@ def make_jpsi_crctn_helpers(
                 fixed_A_unc=fixed_A_unc,
                 fixed_e_unc=fixed_e_unc,
                 fixed_M_unc=fixed_M_unc,
+                particle_masses=particle_masses,
             )
             if data_corrfile
             else None
@@ -555,6 +558,7 @@ def make_jpsi_crctn_unc_helper(
     fixed_A_unc=None,
     fixed_e_unc=None,
     fixed_M_unc=None,
+    particle_masses=None,
 ):
 
     f = ROOT.TFile.Open(filepath_correction)
@@ -698,9 +702,10 @@ def make_jpsi_crctn_unc_helper(
             type(hist_scale_params_unc_cpp).__cpp_name__
         ](ROOT.std.move(hist_scale_params_unc_cpp))
     elif scale_var_method == "smearingWeightsSplines":
+        masses_vec = ROOT.std.vector["double"](particle_masses or [])
         helper = ROOT.wrem.JpsiCorrectionsUncHelperSplines[
             type(hist_scale_params_unc_cpp).__cpp_name__
-        ](ROOT.std.move(hist_scale_params_unc_cpp))
+        ](ROOT.std.move(hist_scale_params_unc_cpp), masses_vec)
     elif scale_var_method == "massWeights":
         nweights = 21 if isW else 23
         helper = ROOT.wrem.JpsiCorrectionsUncHelper_massWeights[
@@ -1301,9 +1306,12 @@ def add_jpsi_crctn_stats_unc_hists(
     dataset_name,
     isW,
     storage_type=hist.storage.Double(),
+    hist_suffix: str = "",
 ):
-    df = df.DefinePerSample("bool_true", "true")
-    df = df.DefinePerSample("bool_false", "false")
+    existing_cols = set(str(c) for c in df.GetColumnNames())
+    if "bool_true" not in existing_cols:
+        df = df.DefinePerSample("bool_true", "true")
+        df = df.DefinePerSample("bool_false", "false")
 
     if args.muonScaleVariation == "smearingWeightsGaus" or args.validationHists:
         smearing_weights_procs.append(dataset_name)
@@ -1318,7 +1326,7 @@ def add_jpsi_crctn_stats_unc_hists(
                 dummy_var_mag=args.muonCorrMag,
             )
         df = df.Define(
-            "muonScaleSyst_responseWeights_tensor_gaus",
+            f"muonScaleSyst{hist_suffix}_responseWeights_tensor_gaus",
             jpsi_unc_helper,
             [
                 f"{reco_sel_GF}_genQop",
@@ -1336,11 +1344,11 @@ def add_jpsi_crctn_stats_unc_hists(
         )
         if args.validationHists:
             muonScaleSyst_responseWeights_gaus = df.HistoBoost(
-                "muonScaleSyst_responseWeights_gaus",
+                f"muonScaleSyst{hist_suffix}_responseWeights_gaus",
                 axes,
                 [
                     *nominal_cols_gen_smeared,
-                    "muonScaleSyst_responseWeights_tensor_gaus",
+                    f"muonScaleSyst{hist_suffix}_responseWeights_tensor_gaus",
                 ],
                 tensor_axes=jpsi_unc_helper.tensor_axes,
                 storage=hist.storage.Double(),
@@ -1359,7 +1367,7 @@ def add_jpsi_crctn_stats_unc_hists(
                 dummy_var_mag=args.muonCorrMag,
             )
         df = df.Define(
-            "muonScaleSyst_responseWeights_tensor_splines",
+            f"muonScaleSyst{hist_suffix}_responseWeights_tensor_splines",
             jpsi_unc_helper,
             [
                 f"{reco_sel_GF}_recoPt",
@@ -1374,9 +1382,12 @@ def add_jpsi_crctn_stats_unc_hists(
         )
         if args.validationHists:
             muonScaleSyst_responseWeights_splines = df.HistoBoost(
-                "muonScaleSyst_responseWeights_splines",
+                f"muonScaleSyst{hist_suffix}_responseWeights_splines",
                 axes,
-                [*nominal_cols, "muonScaleSyst_responseWeights_tensor_splines"],
+                [
+                    *nominal_cols,
+                    f"muonScaleSyst{hist_suffix}_responseWeights_tensor_splines",
+                ],
                 tensor_axes=jpsi_unc_helper.tensor_axes,
                 storage=hist.storage.Double(),
             )
@@ -1395,7 +1406,7 @@ def add_jpsi_crctn_stats_unc_hists(
                 dummy_var_mag=args.muonCorrMag,
             )  # need to make a new massweights helper due to different nweights for Z and W
         df = df.Define(
-            "muonScaleSyst_responseWeights_tensor_massWeights",
+            f"muonScaleSyst{hist_suffix}_responseWeights_tensor_massWeights",
             jpsi_unc_helper,
             [
                 f"{reco_sel_GF}_eta0_reco",
@@ -1408,9 +1419,12 @@ def add_jpsi_crctn_stats_unc_hists(
         )
         if args.validationHists:
             muonScaleSyst_responseWeights_massWeights = df.HistoBoost(
-                "muonScaleSyst_responseWeights_massWeights",
+                f"muonScaleSyst{hist_suffix}_responseWeights_massWeights",
                 axes,
-                [*nominal_cols, "muonScaleSyst_responseWeights_tensor_massWeights"],
+                [
+                    *nominal_cols,
+                    f"muonScaleSyst{hist_suffix}_responseWeights_tensor_massWeights",
+                ],
                 tensor_axes=jpsi_unc_helper.tensor_axes,
                 storage=hist.storage.Double(),
             )
@@ -1422,18 +1436,21 @@ def add_jpsi_crctn_stats_unc_hists(
     if not args.muonScaleVariation == "smearingWeightsGaus":
         if args.muonScaleVariation == "smearingWeightsSplines":
             df = df.Define(
-                "nominal_muonScaleSyst_responseWeights_tensor",
-                "muonScaleSyst_responseWeights_tensor_splines",
+                f"nominal_muonScaleSyst{hist_suffix}_responseWeights_tensor",
+                f"muonScaleSyst{hist_suffix}_responseWeights_tensor_splines",
             )
         elif args.muonScaleVariation == "massWeights":
             df = df.Define(
-                "nominal_muonScaleSyst_responseWeights_tensor",
-                "muonScaleSyst_responseWeights_tensor_massWeights",
+                f"nominal_muonScaleSyst{hist_suffix}_responseWeights_tensor",
+                f"muonScaleSyst{hist_suffix}_responseWeights_tensor_massWeights",
             )
         nominal_muonScaleSyst_responseWeights = df.HistoBoost(
-            "nominal_muonScaleSyst_responseWeights",
+            f"nominal_muonScaleSyst{hist_suffix}_responseWeights",
             axes,
-            [*nominal_cols, "nominal_muonScaleSyst_responseWeights_tensor"],
+            [
+                *nominal_cols,
+                f"nominal_muonScaleSyst{hist_suffix}_responseWeights_tensor",
+            ],
             tensor_axes=jpsi_crctn_data_unc_helper.tensor_axes,
             storage=storage_type,
         )

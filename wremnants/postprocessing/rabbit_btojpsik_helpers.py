@@ -25,6 +25,13 @@ def _resolve_dataset_key(results, requested):
     raise KeyError(f"Dataset '{requested}' was not found. Available keys: {available}")
 
 
+def load_variation_hist(_filename: str, _dataset: str, _hist_key: str):
+    h5file = h5py.File(_filename, "r")
+    results = base_io.load_results_h5py(h5file)
+    dataset_key = _resolve_dataset_key(results, _dataset)
+    return results[dataset_key]["output"][_hist_key].get()
+
+
 def load_histogram(_filename: str, _dataset: str):
     h5file = h5py.File(_filename, "r")
     results = base_io.load_results_h5py(h5file)

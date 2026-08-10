@@ -18,11 +18,11 @@ all_butojpsik_axes = {
         2, -2, 2, name="bkmm_kaon_charge", underflow=False, overflow=False
     ),
     # random
-    "bkmm_kaon_stuff_response_weights": hist.axis.Regular(
+    "bkmm_kaon_stuff_response_weight": hist.axis.Regular(
         1000,
         -1000,
         1000,
-        name="bkmm_kaon_response_weights",
+        name="bkmm_kaon_response_weight",
         underflow=True,
         overflow=True,
     ),
@@ -80,6 +80,9 @@ all_butojpsik_axes = {
     ),
     "bkmm_jpsimc_mass": hist.axis.Regular(
         100, 5.2, 5.4, name="bkmm_jpsimc_mass", underflow=False, overflow=False
+    ),
+    "bkmm_jpsimc_m32": hist.axis.Regular(
+        100, 2.1, 2.3, name="bkmm_jpsimc_m32", underflow=False, overflow=False
     ),
     "bkmm_jpsimc_massErr": hist.axis.Regular(
         30, 0.0, 0.15, name="bkmm_jpsimc_massErr", underflow=False, overflow=False
@@ -222,6 +225,9 @@ all_butojpsik_axes = {
     ),
     "bkmm_nomc_mass": hist.axis.Regular(
         100, 5.2, 5.4, name="bkmm_nomc_mass", underflow=False, overflow=False
+    ),
+    "bkmm_nomc_m32": hist.axis.Regular(
+        100, 2.1, 2.3, name="bkmm_nomc_m32", underflow=False, overflow=False
     ),
     "bkmm_nomc_massErr": hist.axis.Regular(
         30, 0.0, 0.15, name="bkmm_nomc_massErr", underflow=False, overflow=False

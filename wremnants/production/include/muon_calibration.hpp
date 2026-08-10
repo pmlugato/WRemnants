@@ -521,9 +521,15 @@ double calculateQopUnc(float pt, float eta, int charge, double ptUnc) {
 }
 
 double calculateQopUnc(float pt, float eta, int charge, double AUnc,
-                       double eUnc, double MUnc) {
+                       double eUnc, double MUnc, double particle_mass = 0.0) {
   float k = 1 / pt;
-  double kUnc = (AUnc - eUnc * k) * k + charge * MUnc;
+  double e_over_p = 1.0;
+  if (particle_mass > 0.0) {
+    const double p_total = pt * std::cosh(eta);
+    e_over_p =
+        std::sqrt(1.0 + particle_mass * particle_mass / (p_total * p_total));
+  }
+  double kUnc = (AUnc - eUnc * k * e_over_p) * k + charge * MUnc;
   return calculateQopUnc(eta, charge, kUnc);
 }
 
@@ -1244,8 +1250,10 @@ public:
   static constexpr auto nUnc = sizes[sizes.size() - 1];
   using out_tensor_t = Eigen::TensorFixedSize<double, Eigen::Sizes<nUnc, 2>>;
 
-  JpsiCorrectionsUncHelperSplines(T &&corrections)
-      : correctionHist_(std::make_shared<const T>(std::move(corrections))) {}
+  JpsiCorrectionsUncHelperSplines(T &&corrections,
+                                  std::vector<double> particle_masses = {})
+      : correctionHist_(std::make_shared<const T>(std::move(corrections))),
+        particle_masses_(std::move(particle_masses)) {}
 
   // helper for bin lookup which implements the compile-time loop over axes
   template <typename... Xs, std::size_t... Idxs>
@@ -1292,8 +1300,10 @@ public:
         const double AUnc = params(0, ivar);
         const double eUnc = params(1, ivar);
         const double MUnc = params(2, ivar);
+        const double pmass =
+            (i < particle_masses_.size()) ? particle_masses_[i] : 0.0;
         double recoQopUnc =
-            calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc);
+            calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc, pmass);
         for (std::ptrdiff_t idownup = 0; idownup < 2; ++idownup) {
           const double dir = idownup == 0 ? -1. : 1.;
           delta_qop(ivar, idownup) = recoQopUnc * dir;
@@ -1312,6 +1322,7 @@ public:
 
 private:
   std::shared_ptr<const T> correctionHist_;
+  std::vector<double> particle_masses_;
 };
 
 template <typename T, size_t NEtaBins>
