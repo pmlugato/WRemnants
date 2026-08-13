@@ -128,6 +128,12 @@ def make_subparsers(parser, argv=None):
         help="Select analysis mode to run. Default is the traditional analysis",
     )
 
+    parser.add_argument(
+        "--noClosureSysts",
+        action="store_true",
+        help="exclude muon momentum calibration closure systs (relevant when building Z events without referencing AeM from JPsi)",
+    )
+
     tmpKnownArgs, _ = parser.parse_known_args(argv)
     subparserName = tmpKnownArgs.analysisMode
     if subparserName is None:
@@ -161,11 +167,6 @@ def make_subparsers(parser, argv=None):
         type=float,
         default=None,
         help="Scale yields of histogram with cross sections variations for theory agnostic analysis with POIs as NOIs. Can be used together with --priorNormXsec",
-    )
-    parser.add_argument(
-        "--noClosureSysts",
-        action="store_true",
-        help="exclude muon momentum calibration closure systs (relevant when building Z events without referencing AeM from JPsi)"
     )
 
     if "theoryAgnostic" in subparserName:

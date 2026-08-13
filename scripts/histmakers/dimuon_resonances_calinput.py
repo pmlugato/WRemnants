@@ -183,6 +183,18 @@ parser.add_argument(
         "is used for a, b, c, and d."
     ),
 )
+parser.add_argument(
+    "--nonUltraRelativisticReweight",
+    action="store_true",
+    help=(
+        "Use the non-ultra-relativistic (mass-aware) energy-loss correction in the "
+        "ONNX scale reweight, evaluated with the muon mass for both muons. The e "
+        "variation then treats e as a total-energy shift (finite, asymmetric "
+        "down/up shifts with the 1/(beta*cosh(eta)) factor) instead of the "
+        "ultra-relativistic linear approximation. Only affects "
+        "--muonScaleVariation onnxReweight."
+    ),
+)
 parser = parsing.set_parser_default(parser, "theoryCorr", [])
 parser = parsing.set_parser_default(parser, "scale_A", 5.0)
 parser = parsing.set_parser_default(parser, "scale_e", 5.0)
@@ -291,6 +303,14 @@ resolution_diff_weights_helper = (
     smearing=not args.noSmearing,
     fit_muon_scale=args.fitMuonScaleAndResolution,
     variation_eta_bins=args.etaBins,
+    # Per-leg masses for the mass-aware energy-loss term; both legs are muons
+    # (wrem::muon_mass = 0.1056583745 GeV). None keeps the ultra-relativistic
+    # (massless) reweight.
+    reweight_mass=(
+        [0.1056583745, 0.1056583745]
+        if args.nonUltraRelativisticReweight
+        else None
+    ),
 )
 
 if data_jpsi_crctn_unc_helper is None:

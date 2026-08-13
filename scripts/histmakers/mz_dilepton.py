@@ -117,6 +117,24 @@ parser.add_argument(
     default=12345,
     help="Random seed for jackknifing procedure",
 )
+parser.add_argument(
+    "--nonUltraRelativisticReweight",
+    action="store_true",
+    help=(
+        "Use the non-ultra-relativistic (mass-aware) energy-loss correction in the "
+        "ONNX scale reweight, evaluated with the muon mass for both muons. The e "
+        "variation then treats e as a total-energy shift (finite, asymmetric "
+        "down/up shifts with the 1/(beta*cosh(eta)) factor) instead of the "
+        "ultra-relativistic linear approximation. Only affects "
+        "--muonScaleVariation onnxReweight."
+    ),
+)
+parser.add_argument(
+    "--etaBins",
+    type=int,
+    default=None,
+    help="Override the number of eta bins used by fitted scale/resolution variations",
+)
 parser = parsing.set_parser_default(
     parser, "aggregateGroups", ["Diboson", "Top", "Wtaunu", "Wmunu"]
 )
@@ -127,6 +145,9 @@ parser = parsing.set_parser_default(
 args = parser.parse_args()
 
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
+
+if args.etaBins is not None and args.etaBins <= 0:
+    raise ValueError("--etaBins must be a positive integer")
 
 if args.dxybsVeto > 0 and args.dxybsVeto < args.dxybs:
     raise ValueError("When using together '--dxybsVeto X --dxybs Y' it must be X > Y.")
@@ -455,8 +476,18 @@ resolution_diff_weights_helper = (
     scale_e=args.scale_e,
     scale_M=args.scale_M,
     make_uncertainty_helper=True,
+    include_covariance=not args.fitMuonScaleAndResolution,
     smearing=not args.noSmearing,
     fit_muon_scale=args.fitMuonScaleAndResolution,
+    variation_eta_bins=args.etaBins,
+    # Per-leg masses for the mass-aware energy-loss term; both legs are muons
+    # (wrem::muon_mass = 0.1056583745 GeV). None keeps the ultra-relativistic
+    # (massless) reweight. Only used for --muonScaleVariation onnxReweight.
+    reweight_mass=(
+        [0.1056583745, 0.1056583745]
+        if args.nonUltraRelativisticReweight
+        else None
+    ),
 )
 z_non_closure_parametrized_helper, z_non_closure_binned_helper = (
     muon_calibration.make_Z_non_closure_helpers(
@@ -492,6 +523,7 @@ smearing_helper, smearing_uncertainty_helper = (
     else muon_calibration.make_muon_smearing_helpers(
         scale_var_method=args.muonScaleVariation,
         fit_muon_resolution=args.fitMuonScaleAndResolution,
+        variation_eta_bins=args.etaBins,
     )
 )
 
