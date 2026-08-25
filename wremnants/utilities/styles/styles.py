@@ -36,6 +36,25 @@ def translate_html_to_latex(n):
 
 process_colors = {
     "Data": "black",
+    # CVH NanoAOD B+ -> J/psi K, one entry per truth category. Every group is a
+    # real b-hadron decay; there is no combinatorial entry because there is no
+    # combinatorial template (see datagroups_cvhnano).
+    #
+    # The signal keeps the blue it has had throughout. The two B+ categories are
+    # warm and the other species cool, so the eye separates "same mother, wrong
+    # decay" from "wrong mother" before reading a single label. Checked with the
+    # OKLab CVD validator: every adjacent pair in stack order clears dE 8 under
+    # all three CVD simulations and 15 under normal vision, on a light surface.
+    "BuJpsiK": "#2a78d6",
+    "BuJpsiKX": "#eb6834",
+    "BuJpsiPiX": "#f5c445",
+    "Bd": "#1baf7a",
+    "Bs": "#4a3aa7",
+    "OtherB": "#9c6b4f",
+    # A diagnostic group, never a template. Deliberately the most muted entry in
+    # the set: on the one plot that shows it, it is 78% of the window and would
+    # otherwise dominate the eye as well as the axis.
+    "NoBAncestor": "#b8b8b8",
     "Zmumu": "#5790FC",
     "Z": "#5790FC",
     "Zll": "#5790FC",
@@ -117,6 +136,17 @@ process_supergroups["bsm"]["BSM"] = ["WtoNMu_5", "WtoNMu_10", "WtoNMu_50"]
 
 process_labels = {
     "Data": "Data",
+    # Exclusive definitions, from the per-leg generator parentage: "BuJpsiK" is
+    # the decay, not a candidate that happens to point at a B+. The X in the
+    # next two labels is a genuinely lost daughter, which is why both sit
+    # ~200 MeV below the B mass.
+    "BuJpsiK": r"$\mathrm{B}^{+}\to\mathrm{J}/\psi\,\mathrm{K}^{+}$",
+    "BuJpsiKX": r"$\mathrm{B}^{+}\to\mathrm{J}/\psi\,\mathrm{K}^{+}X$",
+    "BuJpsiPiX": r"$\mathrm{B}^{+}\to\mathrm{J}/\psi\,\pi^{+}X$",
+    "Bd": r"$\mathrm{B}^{0}$ decays",
+    "Bs": r"$\mathrm{B}^{0}_{s}$ decays",
+    "OtherB": r"other b hadron",
+    "NoBAncestor": r"no b ancestor (combinatorial)",
     "Zmumu": r"Z/$\gamma^{\star}\to\mu\mu$",
     "Zee": r"Z/$\gamma^{\star}\to ee$",
     "Zll": r"Z/$\gamma^{\star}\to\ell\ell$",
@@ -143,6 +173,55 @@ process_labels = {
 }
 
 axis_labels = {
+    # --- CVH NanoAOD B+ -> J/psi K -------------------------------------------
+    # Three fit arms share one layout, so the labels are generated per arm
+    # below rather than written out three times.
+    "cand_mass": {"label": r"$\mathit{m}(\mu\mu\mathrm{K})$ unfitted", "unit": "GeV"},
+    "cand_pt": {"label": r"$\mathit{p}_{T}(\mu\mu\mathrm{K})$ unfitted", "unit": "GeV"},
+    "cand_phi": r"$\mathit{\phi}(\mu\mu\mathrm{K})$",
+    "cand_nDau": r"$\mathit{N}_{\mathrm{daughters}}$",
+    "cand_vertexChi2": r"$\mathit{\chi}^{2}_{\mathrm{vtx}}$ (stage 1)",
+    "nCand": r"$\mathit{N}_{\mathrm{candidates}}$",
+    "nLegsRefit": r"$\mathit{N}_{\mathrm{legs\ refit}}$",
+    "nPV": r"$\mathit{N}_{\mathrm{PV}}$",
+    "nTrack": r"$\mathit{N}_{\mathrm{track}}$",
+    "nMuon": r"$\mathit{N}_{\mathrm{muon}}$",
+    "PV_z": {"label": r"$\mathit{z}_{\mathrm{PV}}$", "unit": "cm"},
+    "bachelor_pt": {"label": r"$\mathit{p}_{T}^{\mathrm{K}}$", "unit": "GeV"},
+    "bachelor_eta": r"$\mathit{\eta}^{\mathrm{K}}$",
+    "bachelor_phi": r"$\mathit{\phi}^{\mathrm{K}}$",
+    "bachelor_dxy": {
+        "label": r"$\mathit{d}_{xy}^{\mathrm{K}}$ (origin ref.)",
+        "unit": "cm",
+    },
+    "bachelor_dz": {
+        "label": r"$\mathit{d}_{z}^{\mathrm{K}}$ (origin ref.)",
+        "unit": "cm",
+    },
+    "bachelor_d0": {"label": r"$\mathit{d}_{0}^{\mathrm{K}}$ w.r.t. PV", "unit": "cm"},
+    "bachelor_dzPV": {
+        "label": r"$\mathit{d}_{z}^{\mathrm{K}}$ w.r.t. PV",
+        "unit": "cm",
+    },
+    "bachelor_dedx": r"$\mathrm{d}E/\mathrm{d}x^{\mathrm{K}}$ (harmonic-2)",
+    "bachelor_nValidHits": r"$\mathit{N}_{\mathrm{hits}}^{\mathrm{K}}$",
+    "bachelor_normChi2": r"$\mathit{\chi}^{2}/\mathrm{ndof}$ (K track)",
+    "mu0_pt": {"label": r"$\mathit{p}_{T}^{\mu_{0}}$", "unit": "GeV"},
+    "mu1_pt": {"label": r"$\mathit{p}_{T}^{\mu_{1}}$", "unit": "GeV"},
+    "mu0_eta": r"$\mathit{\eta}^{\mu_{0}}$",
+    "mu1_eta": r"$\mathit{\eta}^{\mu_{1}}$",
+    # The only dimuon mass the NanoAOD stores is the joint fit's *constrained*
+    # parameter, pinned to 3.097 -- so this one is rebuilt from the muon tracks
+    # in the histmaker (gap G11) and is pre-fit.
+    "dimuon_raw_mass": {
+        "label": r"$\mathit{m}(\mu\mu)$ from tracks",
+        "unit": "GeV",
+    },
+    "dimuon_raw_pt": {"label": r"$\mathit{p}_{T}(\mu\mu)$", "unit": "GeV"},
+    "dimuon_raw_eta": r"$\mathit{\eta}(\mu\mu)$",
+    "jpsi_raw_pt": {"label": r"$\mathit{p}_{T}^{\mathrm{J}/\psi}$", "unit": "GeV"},
+    "genCategory": r"truth category",
+    # --- generic ------------------------------------------------------------
     "pt": {"label": r"$\mathit{p}_{T}^{\mu}$", "unit": "GeV"},
     "ptGen": {"label": r"$\mathit{p}_{T}^{\mu}$", "unit": "GeV"},
     "ptW": {"label": r"$\mathit{p}_{T}^{\mu+MET}$", "unit": "GeV"},
@@ -209,6 +288,58 @@ axis_labels = {
     "utmu": {"label": r"$\mathit{u}_{T}^{\mu}$", "unit": "GeV"},
     "utAngleSign": r"$\mathrm{sign}(\mathit{u}_{T}^{\mu})$",
 }
+
+# The three CVH fit arms have identical column layouts, so their axis labels are
+# generated rather than written out three times. `kvfRaw`/`kvfCvh` are Kalman
+# vertex fits on raw and CVH-refit tracks; `jointCvh` is the joint N-body CVH
+# fit with the J/psi mass constraint.
+_cvh_arm_names = {
+    "kvfRaw": "KVF, raw tracks",
+    "kvfCvh": "KVF, CVH tracks",
+    "jointCvh": "joint CVH",
+}
+_cvh_arm_axes = {
+    "mass": ({"label": r"$\mathit{m}(\mu\mu\mathrm{K})$", "unit": "GeV"}),
+    "massErr": ({"label": r"$\mathit{\sigma}_{m}(\mu\mu\mathrm{K})$", "unit": "GeV"}),
+    "pt": ({"label": r"$\mathit{p}_{T}(\mu\mu\mathrm{K})$", "unit": "GeV"}),
+    "alphaBS": r"$\mathit{\alpha}_{\mathrm{BS}}$ (xy only)",
+    "lxy": ({"label": r"$\mathit{L}_{xy}$", "unit": "cm"}),
+    "sxy": r"$\mathit{L}_{xy}/\mathit{\sigma}_{xy}$",
+    "l3d": ({"label": r"$\mathit{L}_{3D}$", "unit": "cm"}),
+    "sl3d": r"$\mathit{L}_{3D}/\mathit{\sigma}_{3D}$",
+    "vtxProb": r"vertex probability",
+    "vtxChi2": r"$\mathit{\chi}^{2}_{\mathrm{vtx}}$",
+    "chisq": r"$\mathit{\chi}^{2}$",
+    "ndof": r"ndof",
+    "edmRef": r"$\mathit{edm}_{\mathrm{ref}}$",
+    "nIter": r"$\mathit{N}_{\mathrm{iterations}}$",
+    "dimuon_vtxProb": r"dimuon vertex probability",
+    "dimuon_alphaBS": r"$\mathit{\alpha}_{\mathrm{BS}}(\mu\mu)$ (xy only)",
+    "dimuon_sxy": r"$\mathit{L}_{xy}/\mathit{\sigma}_{xy}\,(\mu\mu)$",
+    "dimuon_sl3d": r"$\mathit{L}_{3D}/\mathit{\sigma}_{3D}\,(\mu\mu)$",
+    # The joint arm's J/psi mass is the *constrained* fit parameter, so it is
+    # pinned to 3.097 and carries no information -- see dimuon_raw_mass.
+    "jpsi_mass": ({"label": r"$\mathit{m}(\mu\mu)$ constrained", "unit": "GeV"}),
+    "jpsi_pt": ({"label": r"$\mathit{p}_{T}(\mu\mu)$ fitted", "unit": "GeV"}),
+    "jpsi_eta": r"$\mathit{\eta}(\mu\mu)$ fitted",
+    "jpsi_phi": r"$\mathit{\phi}(\mu\mu)$ fitted",
+}
+for _arm, _arm_label in _cvh_arm_names.items():
+    for _short, _lab in _cvh_arm_axes.items():
+        if isinstance(_lab, dict):
+            _entry = {"label": f"{_lab['label']} [{_arm_label}]", "unit": _lab["unit"]}
+        else:
+            _entry = f"{_lab} [{_arm_label}]"
+        axis_labels[f"{_arm}_{_short}"] = _entry
+    for _leg in ("leg0", "leg1", "leg2"):
+        for _q, _tex in (
+            ("Pt", r"\mathit{p}_{T}"),
+            ("Eta", r"\mathit{\eta}"),
+            ("Phi", r"\mathit{\phi}"),
+        ):
+            _key = f"{_arm}_{_leg}{_q}"
+            _base = rf"${_tex}^{{\mathrm{{{_leg}}}}}$ [{_arm_label}]"
+            axis_labels[_key] = {"label": _base, "unit": "GeV"} if _q == "Pt" else _base
 
 legend_labels = {
     "gamma_cusp-1.": r"$\mathit{\Gamma}_{cusp}$",

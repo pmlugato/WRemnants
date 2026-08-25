@@ -50,6 +50,29 @@ parser.add_argument(
     "--csVarsHist", action="store_true", help="Add CS variables to dilepton hist"
 )
 parser.add_argument("--axes", type=str, nargs="*", default=[], help="")
+# Selection toggles, added 2026-08-18 to test whether the two discriminants the
+# CVH NanoAOD cannot supply are what makes the 2018 data and simulation agree.
+# `softMuonMva` needs the muon inner track, which is unavailable for 100% of the
+# muons persisted in our AlCaReco, and the BMM BDT has no counterpart at all --
+# so if dropping them here breaks the 2018 agreement, that is the explanation,
+# and if it does not, the difference lies elsewhere.
+parser.add_argument(
+    "--kaonMaxEta",
+    type=float,
+    default=1.4,
+    help="Bachelor |eta| ceiling. The default 1.4 matches the momentum maps; "
+    "2.4 is the tracker acceptance and is what the CVH NanoAOD analysis uses.",
+)
+parser.add_argument(
+    "--noSoftMva",
+    action="store_true",
+    help="Drop the muon softMVA > 0.45 cut.",
+)
+parser.add_argument(
+    "--noBmmBdt",
+    action="store_true",
+    help="Drop the BMM BDT > 0.10 cut.",
+)
 parser.add_argument(
     "--jpsiFixedAUnc",
     type=float,
@@ -288,9 +311,15 @@ def get_bkmm_selections(vprefix="jpsimc", vtx_prob_cut=vtx_prob_cut):
             "muon pT > 4",
             lambda d: btojpsik_selections.select_muon_pt(d, 4),
         ),
-        (
-            "muon softMVA > 0.45",
-            lambda d: btojpsik_selections.select_muon_softmva(d, 0.45),
+        *(
+            []
+            if args.noSoftMva
+            else [
+                (
+                    "muon softMVA > 0.45",
+                    lambda d: btojpsik_selections.select_muon_softmva(d, 0.45),
+                )
+            ]
         ),
         (
             "dimuon pT > 7",
@@ -320,16 +349,22 @@ def get_bkmm_selections(vprefix="jpsimc", vtx_prob_cut=vtx_prob_cut):
         ),  # og 5.4, 0.5
         # adding kaon sels to match what is used to produce maps (for now)
         (
-            "kaon |eta| < 1.4",
-            lambda d: btojpsik_selections.select_kaon_eta(d, 1.4, vprefix),
+            f"kaon |eta| < {args.kaonMaxEta:g}",
+            lambda d: btojpsik_selections.select_kaon_eta(d, args.kaonMaxEta, vprefix),
         ),
         (
             "kaon pT < 8",
             lambda d: btojpsik_selections.select_kaon_pt(d, 8, vprefix),
         ),
-        (
-            "bkmm bmm bdt output > 0.10",
-            lambda d: btojpsik_selections.select_bkmm_bmm_bdt(d, 0.10),
+        *(
+            []
+            if args.noBmmBdt
+            else [
+                (
+                    "bkmm bmm bdt output > 0.10",
+                    lambda d: btojpsik_selections.select_bkmm_bmm_bdt(d, 0.10),
+                )
+            ]
         ),  # NOTE: this doesn't touch kaon so fine to use...
     ]
 
@@ -445,15 +480,28 @@ def build_fit_pt_quantile_hists(dataset):
 
     jpsi_helper = data_jpsi_crctn_helper if dataset.is_data else mc_jpsi_crctn_helper
     reco_sel_GF = "bkmm_kaon_stuff"
-    df = df.Define(
-        "kaon_jpsiCorrectedPt",
-        jpsi_helper,
-        [
-            f"bkmm_{vertex_prefix}_kaon1pt",
-            f"bkmm_{vertex_prefix}_kaon1eta",
-            "bkmm_kaon_charge",
-        ],
-    )
+    # The J/psi massfit correction helper is None unless --muonCorrMC /
+    # --muonCorrData name a massfit file, and applying massfit corrections to
+    # simulation is explicitly not recommended. Fall back to the uncorrected
+    # kaon pT rather than failing: this column feeds only the scale-variation
+    # machinery, never the reconstructed mass, so a reference run that just wants
+    # the mass spectrum should not need a calibration file it does not use.
+    if jpsi_helper is None:
+        logger.warning(
+            "No J/psi kaon correction helper; kaon_jpsiCorrectedPt falls back to "
+            "the uncorrected pT. Fine for mass spectra, NOT for scale variations."
+        )
+        df = df.Define("kaon_jpsiCorrectedPt", f"bkmm_{vertex_prefix}_kaon1pt")
+    else:
+        df = df.Define(
+            "kaon_jpsiCorrectedPt",
+            jpsi_helper,
+            [
+                f"bkmm_{vertex_prefix}_kaon1pt",
+                f"bkmm_{vertex_prefix}_kaon1eta",
+                "bkmm_kaon_charge",
+            ],
+        )
     df = df.Alias(f"{reco_sel_GF}_recoPt", "kaon_jpsiCorrectedPt")
     df = df.Alias(f"{reco_sel_GF}_recoEta", f"bkmm_{vertex_prefix}_kaon1eta")
     df = df.Alias(f"{reco_sel_GF}_recoCharge", "bkmm_kaon_charge")
@@ -704,15 +752,28 @@ def build_graph(df, dataset):
 
     # correct kaon pt w bkmm_kaon_pt, vectors of length 1
     jpsi_helper = data_jpsi_crctn_helper if dataset.is_data else mc_jpsi_crctn_helper
-    df = df.Define(
-        "kaon_jpsiCorrectedPt",
-        jpsi_helper,
-        [
-            f"bkmm_{vertex_prefix}_kaon1pt",
-            f"bkmm_{vertex_prefix}_kaon1eta",
-            "bkmm_kaon_charge",
-        ],
-    )
+    # The J/psi massfit correction helper is None unless --muonCorrMC /
+    # --muonCorrData name a massfit file, and applying massfit corrections to
+    # simulation is explicitly not recommended. Fall back to the uncorrected
+    # kaon pT rather than failing: this column feeds only the scale-variation
+    # machinery, never the reconstructed mass, so a reference run that just wants
+    # the mass spectrum should not need a calibration file it does not use.
+    if jpsi_helper is None:
+        logger.warning(
+            "No J/psi kaon correction helper; kaon_jpsiCorrectedPt falls back to "
+            "the uncorrected pT. Fine for mass spectra, NOT for scale variations."
+        )
+        df = df.Define("kaon_jpsiCorrectedPt", f"bkmm_{vertex_prefix}_kaon1pt")
+    else:
+        df = df.Define(
+            "kaon_jpsiCorrectedPt",
+            jpsi_helper,
+            [
+                f"bkmm_{vertex_prefix}_kaon1pt",
+                f"bkmm_{vertex_prefix}_kaon1eta",
+                "bkmm_kaon_charge",
+            ],
+        )
     # import pdb
     # pdb.set_trace()
 

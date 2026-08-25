@@ -40,6 +40,28 @@ dataDict = {
         "lumijson": lumijson,
         "auxiliary": True,
     },
+    # CVH NanoAOD: produced from our own TkAlJpsiX AlCaReco by
+    # Analysis/HitAnalyzer/test/runCvhBplusJpsiK.py. Flat BuJpsiK_* candidates
+    # with three fit arms; shares no physics branch with the BMM-Tools nano
+    # above. Read by scripts/histmakers/btojpsik_cvhnano.py.
+    # These paths carry no production tag, so {NANO_PROD_TAG} is absent.
+    # `_v2` is the round that added the generator mother index, per-leg gen
+    # matching, true pileup, PV-referenced impact parameters, track
+    # uncertainties and the unconstrained dimuon mass. Data gains everything
+    # except the generator blocks. The unsuffixed paths are the previous round
+    # and are left on disk; they cannot be read by the current histmaker,
+    # because the truth categorisation needs branches they do not have.
+    "Charmonium_2016PostVFP_cvhNano": {
+        "filepaths": [
+            "{BASE_PATH}/data/Run2016F/Charmonium/NanoAOD/BtoJpsiK_v2",
+            "{BASE_PATH}/data/Run2016G/Charmonium/NanoAOD/BtoJpsiK_v2",
+            "{BASE_PATH}/data/Run2016H/Charmonium/NanoAOD/BtoJpsiK_v2",
+        ],
+        "group": "Data",
+        "lumicsv": lumicsv,
+        "lumijson": lumijson,
+        "auxiliary": True,
+    },
     "Charmonium_2016PostVFP_customNano": {
         "filepaths": [
             "{BASE_PATH}/Charmonium+Run2016F-21Feb2020_UL2016-v1+MINIAOD",
@@ -339,6 +361,23 @@ dataDict = {
         * 5.961e-2,  # B production xsec * BR(B --> Jpsi + K) * BR(Jpsi --> mumu)
         "group": "BuToJpsiK",
         # "das_name": "/BuToJpsiK_BMuonFilter_SoftQCDnonD_TuneCP5_13TeV-pythia8-evtgen/RunIISummer20UL17MiniAODv2-106X_mc2017_realistic_v9-v1/MINIAODSIM",
+        "auxiliary": True,
+    },
+    # Inclusive b -> J/psi X, reconstructed through the same CVH NanoAOD chain
+    # as Charmonium_2016PostVFP_cvhNano. This single sample replaces the old
+    # exclusive BuToJpsiK / BuToJpsiPi / signalBuToJpsiK trio, so its
+    # components are separated by the genCategory axis rather than by dataset.
+    # xsec is a PLACEHOLDER, not a measurement: getDatasets requires the key,
+    # and the true inclusive b -> J/psi X cross section times filter efficiency
+    # for this private production has not been established. Normalisation is
+    # deferred to the tensor stage, so btojpsik_cvhnano.py defaults to
+    # --noScaleToData and never uses this number. Do not scale with it.
+    "InclusiveBToJpsiX_2016PostVFP": {
+        "filepaths": [
+            "{BASE_PATH}/mc/inclusive_btojpsix_2016postvfp_v3_NanoAOD_v2",
+        ],
+        "xsec": 1.0,  # placeholder, see comment above
+        "group": "InclusiveBToJpsiX",
         "auxiliary": True,
     },
 }

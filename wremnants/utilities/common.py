@@ -113,6 +113,7 @@ analysis_mode_map = {
     "mw_lowPU.py": "w_lowpu",
     "mz_lowPU.py": "z_lowpu",
     "mz_5TeV.py": "z_lowpu",
+    "btojpsik_cvhnano.py": "btojpsik_cvhnano",
 }
 
 
