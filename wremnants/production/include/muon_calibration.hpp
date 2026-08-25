@@ -1,3 +1,6 @@
+#ifndef WREM_MUON_CALIBRATION_H
+#define WREM_MUON_CALIBRATION_H
+
 #include <Math/GenVector/PtEtaPhiM4D.h>
 #include <ROOT/RVec.hxx>
 #include <TFile.h>
@@ -9,6 +12,7 @@
 #include <fstream>
 #include <math.h>
 #include <memory>
+#include <stdexcept>
 #include <stdlib.h>
 #include <typeinfo>
 
@@ -521,16 +525,52 @@ double calculateQopUnc(float pt, float eta, int charge, double ptUnc) {
 }
 
 double calculateQopUnc(float pt, float eta, int charge, double AUnc,
-                       double eUnc, double MUnc, double particle_mass = 0.0) {
+                       double eUnc, double MUnc) {
   float k = 1 / pt;
-  double e_over_p = 1.0;
-  if (particle_mass > 0.0) {
-    const double p_total = pt * std::cosh(eta);
-    e_over_p =
-        std::sqrt(1.0 + particle_mass * particle_mass / (p_total * p_total));
-  }
-  double kUnc = (AUnc - eUnc * k * e_over_p) * k + charge * MUnc;
+  double kUnc = (AUnc - eUnc * k) * k + charge * MUnc;
   return calculateQopUnc(eta, charge, kUnc);
+}
+
+// Linearized non-ultra-relativistic uncertainty. The e parameter is an
+// absolute energy shift, so dpt/dE = 1/(beta*cosh(eta)).
+double calculateQopUnc(float pt, float eta, int charge, double AUnc,
+                       double eUnc, double MUnc, double mass) {
+  const double k = 1. / pt;
+  const double coshEta = std::cosh(eta);
+  const double momentum = pt * coshEta;
+  const double betaInv = std::sqrt(1. + mass * mass / (momentum * momentum));
+  const double kUnc = (AUnc - eUnc * k * betaInv / coshEta) * k + charge * MUnc;
+  return calculateQopUnc(eta, charge, kUnc);
+}
+
+// Apply finite A/e/M shifts without linearizing the transformed momentum.
+// A and M act on 1/pt, while e is a shift of the particle's total energy.
+double calculateShiftedPtExact(float pt, float eta, int charge, double AShift,
+                               double eShift, double MShift, double mass) {
+  const double coshEta = std::cosh(eta);
+  const double momentum = pt * coshEta;
+  const double energy = std::sqrt(momentum * momentum + mass * mass);
+  const double shiftedEnergy = energy + eShift;
+  if (shiftedEnergy <= mass)
+    throw std::domain_error("Nonphysical energy in calculateShiftedPtExact");
+  const double shiftedMomentum2 = shiftedEnergy * shiftedEnergy - mass * mass;
+  if (shiftedMomentum2 <= 0.)
+    throw std::domain_error("Nonphysical energy in calculateShiftedPtExact");
+
+  const double ptAfterEnergyShift = std::sqrt(shiftedMomentum2) / coshEta;
+  const double shiftedK = (1. + AShift) / ptAfterEnergyShift + charge * MShift;
+  if (shiftedK <= 0.)
+    throw std::domain_error("Nonpositive curvature in calculateShiftedPtExact");
+  return 1. / shiftedK;
+}
+
+double calculateQopShiftExact(float pt, float eta, int charge, double AShift,
+                              double eShift, double MShift, double mass) {
+  const double shiftedPt =
+      calculateShiftedPtExact(pt, eta, charge, AShift, eShift, MShift, mass);
+  const double shiftedK = 1. / shiftedPt;
+  const double nominalK = 1. / pt;
+  return calculateQopUnc(eta, charge, shiftedK - nominalK);
 }
 
 Eigen::TensorFixedSize<double, Eigen::Sizes<2>>
@@ -1302,8 +1342,15 @@ public:
         const double MUnc = params(2, ivar);
         const double pmass =
             (i < particle_masses_.size()) ? particle_masses_[i] : 0.0;
-        double recoQopUnc =
-            calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc, pmass);
+        // The 6- and 7-argument overloads use different e conventions: only the
+        // mass-aware one carries the 1/cosh(eta) of an absolute energy shift.
+        // Route massless legs to the 6-argument form so they keep the behaviour
+        // they had before the mass-aware overload existed.
+        const double recoQopUnc =
+            (pmass > 0.0)
+                ? calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc,
+                                  pmass)
+                : calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc);
         for (std::ptrdiff_t idownup = 0; idownup < 2; ++idownup) {
           const double dir = idownup == 0 ? -1. : 1.;
           delta_qop(ivar, idownup) = recoQopUnc * dir;
@@ -1727,16 +1774,20 @@ public:
 
       const double qop = charge / pt / std::cosh(eta);
 
-      const double dsigma = sigmarel_ * qop;
+      // ``sigmarel_ * qop`` is signed (qop is negative for q<0);
+      // std::normal_distribution requires stddev > 0. Sigmarel == 0 (legitimate
+      // "no smearing") collapses to a δ-function -- pass pt through unchanged
+      // in that case.
+      const double dsigma = std::abs(sigmarel_ * qop);
 
-      std::normal_distribution gaus{qop, dsigma};
-
-      const double qopout = gaus(rng_[slot]);
-      const double pout = std::fabs(1. / qopout);
-
-      const double ptout = pout / std::cosh(eta);
-
-      res.emplace_back(ptout);
+      if (dsigma > 0.) {
+        std::normal_distribution gaus{qop, dsigma};
+        const double qopout = gaus(rng_[slot]);
+        const double pout = std::fabs(1. / qopout);
+        res.emplace_back(pout / std::cosh(eta));
+      } else {
+        res.emplace_back(pt);
+      }
     }
 
     return res;
@@ -1772,14 +1823,19 @@ public:
 
       const double qop = charge / pt / std::cosh(eta);
 
+      // std::normal_distribution requires stddev > 0. Sigmarel == 0
+      // collapses to a δ-function -- emit N copies of qop in that case.
       const double dsigma = std::abs(sigmarel_ * qop);
 
-      std::normal_distribution gaus{qop, dsigma};
-
-      for (std::size_t irep = 0; irep < N; ++irep) {
-        const double qopout = gaus(rng);
-
-        res.emplace_back(qopout);
+      if (dsigma > 0.) {
+        std::normal_distribution gaus{qop, dsigma};
+        for (std::size_t irep = 0; irep < N; ++irep) {
+          res.emplace_back(gaus(rng));
+        }
+      } else {
+        for (std::size_t irep = 0; irep < N; ++irep) {
+          res.emplace_back(qop);
+        }
       }
     }
 
@@ -2106,3 +2162,5 @@ private:
 };
 
 } // namespace wrem
+
+#endif

@@ -63,7 +63,8 @@ def set_parser_default(parser, argument, newDefault):
 
 
 def base_parser():
-    parser = argparse.ArgumentParser()
+    # manually adding help at the end lets inheriting parsers use it correctly
+    parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
         "-v",
         "--verbose",
@@ -424,9 +425,19 @@ def common_parser(analysis_label=""):
         )
         parser.add_argument(
             "--muonScaleVariation",
-            choices=["smearingWeightsGaus", "smearingWeightsSplines", "massWeights"],
-            default="smearingWeightsSplines",
+            choices=[
+                "smearingWeightsGaus",
+                "smearingWeightsSplines",
+                "massWeights",
+                "onnxReweight",
+            ],
+            default="onnxReweight",
             help="method to generate nominal muon scale variation histograms",
+        )
+        parser.add_argument(
+            "--fitMuonScaleAndResolution",
+            action="store_true",
+            help="Use fixed prefit widths and zero central J/psi massfit corrections for muon scale and resolution",
         )
         parser.add_argument(
             "--dummyMuScaleVar",
@@ -820,6 +831,15 @@ def common_parser(analysis_label=""):
         "--printParser",
         action=PrintParserAction,
         help="Print the whole parser with its arguments (use it as the last argument or default values might not be displayed correctly)",
+    )
+
+    # add help back now that all common arguments are registered
+    parser.add_argument(
+        "-h",
+        "--help",
+        action="help",
+        default=argparse.SUPPRESS,
+        help="show this help message and exit",
     )
 
     return parser, initargs
