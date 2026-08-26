@@ -112,6 +112,7 @@ def make_jpsi_crctn_helpers(
     variation_eta_bins=None,
     reweight_mass=None,
     cond_pt_gen_min=None,
+    e_convention="pt",
 ):
     if muon_corr_mc in ["idealMC_massfit", "idealMC_lbltruth_massfit"]:
         mc_corrfile = calib_filepaths["mc_corrfile"][muon_corr_mc]
@@ -153,6 +154,7 @@ def make_jpsi_crctn_helpers(
                 variation_eta_bins=variation_eta_bins,
                 reweight_mass=reweight_mass,
                 cond_pt_gen_min=cond_pt_gen_min,
+                e_convention=e_convention,
             )
             if mc_corrfile
             else None
@@ -177,6 +179,7 @@ def make_jpsi_crctn_helpers(
                 variation_eta_bins=variation_eta_bins,
                 reweight_mass=reweight_mass,
                 cond_pt_gen_min=cond_pt_gen_min,
+                e_convention=e_convention,
             )
             if data_corrfile
             else None
@@ -814,9 +817,27 @@ def make_jpsi_crctn_unc_helper(
     variation_eta_bins=None,
     reweight_mass=None,
     cond_pt_gen_min=None,
+    e_convention="pt",
 ):
+    if e_convention not in ("pt", "energy"):
+        raise ValueError(f"e_convention must be 'pt' or 'energy', not {e_convention!r}")
     if onnx_path is None:
         onnx_path = default_shift_smear_reweight_onnx(smearing=smearing)
+
+    # ``particle_masses`` is the older name for the same per-leg energy-loss
+    # mass list. ``reweight_mass`` is canonical because it is the name upstream
+    # keeps updating, so fold the legacy name in here rather than carrying two
+    # arguments down to the helpers.
+    if particle_masses is not None:
+        if reweight_mass is not None:
+            raise ValueError(
+                "Pass either reweight_mass or the legacy particle_masses, not both"
+            )
+        logger.warning(
+            "particle_masses is deprecated; use reweight_mass "
+            "(same per-leg semantics)."
+        )
+        reweight_mass = particle_masses
 
     f = ROOT.TFile.Open(filepath_correction)
     A = f.Get("A")
@@ -980,11 +1001,6 @@ def make_jpsi_crctn_unc_helper(
         helper = ROOT.wrem.JpsiCorrectionsUncHelper[
             type(hist_scale_params_unc_cpp).__cpp_name__
         ](ROOT.std.move(hist_scale_params_unc_cpp))
-    # elif scale_var_method == "smearingWeightsSplines":
-    #    masses_vec = ROOT.std.vector["double"](particle_masses or [])
-    #    helper = ROOT.wrem.JpsiCorrectionsUncHelperSplines[
-    #        type(hist_scale_params_unc_cpp).__cpp_name__
-    #    ](ROOT.std.move(hist_scale_params_unc_cpp), masses_vec)
     elif scale_var_method in ("smearingWeightsSplines", "onnxReweight"):
         # Both routes share the same boost-histogram input and the same
         # ``out_tensor_t`` shape; only the per-muon evaluation differs.
@@ -996,6 +1012,7 @@ def make_jpsi_crctn_unc_helper(
             onnx_nslots,
             reweight_mass=reweight_mass,
             cond_pt_gen_min=cond_pt_gen_min,
+            e_convention=e_convention,
         )
     elif scale_var_method == "massWeights":
         nweights = 21 if isW else 23
@@ -1058,6 +1075,7 @@ def _make_muon_reweight_unc_helper(
     onnx_nslots,
     reweight_mass=None,
     cond_pt_gen_min=None,
+    e_convention="pt",
 ):
     """Instantiate a per-muon scale-uncertainty helper from a packed
     ``[eta × scale_params × unc]`` boost histogram.
@@ -1068,38 +1086,55 @@ def _make_muon_reweight_unc_helper(
     ``JpsiCorrectionsUncHelperSplines`` is identical in both cases.
     """
     type_str = type(hist_scale_params_unc_cpp).__cpp_name__
+
+    # One mass rule for both backends. ``reweight_mass``: None -> massless;
+    # scalar -> broadcast to every leg; sequence -> per-leg masses in the order
+    # the histmaker concatenates them. Both C++ helpers read the same
+    # ``std::vector<double>`` and treat an empty vector as massless, so a
+    # per-leg list means the same thing whichever backend is selected.
+    if reweight_mass is None:
+        mass_seq = []
+    elif isinstance(reweight_mass, (int, float)):
+        mass_seq = [reweight_mass]
+    else:
+        mass_seq = list(reweight_mass)
+    masses = ROOT.std.vector["double"]()
+    for m in mass_seq:
+        masses.push_back(float(m))
+
+    # "pt": e is a shift of transverse momentum, which is how the correction
+    # file was fitted -- the central-value corrector applies (1 + A - e*k)*k with
+    # no cosh(eta). "energy": e is a shift of total energy, which is what
+    # calculateShiftedPtExact expects natively. They differ by cosh(eta), so the
+    # choice is not cosmetic above |eta| ~ 1.
+    e_pt_convention = e_convention == "pt"
+
     if scale_var_method == "onnxReweight":
         n = (
             int(onnx_nslots)
             if onnx_nslots is not None
             else (ROOT.GetThreadPoolSize() if ROOT.IsImplicitMTEnabled() else 1)
         )
-        # reweight_mass: None -> massless (default); scalar -> broadcast to all
-        # legs; sequence -> per-leg masses (by input order). Packed into the
-        # helper's std::vector<double> (empty == massless).
-        if reweight_mass is None:
-            mass_seq = []
-        elif isinstance(reweight_mass, (int, float)):
-            mass_seq = [reweight_mass]
-        else:
-            mass_seq = list(reweight_mass)
-        masses = ROOT.std.vector["double"]()
-        for m in mass_seq:
-            masses.push_back(float(m))
         return ROOT.wrem.JpsiCorrectionsUncReweightHelper[type_str](
             ROOT.std.move(hist_scale_params_unc_cpp),
             str(onnx_path),
             max(int(n), 1),
             masses,
             float(cond_pt_gen_min) if cond_pt_gen_min is not None else -1.0,
+            bool(e_pt_convention),
         )
-    if reweight_mass is not None or cond_pt_gen_min is not None:
+    if cond_pt_gen_min is not None:
         logger.warning(
-            "reweight_mass / cond_pt_gen_min are only implemented for "
-            "scale_var_method='onnxReweight'; ignoring them for the splines helper."
+            "cond_pt_gen_min is only implemented for "
+            "scale_var_method='onnxReweight'; ignoring it for the splines helper."
         )
+    # The splines helper takes the same masses vector. Forwarding it is what
+    # keeps the mass-aware energy-loss term alive on this backend: the
+    # constructor defaults it to {}, so omitting it runs massless silently.
     return ROOT.wrem.JpsiCorrectionsUncHelperSplines[type_str](
         ROOT.std.move(hist_scale_params_unc_cpp),
+        masses,
+        bool(e_pt_convention),
     )
 
 

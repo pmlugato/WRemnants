@@ -625,3 +625,40 @@ ID_AXES = {
 axis_fit_bachelor_charge = hist.axis.Regular(
     2, -2.0, 2.0, name="fit_bachelor_charge", underflow=False, overflow=False
 )
+
+
+# --- axes for the generator-truth diagnostics ------------------------------
+# The bachelor pT axis is the same range as the fit axis but coarser, because
+# these histograms are efficiency numerators and denominators rather than fit
+# templates: a ratio needs occupancy per bin, not resolution.
+axis_gen_truth_pt = hist.axis.Regular(
+    20, 0.0, 10.0, name="gen_truth_pt", underflow=False, overflow=True
+)
+axis_gen_truth_eta = hist.axis.Regular(
+    24, -2.4, 2.4, name="gen_truth_eta", underflow=False, overflow=False
+)
+# 0, 1, 2 or 3 legs accepted by the producer's matcher. The ancestor search runs
+# only at 3, so this axis is what separates "no b ancestor because the tracks
+# are unrelated" from "no b ancestor because a leg was not matched".
+axis_n_legs_matched = hist.axis.Integer(
+    0, 4, name="nLegsMatched", underflow=False, overflow=False
+)
+# The matcher cut on |dpt|/pt < 0.1, so the stored range deliberately extends
+# well past that: the question is whether population piles up against the cut,
+# and an axis that stopped at the cut could not show it. Values outside the cut
+# can only appear for legs matched by a LOOSER definition, so in this production
+# the histogram is expected to be empty beyond +-0.1 -- which is the point. The
+# width of the distribution inside the window, against the 0.1 boundary, is what
+# says how much is being truncated.
+axis_rel_dpt = hist.axis.Regular(
+    60, -0.3, 0.3, name="rel_dpt", underflow=True, overflow=True
+)
+
+# Why a candidate has no b ancestor: 0 a leg was unmatched, 1 all legs matched
+# but the ancestor search came up empty, 2 a non-b ancestor was found, 3 a b
+# ancestor was found. Bin 1 is a property of the search, bins 0 and 2 of the
+# event, and lumping the three together is what hides a search that is too
+# shallow for the collection it is searching.
+axis_ancestor_state = hist.axis.Integer(
+    0, 4, name="ancestorState", underflow=False, overflow=False
+)

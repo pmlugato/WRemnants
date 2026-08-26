@@ -197,7 +197,17 @@ calib_filepaths = common.calib_filepaths
     fixed_A_unc=args.jpsiFixedAUnc,
     fixed_e_unc=args.jpsiFixedEUnc,
     fixed_M_unc=args.jpsiFixedMUnc,
-    particle_masses=[KAON_MASS_GEV],
+    # Explicit per-leg list in the order the legs are concatenated below
+    # (kaon, mu1, mu2). A single-element list would be ambiguous: the helpers
+    # broadcast it to every leg, which would hand both muons a 494 MeV
+    # energy-loss term.
+    #
+    # Caveat for --validationHists: that path calls the same helper with
+    # one-element RVecs per leg, so the mu1/mu2 validation histograms read
+    # index 0 and therefore see the kaon mass. Diagnostic only, and unchanged
+    # from before the explicit list; the physics path (the 3-leg concatenation)
+    # is correct.
+    reweight_mass=[KAON_MASS_GEV, 0.0, 0.0],
 )
 
 logger.debug(

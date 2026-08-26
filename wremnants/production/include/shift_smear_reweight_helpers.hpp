@@ -25,6 +25,7 @@
 
 #include <ROOT/RVec.hxx>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <eigen3/Eigen/Dense>
 #include <memory>
@@ -296,10 +297,12 @@ public:
                                    const std::string &onnx_path,
                                    unsigned int nslots = 1,
                                    std::vector<double> masses = {},
-                                   double cond_pt_gen_min = -1.0)
+                                   double cond_pt_gen_min = -1.0,
+                                   bool e_pt_convention = true)
       : correctionHist_(std::make_shared<const T>(std::move(corrections))),
         evaluator_(onnx_path, nslots), masses_(std::move(masses)),
-        cond_pt_gen_min_(cond_pt_gen_min) {}
+        cond_pt_gen_min_(cond_pt_gen_min), e_pt_convention_(e_pt_convention),
+        n_exact_fallback_(std::make_shared<std::atomic<std::size_t>>(0)) {}
 
   // Per-leg energy-loss mass (see constructor); <= 0 means "massless".
   double mass_for_leg(std::size_t i) const {
@@ -362,16 +365,42 @@ public:
         const double AUnc = params(0, ivar);
         const double eUnc = params(1, ivar);
         const double MUnc = params(2, ivar);
+        // LOCAL DIVERGENCE from upstream: the exact shift is evaluated through
+        // the non-throwing calculateQopShiftExactSafe. A std::domain_error
+        // inside an RDataFrame Define kills the whole event loop, and the
+        // condition is reachable for a soft hadron leg. When it fires, this
+        // (leg, variation) falls back to the massless linearisation and the
+        // occurrence is counted, so the policy is attributable rather than
+        // silent. Remove if upstream adopts a guard of its own.
+        bool exact_ok = false;
         if (legMass > 0.0) {
-          const double qopShiftDown = calculateQopShiftExact(
-              recPt, recEta, recCharge, -AUnc, -eUnc, -MUnc, legMass);
-          const double qopShiftUp = calculateQopShiftExact(
-              recPt, recEta, recCharge, +AUnc, +eUnc, +MUnc, legMass);
-          delta_r_kappa[ivar * 2 + 0] =
-              static_cast<float>(qopShiftDown * pgen * sign_qgen);
-          delta_r_kappa[ivar * 2 + 1] =
-              static_cast<float>(qopShiftUp * pgen * sign_qgen);
-        } else {
+          // calculateShiftedPtExact adds eUnc to TOTAL ENERGY and divides by
+          // cosh(eta) to get pt, so it expects e in the energy convention. The
+          // correction file fits e as a pt shift -- the central-value corrector
+          // in muon_calibration.hpp applies (1 + A - e*k)*k with no cosh(eta).
+          // Converting is one multiplication, and getting it wrong is a factor
+          // cosh(eta): 1.0 at eta = 0, 2.15 at 1.4, 5.56 at 2.4.
+          const double eUncEff =
+              e_pt_convention_ ? eUnc * std::cosh(recEta) : eUnc;
+          double qopShiftDown = 0.0;
+          double qopShiftUp = 0.0;
+          const bool okDown = calculateQopShiftExactSafe(
+              recPt, recEta, recCharge, -AUnc, -eUncEff, -MUnc, legMass,
+              qopShiftDown);
+          const bool okUp =
+              calculateQopShiftExactSafe(recPt, recEta, recCharge, +AUnc,
+                                         +eUncEff, +MUnc, legMass, qopShiftUp);
+          exact_ok = okDown && okUp;
+          if (exact_ok) {
+            delta_r_kappa[ivar * 2 + 0] =
+                static_cast<float>(qopShiftDown * pgen * sign_qgen);
+            delta_r_kappa[ivar * 2 + 1] =
+                static_cast<float>(qopShiftUp * pgen * sign_qgen);
+          } else if (n_exact_fallback_) {
+            ++(*n_exact_fallback_);
+          }
+        }
+        if (!exact_ok) {
           const double recoQopUnc =
               calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc);
           const float dr = static_cast<float>(recoQopUnc * pgen * sign_qgen);
@@ -406,6 +435,18 @@ private:
   evaluator_t evaluator_;
   std::vector<double> masses_;
   double cond_pt_gen_min_;
+  bool e_pt_convention_ = true;
+  // shared_ptr, not a bare atomic: narf copies the helper per slot and an
+  // atomic member is not copyable. One counter shared across all slots.
+  std::shared_ptr<std::atomic<std::size_t>> n_exact_fallback_;
+
+public:
+  // How many (leg, variation) evaluations fell back to the massless
+  // linearisation because the exact shift would have been unphysical. Read
+  // after the event loop; zero is the expected answer above ~1 GeV.
+  std::size_t nExactFallback() const {
+    return n_exact_fallback_ ? n_exact_fallback_->load() : 0;
+  }
 };
 
 // ---------------------------------------------------------------------------

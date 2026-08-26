@@ -26,19 +26,26 @@ import hist
 
 import narf
 from wremnants.production import btojpsik_cvhnano_selections as sel
+from wremnants.production import muon_calibration
 from wremnants.production.btojpsik_cvhnano_axes import (
     ARMS,
     CAND,
     DEFAULT_ARM,
     EVENT_SCALAR_AXES,
+    GEN_SIGNAL,
     ID_AXES,
     MC_ONLY_AXES,
     all_axes,
+    axis_ancestor_state,
     axis_fit_bachelor_charge,
     axis_fit_bachelor_eta,
     axis_fit_bachelor_pt,
     axis_gen_category,
+    axis_gen_truth_eta,
+    axis_gen_truth_pt,
     axis_id_bachelor_pt,
+    axis_n_legs_matched,
+    axis_rel_dpt,
     dimuon_vtx_arm,
 )
 from wremnants.production.datasets.dataset_tools import getDatasets
@@ -128,11 +135,16 @@ parser.add_argument("--requireGlobalMuons", action="store_true", default=False)
 parser.add_argument(
     "--bachelorMinPt",
     type=float,
-    default=0.1,
-    help="Bachelor pT floor. The AlCaReco already imposes minBachelorPt=0.1 "
-    "and the observed minimum in the NanoAOD is 0.151 GeV, so the default is "
-    "a no-op against the dataset floor. It was 0.5, which discarded 48% of "
-    "candidates -- exactly the soft phase space the channel exists to probe.",
+    default=1.0,
+    help="Bachelor pT floor, default 1 GeV. Justified twice over. It makes the "
+    "combinatorial describable by a monotonic analytic shape (exponential "
+    "chi2/ndf 745.8 -> 41.2, yield bias 2.8x -> 1.11x, 96.8% of the signal "
+    "retained), and it keeps the mass-aware e variation in the regime where "
+    "the exact finite shift is well behaved -- the margin E - m_K against the "
+    "e uncertainty is 22 MeV at pT 0.15 GeV and 622 MeV at 1 GeV. It also "
+    "matches the production-level cut the 2018 sample already had, which makes "
+    "the two comparable. Lower it to reach the soft region: the AlCaReco floor "
+    "is 0.1 and the observed minimum in the NanoAOD is 0.151 GeV.",
 )
 parser.add_argument("--bachelorMaxEta", type=float, default=2.4)
 parser.add_argument(
@@ -141,6 +153,91 @@ parser.add_argument(
     default=-1.0,
     help="Bachelor pT ceiling; <0 disables. The 2018 analysis capped the kaon at "
     "8 GeV.",
+)
+parser.add_argument(
+    "--scaleVariations",
+    action="store_true",
+    help="Book the A/e/M momentum-scale variations on the simulated template.",
+)
+parser.add_argument(
+    "--scaleVarLegs",
+    choices=["all", "bachelor"],
+    default="all",
+    help="Which legs the A/e/M variations are applied to. 'all' (default) "
+    "varies bachelor, mu0 and mu1, because the muon A/e/M are real parameters "
+    "of the same calibration and omitting them would understate the "
+    "candidate's total scale uncertainty. 'bachelor' isolates the bachelor's "
+    "contribution, so the muon contribution can be measured rather than "
+    "assumed small.",
+)
+parser.add_argument(
+    "--eConvention",
+    choices=["pt", "energy"],
+    default="pt",
+    help="How the correction file's e parameter is interpreted. 'pt' (default) "
+    "treats it as a shift of transverse momentum, which is how it was fitted: "
+    "the central-value corrector applies (1 + A - e*k)*k with no cosh(eta), so "
+    "any eta-dependent factor is already inside the fitted e_i(eta). 'energy' "
+    "treats it as a shift of total energy, which carries an extra 1/cosh(eta) "
+    "-- 1.0 at eta 0, 2.15 at 1.4, 5.56 at 2.4. See notes/E_IN_MATERIAL_TERM.md.",
+)
+parser.add_argument(
+    "--scaleVarMuonSource",
+    type=int,
+    default=443,
+    help="The network's per-leg class tag. 443 is the J/psi-leg class and is "
+    "the default for every leg including the bachelor, following d0_mass.py -- "
+    "there is no hadron class in the training. 1 is the prompt W/Z class; "
+    "running with it measures how much the choice matters rather than "
+    "assuming it does not.",
+)
+parser.add_argument(
+    "--scaleVariationEtaBins",
+    type=int,
+    default=4,
+    help="Number of eta bins the A/e/M variations are grouped into. The "
+    "correction file has 48, which would give 144 scale nuisances on a channel "
+    "with of order 1e4 signal candidates, so the default is deliberately "
+    "coarse. Each fine eta bin inside a group is still moved by its own "
+    "uncertainty under one shared nuisance -- a fully correlated variation "
+    "within the group, not an average over it. Must divide 48. Set to 48 to "
+    "recover the basis the joint mZ + J/psi fit correlates by name.",
+)
+parser.add_argument(
+    "--jpsiFixedAUnc",
+    type=float,
+    default=None,
+    help="Override the A uncertainty in every eta bin, as btojpsik.py does.",
+)
+parser.add_argument(
+    "--jpsiFixedEUnc",
+    type=float,
+    default=None,
+    help="Override the e uncertainty in every eta bin [GeV].",
+)
+parser.add_argument(
+    "--jpsiFixedMUnc",
+    type=float,
+    default=None,
+    help="Override the M uncertainty in every eta bin.",
+)
+parser.add_argument(
+    "--genPtReweightSaturation",
+    type=float,
+    default=2.0,
+    help="Gen-pt floor for the response network, in GeV; <=0 disables. The "
+    "training sample floors gen pt at 2.0 GeV, so a bachelor below that is "
+    "outside the model's domain even after the 1 GeV selection.",
+)
+parser.add_argument(
+    "--genPtReweightSaturationMode",
+    choices=["condition", "rescale"],
+    default="condition",
+    help="'condition' (default) floors only the network's conditioning input "
+    "log pt_gen, leaving the response residual and the physical shift at the "
+    "true kinematics. 'rescale' would scale both reco and gen pt, which "
+    "preserves qopr but evaluates the shift at the saturated pt; it is not "
+    "implemented here and is rejected by the argument check below.",
 )
 parser.add_argument("--massLow", type=float, default=5.0)
 parser.add_argument("--massHigh", type=float, default=5.5)
@@ -246,6 +343,30 @@ parser.add_argument(
     "stacked simulation whose component fractions are not physical.",
 )
 
+parser.add_argument(
+    "--triggerCheckCache",
+    type=str,
+    default=os.path.join(
+        os.path.expanduser("~"), ".cache", "wremnants", "cvhnano_trigger_check.json"
+    ),
+    help="Where to remember that a given file list has already been checked for "
+    "the trigger column. The check opens every input file and its answer does "
+    "not change for a fixed production, so re-deriving it on every run is pure "
+    "wall clock: it cost over an hour on 22 327 files. Set to an empty string to "
+    "disable the cache.",
+)
+parser.add_argument(
+    "--genDiagnostics",
+    action="store_true",
+    help="Book the generator-truth diagnostics: the gen-level B+ -> J/psi K+ "
+    "denominator found by walking the Gen table with no reco requirement, the "
+    "per-candidate matcher outcome (how many legs the producer accepted), and "
+    "the bachelor pT response. Together these say whether the signal template "
+    "is defined by a cut on the quantity being measured -- the per-leg match "
+    "requires |dpt|/pt < 0.1, and the template is the population that passed "
+    "it. Simulation only.",
+)
+
 parser = parsing.set_parser_default(parser, "aggregateGroups", [])
 parser = parsing.set_parser_default(parser, "theoryCorr", [])
 # The inclusive MC carries a placeholder cross section, so luminosity scaling
@@ -289,7 +410,85 @@ trigger_column = (
 )
 if not args.skipTriggerCheck:
     for dataset in datasets:
-        sel.validate_trigger_available(dataset.filepaths, trigger_column)
+        sel.validate_trigger_available(
+            dataset.filepaths, trigger_column, cache=args.triggerCheckCache
+        )
+
+# ---------------------------------------------------------------------------
+# Momentum-scale variation helper
+# ---------------------------------------------------------------------------
+
+scale_unc_helper = None
+if args.scaleVariations:
+    if args.muonScaleVariation != "onnxReweight":
+        raise ValueError(
+            f"--muonScaleVariation {args.muonScaleVariation} is not wired in "
+            "this channel. The analytic splines backend needs a per-leg "
+            "response-weight column from a tflite response model, and the only "
+            "kaon-trained one on disk predates this selection and this "
+            "NanoAOD, so comparing against it now would confound three "
+            "changes at once. It is a planned cross-check once that model is "
+            "regenerated."
+        )
+    if args.genPtReweightSaturationMode != "condition":
+        raise ValueError(
+            "Only --genPtReweightSaturationMode condition is implemented here. "
+            "'rescale' scales both reco and gen pt, which floors gen pt while "
+            "preserving qopr but then evaluates the physical shift at the "
+            "saturated pt; 'condition' keeps the shift honest and moves only "
+            "the network's conditioning input."
+        )
+    if 48 % args.scaleVariationEtaBins:
+        raise ValueError(
+            f"--scaleVariationEtaBins {args.scaleVariationEtaBins} must divide "
+            "the 48 eta bins of the correction file"
+        )
+    _, _, _, scale_unc_helper = muon_calibration.make_jpsi_crctn_helpers(
+        common.calib_filepaths,
+        muon_corr_mc=args.muonCorrMC,
+        muon_corr_data=args.muonCorrData,
+        scale_var_method=args.muonScaleVariation,
+        scale_A=args.scale_A,
+        scale_e=args.scale_e,
+        scale_M=args.scale_M,
+        make_uncertainty_helper=True,
+        # No eigen-decomposition: the coarsened eta binning below is only
+        # available without the covariance, and this channel constrains one
+        # parameter group at a time rather than the full 48-bin basis.
+        include_covariance=False,
+        fixed_A_unc=args.jpsiFixedAUnc,
+        fixed_e_unc=args.jpsiFixedEUnc,
+        fixed_M_unc=args.jpsiFixedMUnc,
+        variation_eta_bins=args.scaleVariationEtaBins,
+        # Bachelor first, then the two muons -- SCALE_VAR_LEGS order. Explicit
+        # per-leg rather than a one-element list, which both helpers broadcast
+        # to every leg and would hand the muons a 494 MeV energy-loss term.
+        reweight_mass=(
+            [sel.KAON_MASS_GEV, 0.0, 0.0]
+            if args.scaleVarLegs == "all"
+            else [sel.KAON_MASS_GEV]
+        ),
+        # This channel applies no resolution smearing, so the model has to be
+        # the one trained on un-smeared reco pt. Tied to --noSmearing rather
+        # than chosen independently, so the two cannot drift apart.
+        smearing=not args.noSmearing,
+        cond_pt_gen_min=(
+            args.genPtReweightSaturation if args.genPtReweightSaturation > 0 else None
+        ),
+        e_convention=args.eConvention,
+    )
+    if scale_unc_helper is None:
+        raise ValueError(
+            "--scaleVariations needs --muonCorrData massfit or lbl_massfit, "
+            "since the uncertainties are read from that correction file"
+        )
+    logger.info(
+        "Scale variations: %s, %d eta groups, %d nuisances, legs %s",
+        args.muonScaleVariation,
+        args.scaleVariationEtaBins,
+        scale_unc_helper.tensor_axes[0].size,
+        args.scaleVarLegs,
+    )
 
 for a in args.axes:
     if a not in all_axes:
@@ -511,6 +710,31 @@ def build_graph(df, dataset):
     weightsum = df.SumAndCount("weight")
     cutflow["Total"] = weightsum[0]
 
+    # The gen-level denominator, booked HERE and not later. Every filter below
+    # this line -- trigger, candidate multiplicity, kinematics -- is part of
+    # what the efficiency is measuring, so a denominator defined after any of
+    # them measures nothing.
+    if args.genDiagnostics and not dataset.is_data:
+        df = sel.define_gen_truth_signal(df, dataset.is_data)
+        results.append(
+            df.HistoBoost(
+                "genTruthKaon",
+                [
+                    axis_gen_truth_pt,
+                    axis_gen_truth_eta,
+                    hist.axis.Boolean(name="inAcc"),
+                ],
+                [
+                    "genTruth_kaonPt",
+                    "genTruth_kaonEta",
+                    "genTruth_inAcc",
+                    "nominal_weight",
+                ],
+                storage=hist.storage.Double(),
+            )
+        )
+        hist_names.add("genTruthKaon")
+
     df = sel.apply_trigger(df, trigger_column)
     cutflow[trigger_column] = df.SumAndCount("weight")[0]
 
@@ -593,6 +817,165 @@ def build_graph(df, dataset):
             )
         )
         hist_names.add(name)
+
+    # -----------------------------------------------------------------------
+    # A/e/M momentum-scale variations
+    # -----------------------------------------------------------------------
+    if scale_unc_helper is not None and not dataset.is_data:
+        df, scale_prefix = sel.define_scale_variation_inputs(
+            df,
+            dataset.is_data,
+            legs=(
+                sel.SCALE_VAR_LEGS
+                if args.scaleVarLegs == "all"
+                else sel.SCALE_VAR_LEGS[:1]
+            ),
+            muon_source=args.scaleVarMuonSource,
+        )
+        df, scale_cols = muon_calibration.muon_reweight_helper_cols(
+            df, scale_unc_helper, scale_prefix, None
+        )
+        df = df.Define(
+            "nominal_muonScaleSyst_responseWeights_tensor",
+            scale_unc_helper,
+            [*scale_cols, "nominal_weight"],
+        )
+        # Booked over the fit binning, not over mass alone: the deliverable is
+        # the shift the variation induces per fit cell, which is what says
+        # whether the channel has constraining power.
+        for col in (f"{CAND}_kaonPt", f"{CAND}_kaonEta", f"{CAND}_charge"):
+            if not df.HasColumn(f"{col}_scalar"):
+                df = sel.define_scalar(df, col, f"{col}_scalar")
+        results.append(
+            df.HistoBoost(
+                "nominal_muonScaleSyst_responseWeights",
+                [
+                    axis_fit_bachelor_pt,
+                    axis_fit_bachelor_eta,
+                    axis_fit_bachelor_charge,
+                    all_axes[arm.mass_col],
+                    axis_gen_category,
+                ],
+                [
+                    f"{CAND}_kaonPt_scalar",
+                    f"{CAND}_kaonEta_scalar",
+                    f"{CAND}_charge_scalar",
+                    f"{arm.mass_col}_scalar",
+                    "cand_genCategory",
+                    "nominal_muonScaleSyst_responseWeights_tensor",
+                ],
+                tensor_axes=scale_unc_helper.tensor_axes,
+                # Weight, not Double: the tensor writer pushes this histogram
+                # through the *same* reduction path as `fitbins`
+                # (rabbit_cvhnano_helpers.reduce_fitbins), and that path folds
+                # the pT overflow and rebins by operating on values and
+                # variances together. Matching storage is what lets the
+                # variation take a byte-identical route to the nominal instead
+                # of a parallel implementation that can drift from it.
+                storage=hist.storage.Weight(),
+            )
+        )
+        hist_names.add("nominal_muonScaleSyst_responseWeights")
+
+        # The gen-match audit, counted on whatever sample is actually run rather
+        # than asserted from 12 files. Every candidate in the exclusive-signal
+        # and other-real-b categories was measured to have all three legs
+        # matched, and no not-fully-matched candidate was signal; this is the
+        # histogram that says so on the full statistics.
+        #
+        # A hard throw would have been the natural assertion, but a throw inside
+        # an RDataFrame Define kills the event loop -- the same reason the exact
+        # shift is guarded. So the condition is counted and checked after the
+        # run instead.
+        results.append(
+            df.HistoBoost(
+                "scaleVarMatchAudit",
+                [axis_gen_category, hist.axis.Boolean(name="allMatched")],
+                [
+                    "cand_genCategory",
+                    f"{scale_prefix}_allMatched",
+                    "nominal_weight",
+                ],
+                storage=hist.storage.Double(),
+            )
+        )
+        hist_names.add("scaleVarMatchAudit")
+
+    # -----------------------------------------------------------------------
+    # Generator-truth diagnostics on the reconstructed candidates
+    # -----------------------------------------------------------------------
+    if args.genDiagnostics and not dataset.is_data:
+        df = sel.define_gen_match_diagnostics(df, dataset.is_data)
+        # The scale-variation block defines this too, but the diagnostics must
+        # not depend on --scaleVariations being on to work.
+        if not df.HasColumn(f"{CAND}_kaonEta_scalar"):
+            df = sel.define_scalar(df, f"{CAND}_kaonEta", f"{CAND}_kaonEta_scalar")
+        # The mass distribution split by how many legs the matcher accepted. The
+        # no-ancestor ("combinatorial") category is filled both by genuinely
+        # random track triplets and by real decays one of whose legs the matcher
+        # rejected, and those two are not the same background: the second peaks
+        # at the B mass. Only this histogram separates them.
+        results.append(
+            df.HistoBoost(
+                "genMatchDiag",
+                [
+                    all_axes[arm.mass_col],
+                    axis_gen_category,
+                    axis_n_legs_matched,
+                    axis_ancestor_state,
+                ],
+                [
+                    f"{arm.mass_col}_scalar",
+                    "cand_genCategory",
+                    "cand_nLegsMatched",
+                    "cand_ancestorState",
+                    "nominal_weight",
+                ],
+                storage=hist.storage.Double(),
+            )
+        )
+        hist_names.add("genMatchDiag")
+
+        # The quantity the matcher cut on. A hard edge at +-0.1 with population
+        # piled against it means the cut is removing real candidates rather than
+        # separating right from wrong.
+        results.append(
+            df.HistoBoost(
+                "bachelorRelDPt",
+                [
+                    axis_rel_dpt,
+                    axis_gen_truth_pt,
+                    axis_fit_bachelor_eta,
+                    axis_gen_category,
+                ],
+                [
+                    "cand_bachelorRelDPt",
+                    "cand_bachelorGenPt",
+                    f"{CAND}_kaonEta_scalar",
+                    "cand_genCategory",
+                    "nominal_weight",
+                ],
+                storage=hist.storage.Double(),
+            )
+        )
+        hist_names.add("bachelorRelDPt")
+
+        # The reconstructed bachelor spectrum of candidates classified signal,
+        # against the gen denominator above, in the same binning.
+        results.append(
+            df.HistoBoost(
+                "genTruthKaonReco",
+                [axis_gen_truth_pt, axis_gen_truth_eta, axis_gen_category],
+                [
+                    "cand_bachelorGenPt",
+                    f"{CAND}_kaonEta_scalar",
+                    "cand_genCategory",
+                    "nominal_weight",
+                ],
+                storage=hist.storage.Double(),
+            )
+        )
+        hist_names.add("genTruthKaonReco")
 
     # A bare "nominal" so plotting tools that expect one find it.
     results.append(
@@ -677,6 +1060,57 @@ for dataset_name, actions in cand_cutflows.items():
     resultdict[dataset_name]["cand_cutflow"] = {
         name: action.GetValue() for name, action in actions.items()
     }
+
+# -------------------------------------------------------------------------
+# Post-run audits of the scale variations
+# -------------------------------------------------------------------------
+if scale_unc_helper is not None:
+    n_fallback = scale_unc_helper.nExactFallback()
+    if n_fallback:
+        logger.warning(
+            "The exact mass-aware shift was unphysical %d times and fell back "
+            "to the massless linearisation for that (leg, variation). Above "
+            "1 GeV this is expected to be zero; a non-zero count means the "
+            "bachelor pT floor is low enough for E - m_K to be comparable to "
+            "the e uncertainty.",
+            n_fallback,
+        )
+    else:
+        logger.info("Exact mass-aware shift: no unphysical evaluations.")
+
+    for dataset_name, payload in resultdict.items():
+        audit = payload.get("output", {}).get("scaleVarMatchAudit")
+        if audit is None:
+            continue
+        h = audit.get() if hasattr(audit, "get") else audit
+        values = h.values()
+        # allMatched is the last axis: index 0 is False, 1 is True.
+        for icat in range(values.shape[0]):
+            unmatched, matched = values[icat, 0], values[icat, 1]
+            total = unmatched + matched
+            if total <= 0:
+                continue
+            logger.info(
+                "gen-match audit, %s, genCategory %d: %.0f of %.0f "
+                "candidates fully matched (%.2f%%)",
+                dataset_name,
+                icat,
+                matched,
+                total,
+                100.0 * matched / total,
+            )
+        # The claim under test: the signal category cannot contain a partially
+        # matched candidate, because the chain walk needs three matched legs to
+        # reach a common ancestor.
+        if values[GEN_SIGNAL, 0] > 0:
+            logger.error(
+                "%s: %.0f exclusive-signal candidates are NOT fully gen "
+                "matched. That should be structurally impossible, so the truth "
+                "categorisation and the leg matching disagree and the variation "
+                "weights on those candidates are not meaningful.",
+                dataset_name,
+                values[GEN_SIGNAL, 0],
+            )
 
 if not args.noScaleToData:
     scale_to_data(resultdict)

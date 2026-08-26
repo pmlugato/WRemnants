@@ -543,6 +543,35 @@ double calculateQopUnc(float pt, float eta, int charge, double AUnc,
   return calculateQopUnc(eta, charge, kUnc);
 }
 
+// e as a shift of TRANSVERSE momentum, which is the convention the correction
+// file was fitted in.
+//
+// The central-value corrector in this same header (JpsiCorrectionsHelper) reads
+// A, e and M from the file and applies
+//
+//     kCrctd = (1 + A - e*k)*k + q*M
+//
+// with no cosh(eta) and no E/p. Inverting that, e is a shift of pt in GeV:
+// dkappa = -e*kappa^2 gives dpt = +e. Any smooth eta-dependent factor -- the
+// cos(lambda) = 1/cosh(eta) that appears in the physical derivation of material
+// energy loss -- was absorbed into the fitted e_i(eta) at fit time, because e
+// is fitted per eta bin. Reapplying it here would double count it.
+//
+// The mass dependence is a different matter and is real. The file's e_i was
+// fitted on muons, where E/p = 1 to 2e-4, so it encodes the muon mapping from
+// energy loss to pt shift. A kaon of the same momentum loses the same energy
+// but changes momentum by dp = (E/p) dE, so the pt shift is larger by exactly
+// E/p: 1.115 at pt 1 GeV, 1.029 at 2 GeV. That factor -- and only that factor
+// -- has to be reinstated. See notes/E_IN_MATERIAL_TERM.md.
+double calculateQopUncPtConvention(float pt, float eta, int charge, double AUnc,
+                                   double eUnc, double MUnc, double mass) {
+  const double k = 1. / pt;
+  const double p = pt * std::cosh(eta);
+  const double eOverP = std::sqrt(1. + mass * mass / (p * p));
+  const double kUnc = (AUnc - eUnc * k * eOverP) * k + charge * MUnc;
+  return calculateQopUnc(eta, charge, kUnc);
+}
+
 // Apply finite A/e/M shifts without linearizing the transformed momentum.
 // A and M act on 1/pt, while e is a shift of the particle's total energy.
 double calculateShiftedPtExact(float pt, float eta, int charge, double AShift,
@@ -571,6 +600,39 @@ double calculateQopShiftExact(float pt, float eta, int charge, double AShift,
   const double shiftedK = 1. / shiftedPt;
   const double nominalK = 1. / pt;
   return calculateQopUnc(eta, charge, shiftedK - nominalK);
+}
+
+// Non-throwing sibling of calculateQopShiftExact.
+//
+// calculateShiftedPtExact throws std::domain_error when the energy-shifted
+// state is unphysical: shifted energy at or below the particle mass, or
+// non-positive curvature. Both are reachable for a soft hadron, where E - m is
+// comparable to the e uncertainty itself -- at a 0.15 GeV kaon the margin is
+// 22 MeV, the same order as e. A throw inside an RDataFrame Define terminates
+// the event loop, so a full-statistics job dies hours in on one candidate.
+//
+// This variant reports the condition instead of raising, so the caller can
+// substitute the massless linearisation for that (leg, variation) and count how
+// often it did. Returns true and writes qopShift on success; returns false and
+// leaves qopShift untouched otherwise.
+bool calculateQopShiftExactSafe(float pt, float eta, int charge, double AShift,
+                                double eShift, double MShift, double mass,
+                                double &qopShift) {
+  const double coshEta = std::cosh(eta);
+  const double momentum = pt * coshEta;
+  const double energy = std::sqrt(momentum * momentum + mass * mass);
+  const double shiftedEnergy = energy + eShift;
+  if (shiftedEnergy <= mass)
+    return false;
+  const double shiftedMomentum2 = shiftedEnergy * shiftedEnergy - mass * mass;
+  if (shiftedMomentum2 <= 0.)
+    return false;
+  const double ptAfterEnergyShift = std::sqrt(shiftedMomentum2) / coshEta;
+  const double shiftedK = (1. + AShift) / ptAfterEnergyShift + charge * MShift;
+  if (shiftedK <= 0.)
+    return false;
+  qopShift = calculateQopUnc(eta, charge, shiftedK - 1. / pt);
+  return true;
 }
 
 Eigen::TensorFixedSize<double, Eigen::Sizes<2>>
@@ -1291,9 +1353,23 @@ public:
   using out_tensor_t = Eigen::TensorFixedSize<double, Eigen::Sizes<nUnc, 2>>;
 
   JpsiCorrectionsUncHelperSplines(T &&corrections,
-                                  std::vector<double> particle_masses = {})
+                                  std::vector<double> particle_masses = {},
+                                  bool e_pt_convention = true)
       : correctionHist_(std::make_shared<const T>(std::move(corrections))),
-        particle_masses_(std::move(particle_masses)) {}
+        particle_masses_(std::move(particle_masses)),
+        e_pt_convention_(e_pt_convention) {}
+
+  // Per-leg energy-loss mass; <= 0 means "massless". Deliberately identical to
+  // JpsiCorrectionsUncReweightHelper::mass_for_leg so that one mass list means
+  // the same thing on both backends: empty is massless, a single entry is
+  // broadcast to every leg, and a longer list is read per leg.
+  double mass_for_leg(std::size_t i) const {
+    if (particle_masses_.empty())
+      return 0.0;
+    if (particle_masses_.size() == 1)
+      return particle_masses_[0];
+    return (i < particle_masses_.size()) ? particle_masses_[i] : 0.0;
+  }
 
   // helper for bin lookup which implements the compile-time loop over axes
   template <typename... Xs, std::size_t... Idxs>
@@ -1340,17 +1416,20 @@ public:
         const double AUnc = params(0, ivar);
         const double eUnc = params(1, ivar);
         const double MUnc = params(2, ivar);
-        const double pmass =
-            (i < particle_masses_.size()) ? particle_masses_[i] : 0.0;
-        // The 6- and 7-argument overloads use different e conventions: only the
-        // mass-aware one carries the 1/cosh(eta) of an absolute energy shift.
-        // Route massless legs to the 6-argument form so they keep the behaviour
-        // they had before the mass-aware overload existed.
+        const double pmass = mass_for_leg(i);
+        // A massless leg goes through the 6-argument form, which has no
+        // cosh(eta) and is therefore already in the file's pt convention. A
+        // massive leg picks the convention explicitly: pt (default, matching
+        // the central-value corrector) or energy (havyn's, which carries an
+        // extra 1/cosh(eta)).
         const double recoQopUnc =
-            (pmass > 0.0)
-                ? calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc,
-                                  pmass)
-                : calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc);
+            (pmass <= 0.0)
+                ? calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc)
+                : (e_pt_convention_
+                       ? calculateQopUncPtConvention(recPt, recEta, recCharge,
+                                                     AUnc, eUnc, MUnc, pmass)
+                       : calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc,
+                                         MUnc, pmass));
         for (std::ptrdiff_t idownup = 0; idownup < 2; ++idownup) {
           const double dir = idownup == 0 ? -1. : 1.;
           delta_qop(ivar, idownup) = recoQopUnc * dir;
@@ -1370,6 +1449,7 @@ public:
 private:
   std::shared_ptr<const T> correctionHist_;
   std::vector<double> particle_masses_;
+  bool e_pt_convention_ = true;
 };
 
 template <typename T, size_t NEtaBins>

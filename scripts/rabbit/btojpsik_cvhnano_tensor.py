@@ -6,10 +6,17 @@ writes a single-channel tensor with exactly two processes:
     BuJpsiK      true B+ -> J/psi K+ from the inclusive simulation, fixed shape
     BuJpsiKBkg   flat template, seeded from the data residual
 
-and no systematics at all. Every free parameter of the fit belongs to a rabbit
-param model, so the tensor holds templates and data and nothing else. That is the
+and, with `--scaleVariations`, one constrained nuisance per (A/e/M, eta group)
+taken from the histmaker's `nominal_muonScaleSyst_responseWeights` tensor. Every
+other free parameter of the fit belongs to a rabbit param model, so the tensor
+holds templates, data and the scale variations and nothing else. That is the
 opposite of `btojpsik_tensor.py`, whose per-bin normalisations and background
 amplitudes are template-morph NOIs, and it is why this tensor is small.
+
+The variation histogram is pushed through **the same** `reduce_fitbins` call as
+the nominal, not a parallel implementation of it. That is the whole point of
+design decision 10: the pT overflow fold, the mass window and the pT rebin cannot
+drift between the nominal and its variations because there is one code path.
 
 `btojpsik_tensor.py` is deliberately untouched: it produced the validated 2018
 fits, and half of it is A/e/M variation machinery that has no input in this
@@ -180,7 +187,126 @@ def parse_args():
     parser.add_argument(
         "--systematicType", default="log_normal", choices=["log_normal", "normal"]
     )
+
+    parser.add_argument(
+        "--scaleVariations",
+        action="store_true",
+        help="Add the A/e/M momentum-scale nuisances from the histmaker's "
+        "nominal_muonScaleSyst_responseWeights tensor. Requires the histmaker to "
+        "have been run with --scaleVariations.",
+    )
+    parser.add_argument(
+        "--scaleVarHist",
+        default="nominal_muonScaleSyst_responseWeights",
+        help="Name of the variation histogram in the simulated dataset.",
+    )
+    parser.add_argument(
+        "--scaleParams",
+        nargs="+",
+        default=["A", "e", "M"],
+        help="Parameter names in the order the histmaker packed them along the "
+        "'unc' axis. make_jpsi_crctn_unc_helper writes "
+        "unc = eta_group * nparams + iparam, so this order is what turns an index "
+        "back into a name and must match it.",
+    )
+    parser.add_argument(
+        "--scaleVarScale",
+        type=float,
+        default=1.0,
+        help="Inflate or shrink every variation about the nominal. >1 makes the "
+        "nuisances easier to see in a first fit; the physical size is 1.0.",
+    )
+    parser.add_argument(
+        "--scaleVarTrim",
+        type=float,
+        default=0.0,
+        help="Set a variation bin back to nominal where |var - nom| is below this. "
+        "0 disables. Only worth using if empty-cell noise destabilises the fit.",
+    )
+    parser.add_argument(
+        "--skipScaleParams",
+        nargs="*",
+        default=[],
+        help="Parameter names to leave out of the tensor, e.g. M, whose variation "
+        "is a few keV and which no realistic yield constrains.",
+    )
     return parser.parse_args()
+
+
+def split_scale_variations(
+    hsyst, nominal, params, scale=1.0, trim=0.0, skip=(), logger=None
+):
+    """Per-nuisance up/down template pairs from a reduced variation histogram.
+
+    `hsyst` carries the nominal's axes plus ('unc', 'downUpVar'); `nominal` is the
+    signal template the variations belong to, already on the fit binning and
+    already scaled. Both must have come through the same reduction.
+
+    The 'unc' index runs eta group fastest-outer, parameter fastest-inner --
+    `unc = group * nparams + iparam` -- because that is how
+    `make_jpsi_crctn_unc_helper` fills `var_mat`. Getting this backwards would
+    silently relabel A as e, which no downstream check would catch, so the
+    convention is asserted against the axis size rather than assumed.
+    """
+    names = list(hsyst.axes.name)
+    for required in ("unc", "downUpVar"):
+        if required not in names:
+            raise RuntimeError(
+                f"The variation histogram has no '{required}' axis: {names}"
+            )
+    nunc = hsyst.axes["unc"].size
+    nparams = len(params)
+    if nunc % nparams:
+        raise RuntimeError(
+            f"{nunc} uncertainty bins is not a multiple of {nparams} parameters "
+            f"{params}; --scaleParams does not describe this histogram"
+        )
+    ngroups = nunc // nparams
+
+    # WRemnants writes downUpVar index 0 for down and 1 for up.
+    DOWN, UP = 0, 1
+
+    ups, downs, out_names, groups = [], [], [], []
+    for iparam, param in enumerate(params):
+        if param in skip:
+            continue
+        for group in range(ngroups):
+            iunc = group * nparams + iparam
+            up = hsyst[{"unc": iunc, "downUpVar": UP}].copy()
+            down = hsyst[{"unc": iunc, "downUpVar": DOWN}].copy()
+            for h in (up, down):
+                if list(h.axes.name) != list(nominal.axes.name):
+                    raise RuntimeError(
+                        f"Variation axes {list(h.axes.name)} do not match the "
+                        f"nominal's {list(nominal.axes.name)}"
+                    )
+                if scale != 1.0:
+                    h.values()[...] = nominal.values() + scale * (
+                        h.values() - nominal.values()
+                    )
+                if trim > 0.0:
+                    close = np.abs(h.values() - nominal.values()) < trim
+                    h.values()[close] = nominal.values()[close]
+            ups.append(up)
+            downs.append(down)
+            out_names.append(f"scale{param}{group}")
+            groups.append(f"scale{param}")
+
+    if logger is not None:
+        for name, up, down in zip(out_names, ups, downs):
+            rel = np.abs(0.5 * (up.values() - down.values())) / np.maximum(
+                nominal.values(), 1e-12
+            )
+            logger.info(
+                "  %-12s largest bin shift %.3e, template-integral shift %.3e",
+                name,
+                float(rel.max()),
+                float(
+                    abs(0.5 * (up.values().sum() - down.values().sum()))
+                    / max(nominal.values().sum(), 1e-12)
+                ),
+            )
+    return ups, downs, out_names, groups
 
 
 def main():
@@ -191,6 +317,15 @@ def main():
         args.infile, args.datasetData, args.datasetMC
     )
     logger.info("Data: %s   simulation: %s", data_key, mc_key)
+
+    syst_raw = None
+    if args.scaleVariations:
+        syst_raw = cvh.load_named_hist(args.infile, mc_key, args.scaleVarHist)
+        logger.info(
+            "Scale variations from %s: axes %s",
+            args.scaleVarHist,
+            list(syst_raw.axes.name),
+        )
 
     # The pT quantile edges come from the simulated signal, so they have to be
     # derived before the reduction that consumes them. Derived on the folded,
@@ -220,6 +355,12 @@ def main():
     )
     data_reduced = cvh.reduce_fitbins(data_raw, **reduce_kwargs)
     mc_reduced = cvh.reduce_fitbins(mc_raw, **reduce_kwargs)
+    # The same call, with the same kwargs, on a histogram that carries two extra
+    # trailing axes. Nothing in reduce_fitbins is written per-axis-count, so the
+    # variations get the nominal's treatment by construction.
+    syst_reduced = (
+        cvh.reduce_fitbins(syst_raw, **reduce_kwargs) if syst_raw is not None else None
+    )
 
     data_hist = cvh.select_category(data_reduced, args.dataCategory)
     signal_hist = cvh.select_category(mc_reduced, args.signalCategory)
@@ -348,6 +489,41 @@ def main():
     writer.add_process(scaled_signal, args.signalProcess, args.channel, signal=True)
     writer.add_process(bkg_hist, args.bkgProcess, args.channel)
 
+    scale_names = []
+    if syst_reduced is not None:
+        # Same category selection and the same global scale as the nominal, so
+        # that var/nom is preserved exactly and the nuisance is a pure shape (and
+        # small-normalisation) variation rather than a rescaling.
+        syst_signal = cvh.select_category(syst_reduced, args.signalCategory)
+        syst_signal.view(flow=False)["value"] *= signal_scale
+        syst_signal.view(flow=False)["variance"] *= signal_scale**2
+
+        logger.info("Scale nuisances:")
+        ups, downs, scale_names, groups = split_scale_variations(
+            syst_signal,
+            scaled_signal,
+            args.scaleParams,
+            scale=args.scaleVarScale,
+            trim=args.scaleVarTrim,
+            skip=args.skipScaleParams,
+            logger=logger,
+        )
+        for up, down, name, group in zip(ups, downs, scale_names, groups):
+            writer.add_systematic(
+                [up, down],
+                name,
+                args.signalProcess,
+                args.channel,
+                groups=[group],
+                constrained=True,
+            )
+        logger.info(
+            "Added %d scale nuisances in %d groups: %s",
+            len(scale_names),
+            len(set(groups)),
+            sorted(set(groups)),
+        )
+
     meta = {
         "signal_scale": signal_scale,
         "signal_scale_cap": seed_cap,
@@ -368,6 +544,10 @@ def main():
         "data_dataset": data_key,
         "mc_dataset": mc_key,
         "pseudodata": args.pseudoData,
+        "scale_nuisances": scale_names,
+        "scale_var_scale": args.scaleVarScale if args.scaleVariations else None,
+        "scale_params": args.scaleParams if args.scaleVariations else [],
+        "scale_params_skipped": list(args.skipScaleParams),
     }
     if true_signal is not None:
         meta["pseudodata_scale"] = pseudo_scale

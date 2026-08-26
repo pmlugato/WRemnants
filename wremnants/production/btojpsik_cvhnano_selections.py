@@ -105,38 +105,70 @@ def select_good_files(filepaths):
 # ---------------------------------------------------------------------------
 
 
-def validate_trigger_available(filepaths, path, treename="Events", nthreads=16):
+def validate_trigger_available(
+    filepaths, path, treename="Events", nprocs=16, cache=None
+):
     """Fail before the event loop if `path` is missing from any input file.
 
     The HLT menu is not uniform across files in one directory: 28 of 709
     columns are absent from some 2016H files. RDataFrame only discovers that
     mid-loop, after the run has been going for hours, so the check is done up
-    front.
+    front. Every file is checked, not a sample -- one missing column anywhere is
+    enough to kill the run.
 
-    Every file is checked, not a sample -- one missing column anywhere is
-    enough to kill the run. The work is opening a header and reading a branch
-    list, so it is entirely I/O wait and threads collapse it; done serially it
-    is minutes on a full production input list.
+    **This used a ThreadPoolExecutor and did not parallelise.** The work looks
+    like pure I/O wait, but `TFile.Open` and `GetBranch` go through PyROOT,
+    which holds the GIL for the whole call, so sixteen threads ran one at a
+    time. Measured at 125 ms per file single-threaded, 22 327 files cost over an
+    hour of wall clock before the event loop began -- against the "minutes" this
+    docstring used to claim.
+
+    Two changes:
+
+    * processes instead of threads, so the GIL is not shared;
+    * an on-disk cache keyed by the file list, because the answer for a given
+      production does not change and re-deriving it on every run is the real
+      waste. Pass `cache=<path>` to enable it.
     """
-    from concurrent.futures import ThreadPoolExecutor
+    import hashlib
+    import json
+    import os
+    from concurrent.futures import ProcessPoolExecutor
 
     import ROOT
 
     column = path if path.startswith("HLT_") else f"HLT_{path}"
-    logger.info("Checking %s is present in all %d input files.", column, len(filepaths))
+
+    key = hashlib.sha1(
+        ("\n".join(sorted(filepaths)) + "|" + column + "|" + treename).encode()
+    ).hexdigest()
+    if cache and os.path.exists(cache):
+        try:
+            with open(cache) as handle:
+                seen = json.load(handle)
+        except (OSError, ValueError):
+            seen = {}
+        if seen.get(key) == "ok":
+            logger.info(
+                "%s already verified present in these %d files (cache %s).",
+                column,
+                len(filepaths),
+                cache,
+            )
+            return column
+
+    logger.info(
+        "Checking %s is present in all %d input files (%d processes).",
+        column,
+        len(filepaths),
+        nprocs,
+    )
     ROOT.ROOT.EnableThreadSafety()
 
-    def check(filepath):
-        rootfile = ROOT.TFile.Open(filepath)
-        if not rootfile or rootfile.IsZombie():
-            return filepath, "cannot be opened"
-        tree = rootfile.Get(treename)
-        present = bool(tree) and tree.GetBranch(column) is not None
-        rootfile.Close()
-        return (None, None) if present else (filepath, f"has no {column}")
-
-    with ThreadPoolExecutor(max_workers=nthreads) as pool:
-        for filepath, reason in pool.map(check, filepaths):
+    with ProcessPoolExecutor(max_workers=nprocs) as pool:
+        for filepath, reason in pool.map(
+            _check_one_file, ((f, treename, column) for f in filepaths), chunksize=8
+        ):
             if filepath is not None:
                 raise RuntimeError(
                     f"Input file {filepath} {reason}. The HLT menu varies "
@@ -145,7 +177,36 @@ def validate_trigger_available(filepaths, path, treename="Events", nthreads=16):
                     "path common to all files, or restrict the input set."
                 )
     logger.info("%s present in all input files.", column)
+
+    if cache:
+        try:
+            seen = {}
+            if os.path.exists(cache):
+                with open(cache) as handle:
+                    seen = json.load(handle)
+            seen[key] = "ok"
+            with open(cache, "w") as handle:
+                json.dump(seen, handle)
+        except (OSError, ValueError) as exc:
+            # A cache that cannot be written is not a reason to fail a run that
+            # has already answered the question correctly.
+            logger.warning("Could not write the trigger cache %s: %s", cache, exc)
+
     return column
+
+
+def _check_one_file(args):
+    """One file's verdict. Module level so a process pool can pickle it."""
+    import ROOT
+
+    filepath, treename, column = args
+    rootfile = ROOT.TFile.Open(filepath)
+    if not rootfile or rootfile.IsZombie():
+        return filepath, "cannot be opened"
+    tree = rootfile.Get(treename)
+    present = bool(tree) and tree.GetBranch(column) is not None
+    rootfile.Close()
+    return (None, None) if present else (filepath, f"has no {column}")
 
 
 def apply_trigger(df, column):
@@ -237,6 +298,9 @@ def define_leg_kinematics(df):
         # phi modulation of the median is 0.187 cm here and 0.002 cm in D0.
         ("Dxy", "Track_dxy", "float"),
         ("Dz", "Track_dz", "float"),
+        # Needed by the momentum-scale variations: the A/e/M shift on 1/pt is
+        # charge dependent through the M term.
+        ("Charge", "Track_charge", "int"),
         # PV-referenced at source (gap G13, closed). These used to be computed
         # downstream from PV_x/PV_y and the track phi, which reached a phi
         # modulation of 0.0003 cm; the producer's version does better and is
@@ -878,6 +942,123 @@ def define_bachelor_pt_response(df, is_data):
     )
 
 
+# ---------------------------------------------------------------------------
+# Momentum-scale variation inputs
+# ---------------------------------------------------------------------------
+
+# Leg order for the scale variations: bachelor first, then the two muons. This
+# matches the concatenation order the 2018 histmaker uses, so the per-leg mass
+# list [m_K, 0, 0] means the same thing in both channels.
+#
+# The NanoAOD's own leg indices run the other way round -- leg0/leg1 are the
+# muons and leg2 is the bachelor -- so the mapping is stated once here rather
+# than being re-derived at each use.
+SCALE_VAR_LEGS = [("bachelor", 2), ("mu0", 0), ("mu1", 1)]
+
+# The network's per-muon class tag. 443 is the J/psi-leg class; there is no
+# hadron class, so the bachelor is tagged 443 as well, following d0_mass.py.
+# This is the assumption the channel rests on and it is measured, not assumed:
+# see task 6.5.
+MUON_SOURCE_JPSI = 443
+
+# PDG charged-kaon mass [GeV]. Enters the scale variations through the e term,
+# which shifts total energy rather than pt, so pt is recomputed through
+# 1/cosh(eta) and the shift is asymmetric in down/up.
+KAON_MASS_GEV = 0.493677
+
+
+def define_scale_variation_inputs(
+    df, is_data, prefix="scaleVar", legs=None, muon_source=MUON_SOURCE_JPSI
+):
+    """Three-leg reco and gen kinematics for the A/e/M variation helpers.
+
+    Returns ``(df, prefix)``. Every column is a 3-element RVec in
+    ``SCALE_VAR_LEGS`` order, which is what both the ONNX-backed
+    ``JpsiCorrectionsUncReweightHelper`` and the analytic
+    ``JpsiCorrectionsUncHelperSplines`` expect: they loop over the legs and
+    multiply the per-leg alternative weights, so one call covers the candidate.
+
+    Gen kinematics come from indexing ``Gen_*`` with ``leg{N}GenIdx`` rather
+    than from new branches -- the NanoAOD stores per-leg gen *pt* but not gen
+    eta, phi or charge, and the index is all that is needed.
+
+    Unmatched legs (``GenIdx < 0``) are written with gen == reco, so the
+    response residual is exactly 1 and the leg contributes a defined weight.
+    That is a formality rather than a policy: measured at kaon pT > 1 GeV,
+    every candidate in the exclusive-signal and other-real-b categories has all
+    three legs matched, and **no** not-fully-matched candidate is signal. The
+    chain walk that assigns the truth category needs three matched legs to reach
+    a common ancestor, so a partially matched signal candidate cannot exist.
+    ``{prefix}_allMatched`` carries the flag so the claim is counted on the full
+    sample rather than asserted from 12 files.
+
+    Data gets no gen columns at all, so the caller must not build variations for
+    it -- the variations are a property of the simulated template.
+    """
+    if is_data:
+        return df, None
+
+    legs = SCALE_VAR_LEGS if legs is None else legs
+
+    for var, ctype in [("Pt", "float"), ("Eta", "float"), ("Phi", "float")]:
+        df = df.Define(
+            f"{prefix}_reco{var}",
+            "ROOT::VecOps::RVec<%s>{%s}"
+            % (
+                ctype,
+                ", ".join(
+                    f"static_cast<{ctype}>(cand_{tag}{var}[0])" for tag, _ in legs
+                ),
+            ),
+        )
+    df = df.Define(
+        f"{prefix}_recoCharge",
+        "ROOT::VecOps::RVec<int>{%s}"
+        % ", ".join(f"static_cast<int>(cand_{tag}Charge[0])" for tag, _ in legs),
+    )
+
+    # Gen index per leg, in the same order, guarded against an index past the
+    # end of the Gen collection. -1 means "no match".
+    df = df.Define(
+        f"{prefix}_genIdx",
+        """
+        ROOT::VecOps::RVec<int> out{%s};
+        for (auto &idx : out)
+            if (idx >= static_cast<int>(Gen_pt.size())) idx = -1;
+        return out;
+        """ % ", ".join(f"{CAND}_leg{n}GenIdx[0]" for _, n in legs),
+    )
+    df = df.Define(
+        f"{prefix}_allMatched",
+        f"ROOT::VecOps::Min({prefix}_genIdx) >= 0",
+    )
+
+    for var, gen_col, ctype in [
+        ("Pt", "Gen_pt", "float"),
+        ("Eta", "Gen_eta", "float"),
+        ("Phi", "Gen_phi", "float"),
+        ("Charge", "Gen_charge", "int"),
+    ]:
+        df = df.Define(
+            f"{prefix}_gen{var}",
+            f"""
+            ROOT::VecOps::RVec<{ctype}> out({prefix}_reco{var}.size());
+            for (size_t i = 0; i < out.size(); ++i) {{
+                const int idx = {prefix}_genIdx[i];
+                out[i] = (idx >= 0) ? static_cast<{ctype}>({gen_col}[idx])
+                                    : {prefix}_reco{var}[i];
+            }}
+            return out;
+            """,
+        )
+
+    df = df.Define(
+        f"{prefix}_muon_source",
+        "ROOT::VecOps::RVec<int>{%s}" % ", ".join([str(int(muon_source))] * len(legs)),
+    )
+    return df, prefix
+
+
 def define_forced_decay_weight(df, is_data, enable):
     """Undo the generator's forced b-hadron decays.
 
@@ -972,5 +1153,177 @@ def define_pileup_weight(df, is_data, weights):
         const int n = static_cast<int>(Pileup_nTrueInt);
 {arms}
         return 1.0;
+        """,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Generator-truth diagnostics
+#
+# `define_gen_category` can only ever classify a candidate whose legs matched,
+# so the population it calls signal is the population that survived a per-leg
+# dR < 0.02 AND |dpt|/pt < 0.1 cut in the producer. That second cut is a
+# *resolution* cut, and this analysis measures resolution -- so the signal
+# template is defined by a requirement on the very quantity being measured.
+#
+# The two definitions below are what make that testable rather than arguable:
+# `define_gen_truth_signal` finds the decay in the Gen table with no reco
+# requirement at all, and `define_gen_match_diagnostics` says, for candidates
+# that did reconstruct, how many legs the matcher accepted.
+# ---------------------------------------------------------------------------
+
+
+def define_gen_truth_signal(df, is_data):
+    """Count B+ -> J/psi(-> mu mu) K+ decays by walking the Gen table.
+
+    The one distribution in the analysis that the gen *matching* cannot bias,
+    because no reco object enters it. Must be defined before the trigger and
+    candidate filters or it stops being a denominator.
+
+    A decaying B+ is identified by its daughters rather than by status code: a
+    documentation copy of the B+ has a B+ daughter and no J/psi, so requiring a
+    direct J/psi and a direct charged kaon picks the copy that actually decays
+    without needing to know the generator's status conventions.
+
+    Emits, per event:
+      ``genTruth_n``        number of such decays
+      ``genTruth_kaonPt``   gen pT of each decay's bachelor
+      ``genTruth_kaonEta``  gen eta of each decay's bachelor
+      ``genTruth_inAcc``    all three final-state legs inside the analysis
+                            acceptance, so that acceptance and efficiency can be
+                            separated instead of multiplied together
+    """
+    if is_data:
+        return df
+
+    df = df.Define(
+        "genTruth_rows",
+        f"""
+        const int nG = static_cast<int>(Gen_pdgId.size());
+        ROOT::VecOps::RVec<int> out;
+        for (int i = 0; i < nG; ++i) {{
+            if (std::abs(Gen_pdgId[i]) != {MOTHER_PDGID}) continue;
+            int kaonRow = -1, jpsiRow = -1;
+            for (int j = 0; j < nG; ++j) {{
+                if (Gen_genPartIdxMother[j] != i) continue;
+                const int p = std::abs(Gen_pdgId[j]);
+                if (p == {KAON_PDGID}) kaonRow = j;
+                else if (p == {JPSI_PDGID}) jpsiRow = j;
+            }}
+            if (kaonRow < 0 || jpsiRow < 0) continue;
+            // The J/psi must go to two muons: the reco candidate needs both,
+            // so a J/psi -> e e decay is not in this denominator.
+            int nMu = 0;
+            for (int j = 0; j < nG; ++j) {{
+                if (Gen_genPartIdxMother[j] == jpsiRow &&
+                    std::abs(Gen_pdgId[j]) == 13) ++nMu;
+            }}
+            if (nMu < 2) continue;
+            out.push_back(kaonRow);
+            out.push_back(jpsiRow);
+        }}
+        return out;
+        """,
+    )
+    df = df.Define("genTruth_n", "static_cast<int>(genTruth_rows.size() / 2)")
+    df = df.Define(
+        "genTruth_kaonPt",
+        """
+        ROOT::VecOps::RVec<float> out;
+        for (size_t i = 0; i + 1 < genTruth_rows.size(); i += 2)
+            out.push_back(Gen_pt[genTruth_rows[i]]);
+        return out;
+        """,
+    )
+    df = df.Define(
+        "genTruth_kaonEta",
+        """
+        ROOT::VecOps::RVec<float> out;
+        for (size_t i = 0; i + 1 < genTruth_rows.size(); i += 2)
+            out.push_back(Gen_eta[genTruth_rows[i]]);
+        return out;
+        """,
+    )
+    # Acceptance uses the analysis' own thresholds. They are hard-coded rather
+    # than threaded through from the parser because this is a *reference*
+    # denominator: if it moved with the selection it could not be compared
+    # across selections, which is the only thing it is for.
+    return df.Define(
+        "genTruth_inAcc",
+        """
+        ROOT::VecOps::RVec<int> out;
+        const int nG = static_cast<int>(Gen_pdgId.size());
+        for (size_t i = 0; i + 1 < genTruth_rows.size(); i += 2) {
+            const int kr = genTruth_rows[i], jr = genTruth_rows[i + 1];
+            bool ok = (Gen_pt[kr] > 1.0f && std::abs(Gen_eta[kr]) < 2.4f);
+            int nMuOk = 0;
+            for (int j = 0; j < nG; ++j) {
+                if (Gen_genPartIdxMother[j] != jr) continue;
+                if (std::abs(Gen_pdgId[j]) != 13) continue;
+                if (Gen_pt[j] > 3.0f && std::abs(Gen_eta[j]) < 2.4f) ++nMuOk;
+            }
+            out.push_back((ok && nMuOk >= 2) ? 1 : 0);
+        }
+        return out;
+        """,
+    )
+
+
+def define_gen_match_diagnostics(df, is_data):
+    """Per-candidate matcher outcome, so the categories can be audited.
+
+    ``cand_nLegsMatched`` is the producer's own count. It is the number that
+    decides whether a candidate can have an ancestor at all -- the ancestor
+    search runs only when all three legs matched -- and therefore the number
+    that decides whether a real signal decay is classified as signal or falls
+    into the no-ancestor bin.
+
+    ``cand_bachelorRelDPt`` is the quantity the matcher cut on, kept so that the
+    truncation it imposes can be seen rather than inferred.
+    """
+    if is_data:
+        return df
+
+    _declare_helpers()
+    df = df.Define(
+        "cand_nLegsMatched",
+        f"static_cast<double>({CAND}_nLegsGenMatched[0])",
+    )
+    df = df.Define(
+        "cand_bachelorRelDPt",
+        f"""
+        const float gp = {CAND}_leg2GenPt[0];
+        if (gp <= 0.f) return {SENTINEL};
+        return static_cast<double>(({CAND}_kaonPt[0] - gp) / gp);
+        """,
+    )
+    df = df.Define(
+        "cand_bachelorGenPt",
+        f"static_cast<double>({CAND}_leg2GenPt[0])",
+    )
+    # Why a candidate has no b ancestor, which the category axis cannot say.
+    # `define_gen_category` sends three different failures to the same
+    # no-ancestor bin, and they call for three different responses:
+    #
+    #   0  a leg was not matched -- the ancestor search never ran
+    #   1  every leg matched but the search found nothing within its depth
+    #      budget, which is a property of the SEARCH, not of the event
+    #   2  an ancestor was found and it is not a b hadron -- the only one of the
+    #      three that is genuinely "not a b decay"
+    #   3  a b ancestor was found (so the candidate is not in the no-ancestor
+    #      bin at all; kept so the axis sums to the full sample)
+    #
+    # State 1 is the one worth separating: this NanoAOD matches against the RECO
+    # `genParticles` collection, which keeps every documentation copy, while the
+    # depth budget was ported from Bmm5, which searches the *pruned* collection
+    # with the copies already removed.
+    return df.Define(
+        "cand_ancestorState",
+        f"""
+        if ({CAND}_nLegsGenMatched[0] < 3) return 0.0;
+        const int ap = {CAND}_genAncestorPdgId[0];
+        if (ap == 0) return 1.0;
+        const int g = {_ground_state_expr("ap")};
+        return cvhnano_isBHadron(g) ? 3.0 : 2.0;
         """,
     )

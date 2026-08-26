@@ -80,6 +80,36 @@ def load_fitbins(filename, data_dataset=None, mc_dataset=None):
         return _load_fitbins(results, filename, data_dataset, mc_dataset)
 
 
+def load_named_hist(filename, dataset, name):
+    """One named histogram from one dataset, materialised.
+
+    Separate from `load_fitbins` because the variation histograms are optional
+    and keyed by name: a missing one should say which name was looked for and
+    what was there, not fail on a tuple unpack.
+    """
+    with open_results(filename) as results:
+        if dataset not in results:
+            raise KeyError(
+                f"{filename} has no dataset {dataset!r}; found "
+                f"{sorted(_dataset_keys(results))}"
+            )
+        output = results[dataset].get("output", {})
+        if name not in output:
+            raise KeyError(
+                f"{filename} dataset {dataset!r} has no histogram {name!r}. "
+                f"Present: {sorted(output)}. Run the histmaker with "
+                "--scaleVariations."
+            )
+        obj = output[name]
+        h = obj.get() if hasattr(obj, "get") else obj
+    if h.variances() is None:
+        raise RuntimeError(
+            f"{name} was booked without variances, so it cannot go through "
+            "reduce_fitbins. Book it with hist.storage.Weight()."
+        )
+    return h
+
+
 def _load_fitbins(results, filename, data_dataset, mc_dataset):
     keys = _dataset_keys(results)
     if not keys:
