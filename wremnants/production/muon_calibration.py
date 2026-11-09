@@ -4,13 +4,13 @@ from functools import reduce
 
 import hist
 import lz4.frame
+import narf.tfliteutils
 import numpy as np
 import ROOT
 import uproot
+import wums.ioutils
 
 import narf
-import narf.tfliteutils
-import wums.ioutils
 from wremnants.utilities import binning, common, samples
 from wums import boostHistHelpers as hh
 from wums import logging
@@ -781,6 +781,10 @@ def muon_reweight_helper_cols(df, helper, reco_sel_GF, response_weight_col):
             response_weight_col,
         ]
     return df, cols
+
+
+# Former name, still called by the W and W-like histmakers (and upstream).
+jpsi_style_cols = muon_reweight_helper_cols
 
 
 def make_jpsi_crctn_unc_helper(
