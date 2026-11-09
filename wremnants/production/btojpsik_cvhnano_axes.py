@@ -17,12 +17,9 @@ from typing import Dict, List, Optional
 
 import hist
 
-# Candidate collection prefix in the NanoAOD. One channel is registered; a
-# second three-leg channel (Bc -> J/psi pi) would change this and BACHELOR_MASS
-# and nothing else.
+# Candidate collection prefix in the NanoAOD. One channel is registered.
 CAND = "BuJpsiK"
 BACHELOR = "kaon"
-BACHELOR_MASS = 0.49368  # charged kaon, GeV
 
 # Failed fits write -99 rather than NaN, so a one-sided kinematic bound would
 # happily accept them. Anything at or below this is a sentinel, not a value.
@@ -107,8 +104,6 @@ CATEGORY_MOTHER = {
 # chi_c0 10441) is 1.9% of B+-ancestor candidates and puts ZERO entries in the
 # peak window, so it is not signal.
 KAON_PDGID = 321
-PION_PDGID = 211
-MUON_PDGID = 13
 JPSI_PDGID = 443
 
 # Mother species for the signal truth category, |pdgId|.
@@ -147,8 +142,8 @@ GROUND_STATE = {
 # *composition* of the stacked simulation is wrong until these are re-applied.
 #
 # Keyed by ground-state |pdgId|. J/psi -> mu mu was likewise forced from 0.0593
-# to 1, but that factor is common to every species and so cancels in any
-# composition; it is applied too, so the weight is the true decay probability.
+# to 1, but that factor is common to every species and cancels in the
+# composition, which is all the B+-normalised weight describes.
 FORCED_BR = {
     521: 0.01756960,  # B+
     511: 0.01778030,  # B0
@@ -159,7 +154,6 @@ FORCED_BR = {
     5232: 0.00047000,  # Xi_b0
     5332: 0.00085000,  # Omega_b-
 }
-BR_JPSI_MUMU = 0.05930000
 
 # Charmonium feed-down (psi(2S) 0.8238, chi_c1 0.344, ...) was forced too, and
 # is a second per-event factor that FORCED_BR does not capture. It is now
@@ -395,12 +389,6 @@ def _arm_axes(arm: ArmSpec) -> Dict[str, hist.axis.AxesMixin]:
         }[key]
         a[arm.col(short)] = _reg(*rng, f"{p}_jpsi_{key}")
     for key, short in arm.legs.items():
-        q = key[-2:]
-        rng = {
-            "Pt": (60, 0.0, 30.0),
-            "Et": (48, -2.4, 2.4),  # "Eta"[-2:] == "ta"; handled below
-            "Ph": (32, -math.pi, math.pi),
-        }
         if short.endswith("Pt"):
             a[arm.col(short)] = _reg(60, 0.0, 30.0, f"{p}_{key}")
         elif short.endswith("Eta"):

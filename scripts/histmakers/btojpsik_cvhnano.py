@@ -80,11 +80,6 @@ parser.add_argument(
 )
 parser.add_argument("--allaxes", action="store_true", help="Histogram every known axis")
 parser.add_argument("--axes", type=str, nargs="*", default=[], help="Axes to histogram")
-parser.add_argument(
-    "--selectionHists",
-    action="store_true",
-    help="Store the nominal histograms after each selection as well as at the end",
-)
 parser.add_argument("--cutflow", action="store_true", help="Print the cutflow table")
 parser.add_argument(
     "--fitBinsHist",
@@ -608,7 +603,7 @@ cand_cutflows = {}
 hist_names = set()
 
 
-def _selection_list(df_is_data):
+def _selection_list():
     """The ordered selection list.
 
     Sentinel rejection comes before every kinematic cut on the arm, because a
@@ -855,9 +850,7 @@ def build_graph(df, dataset):
     df, cand_start = sel.count_candidates(df, "start")
     cand_cutflow["candidate > 0"] = cand_start
 
-    df, cutflow, dfs_per_cut = sel.apply_selections(
-        df, _selection_list(dataset.is_data), cutflow, cand_cutflow
-    )
+    df, cutflow = sel.apply_selections(df, _selection_list(), cutflow, cand_cutflow)
 
     # Rank candidates by the nominal arm's vertex probability.
     df = sel.select_best_candidate(df, prob_col)

@@ -259,7 +259,6 @@ def apply_selections(df, selections, cutflow, cand_cutflow=None):
     kills most of them, so the event count understates every per-candidate cut.
     The quality-gate fractions quoted in the proposal are candidate-level.
     """
-    dfs_per_cut = []
     for index, (name, action) in enumerate(selections):
         logger.info("selection: %s", name)
         df = action(df)
@@ -268,8 +267,7 @@ def apply_selections(df, selections, cutflow, cand_cutflow=None):
             cand_cutflow[name] = cand_sum
         df = df.Filter("ROOT::VecOps::Any(cand_pass)", name)
         cutflow[name] = df.SumAndCount("weight")[0]
-        dfs_per_cut.append(df)
-    return df, cutflow, dfs_per_cut
+    return df, cutflow
 
 
 # ---------------------------------------------------------------------------
@@ -843,7 +841,7 @@ def _declare_helpers():
     _declared = True
 
 
-def define_gen_category(df, is_data, dr_max=None):
+def define_gen_category(df, is_data):
     """Fill the genCategory axis from the generator parentage of each leg.
 
     Every simulated bin except the last is a *real b-hadron decay*, and the
@@ -861,14 +859,8 @@ def define_gen_category(df, is_data, dr_max=None):
     the bachelor must be a direct daughter of the ancestor, and the muons'
     J/psi must itself be a direct daughter.
 
-    **`dr_max` is gone.** The old definition matched the *candidate direction*
-    to the nearest last-copy b hadron and needed a tight angular cut to keep
-    coincidental matches out, which cost signal and never separated
-    B+ -> J/psi K+ from B+ -> J/psi K*+. Per-leg matching already requires
-    dR < 0.02 **and** |dpt|/pt < 0.1 per leg in the producer, so there is no
-    candidate-level radius left to choose. The argument is accepted and ignored
-    so that a stale command line fails loudly at the parser rather than
-    silently changing meaning here.
+    No candidate-level angular match is needed: the producer already matches
+    each leg with dR < 0.02 and |dpt|/pt < 0.1.
 
     The last simulated bin is candidates with no b-hadron common ancestor. It is
     filled and is not a template -- see the module comment in
