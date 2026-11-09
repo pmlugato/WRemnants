@@ -59,7 +59,6 @@ RESPONSE_MODELS = {
         "codes": {"muon_prompt": 1, "muon_tau": 15, "muon_jpsi": 443},
         "default_code": 443,
         "raw_source": False,
-        "pt_window": (2.0, None),
         "cond_pt_gen_min": 2.0,
     },
     "kpi": {
@@ -69,7 +68,6 @@ RESPONSE_MODELS = {
         "codes": {"kaon": 321, "pion": 211, "muon": 13},
         "default_code": 321,
         "raw_source": True,
-        "pt_window": (1.0, 15.0),
         "cond_pt_gen_min": 1.0,
     },
 }
@@ -180,7 +178,6 @@ def make_jpsi_crctn_helpers(
     fixed_A_unc=None,
     fixed_e_unc=None,
     fixed_M_unc=None,
-    particle_masses=None,
     smearing=True,
     fit_muon_scale=False,
     variation_eta_bins=None,
@@ -228,7 +225,6 @@ def make_jpsi_crctn_helpers(
                 fixed_A_unc=fixed_A_unc,
                 fixed_e_unc=fixed_e_unc,
                 fixed_M_unc=fixed_M_unc,
-                particle_masses=particle_masses,
                 smearing=smearing,
                 fit_muon_scale=fit_muon_scale,
                 variation_eta_bins=variation_eta_bins,
@@ -259,7 +255,6 @@ def make_jpsi_crctn_helpers(
                 fixed_A_unc=fixed_A_unc,
                 fixed_e_unc=fixed_e_unc,
                 fixed_M_unc=fixed_M_unc,
-                particle_masses=particle_masses,
                 smearing=smearing,
                 fit_muon_scale=fit_muon_scale,
                 variation_eta_bins=variation_eta_bins,
@@ -905,7 +900,6 @@ def make_jpsi_crctn_unc_helper(
     fixed_A_unc=None,
     fixed_e_unc=None,
     fixed_M_unc=None,
-    particle_masses=None,
     smearing=True,
     onnx_path=None,
     onnx_nslots=None,
@@ -924,21 +918,6 @@ def make_jpsi_crctn_unc_helper(
         raise ValueError(f"e_convention must be 'pt' or 'energy', not {e_convention!r}")
     if onnx_path is None:
         onnx_path = default_shift_smear_reweight_onnx(smearing=smearing)
-
-    # ``particle_masses`` is the older name for the same per-leg energy-loss
-    # mass list. ``reweight_mass`` is canonical because it is the name upstream
-    # keeps updating, so fold the legacy name in here rather than carrying two
-    # arguments down to the helpers.
-    if particle_masses is not None:
-        if reweight_mass is not None:
-            raise ValueError(
-                "Pass either reweight_mass or the legacy particle_masses, not both"
-            )
-        logger.warning(
-            "particle_masses is deprecated; use reweight_mass "
-            "(same per-leg semantics)."
-        )
-        reweight_mass = particle_masses
 
     f = ROOT.TFile.Open(filepath_correction)
     A = f.Get("A")
