@@ -26,6 +26,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--includeKaonScaleVariations",
+    "--include-kaon-scale-variations",
     action="store_true",
     help="uncertainty hists for parameterized model",
 )
@@ -48,6 +49,64 @@ parser.add_argument(
     "--csVarsHist", action="store_true", help="Add CS variables to dilepton hist"
 )
 parser.add_argument("--axes", type=str, nargs="*", default=[], help="")
+# Selection toggles for comparing this (2018, BMM NanoAOD) selection with the
+# CVH NanoAOD B+ analysis, which has no muon softMVA (it needs the muon inner
+# track) and no BMM BDT, and accepts kaons up to the tracker edge. The defaults
+# are the nominal BMM selection.
+parser.add_argument(
+    "--kaonMaxEta",
+    type=float,
+    default=1.4,
+    help="Bachelor |eta| ceiling. The default 1.4 matches the momentum maps; "
+    "2.4 is the tracker acceptance and is what the CVH NanoAOD analysis uses.",
+)
+parser.add_argument(
+    "--noSoftMva",
+    action="store_true",
+    help="Drop the muon softMVA > 0.45 cut.",
+)
+parser.add_argument(
+    "--noBmmBdt",
+    action="store_true",
+    help="Drop the BMM BDT > 0.10 cut.",
+)
+parser.add_argument(
+    "--jpsiFixedAUnc",
+    type=float,
+    default=None,
+    help="If set, override the J/Psi covariance diagonal A uncertainty in every eta bin with this fixed value.",
+)
+parser.add_argument(
+    "--jpsiFixedEUnc",
+    type=float,
+    default=None,
+    help="If set, override the J/Psi covariance diagonal e uncertainty in every eta bin with this fixed value.",
+)
+parser.add_argument(
+    "--jpsiFixedMUnc",
+    type=float,
+    default=None,
+    help="If set, override the J/Psi covariance diagonal M uncertainty in every eta bin with this fixed value.",
+)
+parser.add_argument(
+    "--fitPtQuantiles",
+    type=int,
+    default=None,
+    help="If set, replace the fitted kaon-pT axis with eta- and charge-conditional quantile bins of this size.",
+)
+parser.add_argument(
+    "--nomc",
+    action="store_true",
+    help="Use bkmm_nomc_* vertex-fit variables instead of bkmm_jpsimc_*. Also applies muon scale variations when combined with --includeKaonScaleVariations.",
+)
+parser.add_argument(
+    "--histToFit",
+    "--hist-to-fit",
+    default="mB",
+    choices=["mB", "m32"],
+    help="Fit observable for nominal_HistToFit. 'mB': B mass (default). "
+    "'m32': Q = m(B) - m(J/psi), with J/psi mass from mm_kin_mass.",
+)
 
 parser = parsing.set_parser_default(
     parser, "aggregateGroups", ["Diboson", "Top", "Wtaunu", "Wmunu"]
@@ -56,8 +115,26 @@ parser = parsing.set_parser_default(parser, "excludeProcs", ["QCD"])
 
 args = parser.parse_args()
 
+KAON_MASS_GEV = 0.49368
+
+vertex_prefix = "nomc" if args.nomc else "jpsimc"
+
 logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
 era = args.era
+
+# The ONNX-reweight scale-uncertainty path requires muon-collection branches
+# (Muon_genPartFlav for the muon_source column) and reco/gen phi columns for
+# the candidates, which the kaon ``bkmm_kaon_stuff`` plumbing in this histmaker
+# does not provide; running with the global default ``onnxReweight`` breaks
+# --includeKaonScaleVariations at graph construction. Pin to the splines method
+# until the kaon plumbing is extended for the ONNX column contract.
+if args.muonScaleVariation == "onnxReweight":
+    logger.warning(
+        "--muonScaleVariation onnxReweight is not supported by the kaon scale "
+        "variation plumbing in this histmaker; falling back to "
+        "'smearingWeightsSplines'"
+    )
+    args.muonScaleVariation = "smearingWeightsSplines"
 
 logger.debug(f"\n\n  Looking for datasets in era: {era} for path: {args.dataPath}")
 
@@ -75,6 +152,23 @@ datasets = getDatasets(
     data_tags=[""],
     mc_tags=[""],
 )
+
+if args.fitPtQuantiles is not None:
+    reference_dataset = next(
+        (
+            d
+            for d in datasets
+            if (not d.is_data)
+            and (d.name == f"BuToJpsiK_{args.era}" or d.name.startswith("BuToJpsiK_"))
+        ),
+        None,
+    )
+    if reference_dataset is None:
+        raise RuntimeError(
+            "--fitPtQuantiles requires a non-data BuToJpsiK dataset in the filtered inputs."
+        )
+else:
+    reference_dataset = None
 
 calib_filepaths = common.calib_filepaths
 
@@ -94,6 +188,20 @@ calib_filepaths = common.calib_filepaths
     make_uncertainty_helper=True,
     include_covariance=False,
     central=True,
+    fixed_A_unc=args.jpsiFixedAUnc,
+    fixed_e_unc=args.jpsiFixedEUnc,
+    fixed_M_unc=args.jpsiFixedMUnc,
+    # Explicit per-leg list in the order the legs are concatenated below
+    # (kaon, mu1, mu2). A single-element list would be ambiguous: the helpers
+    # broadcast it to every leg, which would hand both muons a 494 MeV
+    # energy-loss term.
+    #
+    # Caveat for --validationHists: that path calls the same helper with
+    # one-element RVecs per leg, so the mu1/mu2 validation histograms read
+    # index 0 and therefore see the kaon mass. Diagnostic only, and unchanged
+    # from before the explicit list; the physics path (the 3-leg concatenation)
+    # is correct.
+    reweight_mass=[KAON_MASS_GEV, 0.0, 0.0],
 )
 
 logger.debug(
@@ -105,9 +213,263 @@ diff_weights_helper = (
     else None  # smearingWeightsSplines is default
 )
 
+muon_diff_weights_helper = (
+    ROOT.wrem.SplinesDifferentialWeightsHelper(calib_filepaths["tflite_file"])
+    if (args.muonScaleVariation == "smearingWeightsSplines" or args.validationHists)
+    else None
+)
+
 logger.debug(f"\n\n diff_weights_helper is None: {diff_weights_helper is None}")
+logger.debug(
+    f"\n\n muon_diff_weights_helper is None: {muon_diff_weights_helper is None}"
+)
 logger.debug(f"\n\n data_jpsi_crctn_helper is None: {data_jpsi_crctn_helper is None}")
 logger.debug(f"\n\n mc_jpsi_crctn_helper is None: {mc_jpsi_crctn_helper is None}")
+
+# global so when event loop run the sumandcount pointers remain and get updated
+cutflows = {}
+signal_gen_filter_stats = {}
+nonsignal_gen_filter_stats = {}
+smearing_weights_procs = []
+nominal_cols_gen_smeared = None  # for unc helper, not used for smearingWeightsSplines
+cols_gen_smeared = None  # for unc helper, not used for smearingWeightsSplines
+isW = False
+fit_pt_quantile_hists = None
+
+
+def get_trigger_name():
+    if args.era == "2018":
+        # DoubleMu4_JpsiTrk_Displaced has the largest validated 2018 yield.
+        return "DoubleMu4_JpsiTrk_Displaced"
+    return "DoubleMu4_PsiPrimeTrk_Displaced"
+
+
+vtx_prob_cut = 0.1 if args.nomc else 0.3
+
+
+def get_bkmm_selections(vprefix="jpsimc", vtx_prob_cut=vtx_prob_cut):
+    # selections (og was BPH-21-006)
+    # TODO: shouldn't have to write the numbers twice smh but don't feel like changing right now
+    return [
+        (
+            "dimuon cand neutral",
+            lambda d: btojpsik_selections.select_opposite_sign_dimuon(d),
+        ),
+        (
+            "muon |eta| < 1.4",
+            lambda d: btojpsik_selections.select_muon_eta(d, 1.4),
+        ),
+        (
+            "muon pT > 4",
+            lambda d: btojpsik_selections.select_muon_pt(d, 4),
+        ),
+        *(
+            []
+            if args.noSoftMva
+            else [
+                (
+                    "muon softMVA > 0.45",
+                    lambda d: btojpsik_selections.select_muon_softmva(d, 0.45),
+                )
+            ]
+        ),
+        (
+            "dimuon pT > 7",
+            lambda d: btojpsik_selections.select_dimuon_pt(d, 7.0),
+        ),
+        (
+            "dimuon alphaBS < 0.4",
+            lambda d: btojpsik_selections.select_dimuon_alphabs(d, 0.4),
+        ),  # og 0.4
+        (
+            "dimuon vtx prob > 0.1",
+            lambda d: btojpsik_selections.select_dimuon_vtx_prob(d, 0.1),
+        ),  # og 0.1
+        (
+            "dimuon sl3d > 4",
+            lambda d: btojpsik_selections.select_dimuon_sl3d(d, 4),
+        ),  # og 4
+        (
+            f"bkmm vtx prob > {vtx_prob_cut}",
+            lambda d: btojpsik_selections.select_bkmm_vtx_prob(
+                d, vtx_prob_cut, vprefix
+            ),
+        ),  # og 0.025
+        (
+            "bkmm mass window",
+            lambda d: btojpsik_selections.select_bkmm_mass_window(d, 5.3, 0.1, vprefix),
+        ),  # og 5.4, 0.5
+        # adding kaon sels to match what is used to produce maps (for now)
+        (
+            f"kaon |eta| < {args.kaonMaxEta:g}",
+            lambda d: btojpsik_selections.select_kaon_eta(d, args.kaonMaxEta, vprefix),
+        ),
+        (
+            "kaon pT < 8",
+            lambda d: btojpsik_selections.select_kaon_pt(d, 8, vprefix),
+        ),
+        *(
+            []
+            if args.noBmmBdt
+            else [
+                (
+                    "bkmm bmm bdt output > 0.10",
+                    lambda d: btojpsik_selections.select_bkmm_bmm_bdt(d, 0.10),
+                )
+            ]
+        ),  # NOTE: this doesn't touch kaon so fine to use...
+    ]
+
+
+def build_fit_pt_quantile_hists(dataset):
+    logger.info(
+        "Building common HistToFit pT quantiles from reference dataset %s.",
+        dataset.name,
+    )
+
+    df = ROOT.ROOT.RDataFrame("Events", dataset.filepaths)
+
+    if dataset.is_data:
+        df = df.DefinePerSample("weight", "1.0")
+    else:
+        df = df.Define("weight", "genWeight")
+        df = df.Define("nominal_weight", "static_cast<double>(weight)")
+
+    df = df.DefinePerSample("unity", "1.0")
+
+    df, _ = btojpsik_selections.define_jpsi_triggers(
+        df, trigger_name=get_trigger_name()
+    )
+    df, _, _ = btojpsik_selections.bkmm_selections(
+        df, dataset.name, get_bkmm_selections(vertex_prefix)
+    )
+
+    needs_gen_match = (
+        not dataset.is_data
+        and dataset.name != "signalBuToJpsiK_2018"
+        and not args.checkingSignalStats
+    )
+    df = btojpsik_selections.select_only_passing_bkmm_candidates(
+        df,
+        signal=dataset.name == "signalBuToJpsiK_2018",
+        select_best=True,
+        gen_match_nonsignal=needs_gen_match,
+        gen_filter_stats=None,
+        dataset_name=None,
+        vertex_prefix=vertex_prefix,
+    )
+
+    jpsi_helper = data_jpsi_crctn_helper if dataset.is_data else mc_jpsi_crctn_helper
+    reco_sel_GF = "bkmm_kaon_stuff"
+    # The J/psi massfit correction helper is None unless --muonCorrMC /
+    # --muonCorrData name a massfit file, and applying massfit corrections to
+    # simulation is explicitly not recommended. Fall back to the uncorrected
+    # kaon pT rather than failing: this column feeds only the scale-variation
+    # machinery, never the reconstructed mass, so a reference run that just wants
+    # the mass spectrum should not need a calibration file it does not use.
+    if jpsi_helper is None:
+        logger.warning(
+            "No J/psi kaon correction helper; kaon_jpsiCorrectedPt falls back to "
+            "the uncorrected pT. Fine for mass spectra, NOT for scale variations."
+        )
+        df = df.Define("kaon_jpsiCorrectedPt", f"bkmm_{vertex_prefix}_kaon1pt")
+    else:
+        df = df.Define(
+            "kaon_jpsiCorrectedPt",
+            jpsi_helper,
+            [
+                f"bkmm_{vertex_prefix}_kaon1pt",
+                f"bkmm_{vertex_prefix}_kaon1eta",
+                "bkmm_kaon_charge",
+            ],
+        )
+    df = df.Alias(f"{reco_sel_GF}_recoPt", "kaon_jpsiCorrectedPt")
+    df = df.Alias(f"{reco_sel_GF}_recoEta", f"bkmm_{vertex_prefix}_kaon1eta")
+    df = df.Alias(f"{reco_sel_GF}_recoCharge", "bkmm_kaon_charge")
+    df = df.Define(
+        f"{reco_sel_GF}_recoPt_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoPt[0])",
+    )
+    df = df.Define(
+        f"{reco_sel_GF}_recoEta_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoEta[0])",
+    )
+    df = df.Define(
+        f"{reco_sel_GF}_recoCharge_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoCharge[0])",
+    )
+
+    # build_quantile_hists returns (quantile_hists, centers_hist, volume_hist);
+    # only the quantile edges are needed here.
+    quantile_hists, _, _ = narf.histutils.build_quantile_hists(
+        df,
+        [
+            f"{reco_sel_GF}_recoEta_scalar",
+            f"{reco_sel_GF}_recoCharge_scalar",
+            f"{reco_sel_GF}_recoPt_scalar",
+        ],
+        [
+            all_butojpsik_axes["bkmm_kaon_stuff_recoEta"],
+            all_butojpsik_axes["bkmm_kaon_stuff_recoCharge"],
+        ],
+        [
+            hist.axis.Regular(
+                args.fitPtQuantiles,
+                0.0,
+                1.0,
+                name="bkmm_kaon_pt_quantile",
+                underflow=False,
+                overflow=False,
+            )
+        ],
+    )
+    return quantile_hists
+
+
+def configure_fit_histogram(df, reco_sel_GF, vprefix="jpsimc", hist_to_fit="mB"):
+    if hist_to_fit == "m32":
+        fit_mass_col = f"bkmm_{vprefix}_m32_scalar"
+        fit_mass_axis = all_butojpsik_axes[f"bkmm_{vprefix}_m32"]
+    else:
+        fit_mass_col = f"bkmm_{vprefix}_mass_scalar"
+        fit_mass_axis = all_butojpsik_axes[f"bkmm_{vprefix}_mass"]
+    fit_pt_col = f"{reco_sel_GF}_recoPt_scalar"
+    fit_eta_col = f"{reco_sel_GF}_recoEta_scalar"
+    fit_charge_col = f"{reco_sel_GF}_recoCharge_scalar"
+    fit_pt_axis = all_butojpsik_axes["bkmm_kaon_stuff_recoPt"]
+    fit_eta_axis = all_butojpsik_axes["bkmm_kaon_stuff_recoEta"]
+    fit_charge_axis = all_butojpsik_axes["bkmm_kaon_stuff_recoCharge"]
+
+    if args.fitPtQuantiles is not None:
+        if args.fitPtQuantiles < 2:
+            raise ValueError("--fitPtQuantiles must be at least 2.")
+
+        quantile_cols = [fit_eta_col, fit_charge_col, fit_pt_col]
+        if fit_pt_quantile_hists is None:
+            raise RuntimeError("fit_pt_quantile_hists was not initialized.")
+        df, _, _ = narf.histutils.define_quantiles(
+            df, cols=quantile_cols, quantile_hists=fit_pt_quantile_hists
+        )
+        fit_pt_col = f"{fit_pt_col}_iquant"
+        fit_pt_axis = hist.axis.Integer(
+            0,
+            args.fitPtQuantiles,
+            name="bkmm_kaon_pt",
+            underflow=False,
+            overflow=False,
+        )
+        logger.info(
+            "Using %s eta- and charge-conditional pT quantile bins for HistToFit.",
+            args.fitPtQuantiles,
+        )
+
+    fitcols = [fit_mass_col, fit_pt_col, fit_eta_col, fit_charge_col]
+    fitaxes = [fit_mass_axis, fit_pt_axis, fit_eta_axis, fit_charge_axis]
+    return df, fitaxes, fitcols
+
+
+if reference_dataset is not None:
+    fit_pt_quantile_hists = build_fit_pt_quantile_hists(reference_dataset)
 
 
 for a in args.axes:
@@ -122,15 +484,6 @@ if args.allaxes:
     nominal_cols = list(all_butojpsik_axes.keys())
     nominal_axes = [all_butojpsik_axes[a] for a in all_butojpsik_axes]
 hist_names = set()
-
-# global so when event loop run the sumandcount pointers remain and get updated
-cutflows = {}
-signal_gen_filter_stats = {}
-nonsignal_gen_filter_stats = {}
-smearing_weights_procs = []
-nominal_cols_gen_smeared = None  # for unc helper, not used for smearingWeightsSplines
-cols_gen_smeared = None  # for unc helper, not used for smearingWeightsSplines
-isW = False
 
 
 def build_graph(df, dataset):
@@ -179,7 +532,7 @@ def build_graph(df, dataset):
             hist_names.add(hist_name)
 
     df, cutflow_trigger = btojpsik_selections.define_jpsi_triggers(
-        df, trigger_name="DoubleMu4_3_Jpsi"
+        df, trigger_name=get_trigger_name()
     )
     # cutflow_trigger = None
     if cutflow_trigger:
@@ -194,66 +547,8 @@ def build_graph(df, dataset):
                 )
                 hist_names.add(hist_name)
 
-    # selections (og was BPH-21-006)
-    # TODO: shouldn't have to write the numbers twice smh but don't feel like changing right now
-    bkmm_selections = [
-        (
-            "dimuon cand neutral",
-            lambda d: btojpsik_selections.select_opposite_sign_dimuon(d),
-        ),
-        (
-            "muon |eta| < 1.4",
-            lambda d: btojpsik_selections.select_muon_eta(d, 1.4),
-        ),
-        (
-            "muon pT > 4",
-            lambda d: btojpsik_selections.select_muon_pt(d, 4),
-        ),
-        (
-            "muon softMVA > 0.45",
-            lambda d: btojpsik_selections.select_muon_softmva(d, 0.45),
-        ),
-        (
-            "dimuon pT > 7",
-            lambda d: btojpsik_selections.select_dimuon_pt(d, 7.0),
-        ),
-        (
-            "dimuon alphaBS < 0.4",
-            lambda d: btojpsik_selections.select_dimuon_alphabs(d, 0.4),
-        ),  # og 0.4
-        (
-            "dimuon vtx prob > 0.1",
-            lambda d: btojpsik_selections.select_dimuon_vtx_prob(d, 0.1),
-        ),  # og 0.1
-        (
-            "dimuon sl3d > 4",
-            lambda d: btojpsik_selections.select_dimuon_sl3d(d, 4),
-        ),  # og 4
-        (
-            "bkmm vtx prob > 0.3",
-            lambda d: btojpsik_selections.select_bkmm_vtx_prob(d, 0.3),
-        ),  # og 0.025
-        (
-            "bkmm mass window",
-            lambda d: btojpsik_selections.select_bkmm_mass_window(d, 5.3, 0.1),
-        ),  # og 5.4, 0.5
-        # adding kaon sels to match what is used to produce maps (for now)
-        (
-            "kaon |eta| < 1.4",
-            lambda d: btojpsik_selections.select_kaon_eta(d, 1.4),
-        ),
-        (
-            "kaon pT < 8",
-            lambda d: btojpsik_selections.select_kaon_pt(d, 8),
-        ),
-        (
-            "bkmm bmm bdt output > 0.10",
-            lambda d: btojpsik_selections.select_bkmm_bmm_bdt(d, 0.10),
-        ),  # NOTE: this doesn't touch kaon so fine to use...
-    ]
-
     df, cutflow_bkmm, dfs_per_cut = btojpsik_selections.bkmm_selections(
-        df, dataset.name, bkmm_selections
+        df, dataset.name, get_bkmm_selections(vertex_prefix)
     )
 
     for i, (selection, action) in enumerate(cutflow_bkmm.items()):
@@ -288,6 +583,7 @@ def build_graph(df, dataset):
         gen_match_nonsignal=needs_gen_match,
         gen_filter_stats=nonsignal_gen_filter_stats if needs_gen_match else None,
         dataset_name=dataset.name if needs_gen_match else None,
+        vertex_prefix=vertex_prefix,
     )
     if args.selectionHists:
         for var in nominal_cols:
@@ -318,18 +614,58 @@ def build_graph(df, dataset):
 
     # correct kaon pt w bkmm_kaon_pt, vectors of length 1
     jpsi_helper = data_jpsi_crctn_helper if dataset.is_data else mc_jpsi_crctn_helper
-    df = df.Define(
-        "kaon_jpsiCorrectedPt",
-        jpsi_helper,
-        ["bkmm_jpsimc_kaon1pt", "bkmm_jpsimc_kaon1eta", "bkmm_kaon_charge"],
-    )
-    # import pdb
-    # pdb.set_trace()
-
+    # The J/psi massfit correction helper is None unless --muonCorrMC /
+    # --muonCorrData name a massfit file, and applying massfit corrections to
+    # simulation is explicitly not recommended. Fall back to the uncorrected
+    # kaon pT rather than failing: this column feeds only the scale-variation
+    # machinery, never the reconstructed mass, so a reference run that just wants
+    # the mass spectrum should not need a calibration file it does not use.
+    if jpsi_helper is None:
+        logger.warning(
+            "No J/psi kaon correction helper; kaon_jpsiCorrectedPt falls back to "
+            "the uncorrected pT. Fine for mass spectra, NOT for scale variations."
+        )
+        df = df.Define("kaon_jpsiCorrectedPt", f"bkmm_{vertex_prefix}_kaon1pt")
+    else:
+        df = df.Define(
+            "kaon_jpsiCorrectedPt",
+            jpsi_helper,
+            [
+                f"bkmm_{vertex_prefix}_kaon1pt",
+                f"bkmm_{vertex_prefix}_kaon1eta",
+                "bkmm_kaon_charge",
+            ],
+        )
     reco_sel_GF = "bkmm_kaon_stuff"
     df = df.Alias(f"{reco_sel_GF}_recoPt", "kaon_jpsiCorrectedPt")
-    df = df.Alias(f"{reco_sel_GF}_recoEta", "bkmm_jpsimc_kaon1eta")
+    df = df.Alias(f"{reco_sel_GF}_recoEta", f"bkmm_{vertex_prefix}_kaon1eta")
     df = df.Alias(f"{reco_sel_GF}_recoCharge", "bkmm_kaon_charge")
+    df = df.Define(
+        f"bkmm_{vertex_prefix}_mass_scalar",
+        f"static_cast<double>(bkmm_{vertex_prefix}_mass[0])",
+    )
+    if args.histToFit == "m32":
+        df = df.Define(
+            f"bkmm_{vertex_prefix}_m32_scalar",
+            f"bkmm_{vertex_prefix}_mass_scalar - static_cast<double>(mm_kin_mass)",
+        )
+        df = df.Alias(f"bkmm_{vertex_prefix}_m32", f"bkmm_{vertex_prefix}_m32_scalar")
+        df = df.Filter(
+            f"bkmm_{vertex_prefix}_m32_scalar >= 2.1 && bkmm_{vertex_prefix}_m32_scalar <= 2.3",
+            "m32 window [2.1, 2.3]",
+        )
+    df = df.Define(
+        f"{reco_sel_GF}_recoPt_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoPt[0])",
+    )
+    df = df.Define(
+        f"{reco_sel_GF}_recoEta_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoEta[0])",
+    )
+    df = df.Define(
+        f"{reco_sel_GF}_recoCharge_scalar",
+        f"static_cast<double>({reco_sel_GF}_recoCharge[0])",
+    )
     has_gen_kinematics = not dataset.is_data and (
         dataset.name == "signalBuToJpsiK_2018" or needs_gen_match
     )
@@ -341,8 +677,11 @@ def build_graph(df, dataset):
         # df = df.Alias(f"{reco_sel_GF}_recoPt", "kaon_jpsiCorrectedPt") # using corrected pT now, before was nominalbkmm_kaon_pt
 
     for var in nominal_cols:
-        # if "gen" in str(var) and dataset.is_data:
-        #    results.append(df.HistoBoost(hist_name, ))
+        if not df.HasColumn(var):
+            logger.warning(
+                f"Column '{var}' not available for dataset {dataset.name}, skipping"
+            )
+            continue
         hist_name = f"nominal_{var}"
         results.append(df.HistoBoost(hist_name, [all_butojpsik_axes[var]], [var]))
         hist_names.add(hist_name)
@@ -351,11 +690,9 @@ def build_graph(df, dataset):
         df.HistoBoost(f"nominal", [all_butojpsik_axes[final_var]], [final_var])
     )
 
-    fitcols = ["bkmm_jpsimc_mass"]
-    fitcols.append(f"{reco_sel_GF}_recoPt")
-    fitcols.append(f"{reco_sel_GF}_recoEta")
-    fitcols.append(f"{reco_sel_GF}_recoCharge")
-    fitaxes = [all_butojpsik_axes[a] for a in fitcols]
+    df, fitaxes, fitcols = configure_fit_histogram(
+        df, reco_sel_GF, vertex_prefix, args.histToFit
+    )
 
     if has_gen_kinematics:
         input_kinematics = [
@@ -374,8 +711,8 @@ def build_graph(df, dataset):
             )
             input_kinematics.append(f"{reco_sel_GF}_response_weight")
 
-        # kaon scale variation
-        if args.includeKaonScaleVariations:
+        # kaon scale variation — non-nomc path only; nomc uses combined block below
+        if args.includeKaonScaleVariations and not args.nomc:
             df = muon_calibration.add_jpsi_crctn_stats_unc_hists(
                 args,
                 df,
@@ -392,12 +729,104 @@ def build_graph(df, dataset):
                 storage_type=storage_type,
             )
 
-        # import pdb
-        # pdb.set_trace()
+        # muon scale variations (only in --nomc mode)
+        if args.nomc and muon_diff_weights_helper:
+            for mu_tag, mu_pt_col, mu_eta_col, mu_idx_col in [
+                ("mu1", "mm_kin_mu1pt", "mm_kin_mu1eta", "mm_mu1_index"),
+                ("mu2", "mm_kin_mu2pt", "mm_kin_mu2eta", "mm_mu2_index"),
+            ]:
+                mu_sel = f"mm_{mu_tag}_stuff"
+                df = df.Define(
+                    f"{mu_sel}_recoPt",
+                    f"ROOT::RVec<float>{{static_cast<float>({mu_pt_col})}}",
+                )
+                df = df.Define(
+                    f"{mu_sel}_recoEta",
+                    f"ROOT::RVec<float>{{static_cast<float>({mu_eta_col})}}",
+                )
+                df = df.Define(
+                    f"{mu_sel}_recoCharge",
+                    f"ROOT::RVec<int>{{static_cast<int>(Muon_charge[{mu_idx_col}])}}",
+                )
+                # pass reco as gen (same convention as kaon eta/charge)
+                df = df.Alias(f"{mu_sel}_genPt", f"{mu_sel}_recoPt")
+                df = df.Alias(f"{mu_sel}_genEta", f"{mu_sel}_recoEta")
+                df = df.Alias(f"{mu_sel}_genCharge", f"{mu_sel}_recoCharge")
+                df = df.Define(
+                    f"{mu_sel}_response_weight",
+                    muon_diff_weights_helper,
+                    [
+                        f"{mu_sel}_recoPt",
+                        f"{mu_sel}_recoEta",
+                        f"{mu_sel}_recoCharge",
+                        f"{mu_sel}_genPt",
+                        f"{mu_sel}_genEta",
+                        f"{mu_sel}_genCharge",
+                    ],
+                )
+
+            if args.includeKaonScaleVariations:
+                # concatenate kaon + mu1 + mu2 kinematics into 3-element RVecs so the
+                # C++ helper loops over all three particles and multiplies alt weights
+                comb = "btojpsik_combined_sel"
+                for col in [
+                    "recoPt",
+                    "recoEta",
+                    "recoCharge",
+                    "genPt",
+                    "genEta",
+                    "genCharge",
+                ]:
+                    df = df.Define(
+                        f"{comb}_{col}",
+                        f"ROOT::VecOps::Concatenate(ROOT::VecOps::Concatenate({reco_sel_GF}_{col}, mm_mu1_stuff_{col}), mm_mu2_stuff_{col})",
+                    )
+                df = df.Define(
+                    f"{comb}_response_weight",
+                    f"ROOT::VecOps::Concatenate(ROOT::VecOps::Concatenate({reco_sel_GF}_response_weight, mm_mu1_stuff_response_weight), mm_mu2_stuff_response_weight)",
+                )
+                df = muon_calibration.add_jpsi_crctn_stats_unc_hists(
+                    args,
+                    df,
+                    fitaxes,
+                    results,
+                    fitcols,
+                    cols_gen_smeared,
+                    calib_filepaths,
+                    jpsi_crctn_data_unc_helper,
+                    smearing_weights_procs,
+                    comb,
+                    dataset.name,
+                    isW,
+                    storage_type=storage_type,
+                )
+
+                if args.validationHists:
+                    for hist_suffix, val_sel in [
+                        ("_kaon", reco_sel_GF),
+                        ("_mu1", "mm_mu1_stuff"),
+                        ("_mu2", "mm_mu2_stuff"),
+                    ]:
+                        df = muon_calibration.add_jpsi_crctn_stats_unc_hists(
+                            args,
+                            df,
+                            fitaxes,
+                            results,
+                            fitcols,
+                            cols_gen_smeared,
+                            calib_filepaths,
+                            jpsi_crctn_data_unc_helper,
+                            smearing_weights_procs,
+                            val_sel,
+                            dataset.name,
+                            isW,
+                            storage_type=storage_type,
+                            hist_suffix=hist_suffix,
+                        )
 
     if dataset.is_data:
         # df = df.Define("bkmm_kaon_curvature", "1. / bkmm_kaon_pt")
-        df = df.Define("bkmm_kaon_curvature", "1. / bkmm_jpsimc_kaon1pt")
+        df = df.Define("bkmm_kaon_curvature", f"1. / bkmm_{vertex_prefix}_kaon1pt")
 
     if args.includeKaonScaleVariations:
         hist_name = "nominal_HistToFit"
@@ -443,21 +872,21 @@ write_analysis_output(
 
 if args.cutflow:
 
-    eras = ["2018A", "2018B", "2018C", "2018D"]
-
     aggregated_cutflows = {}
     for dataset_name, result in resultdict.items():
         if "cutflow" not in result:
             continue
 
         agg_name = dataset_name
-        for era in eras:
-            if dataset_name == f"Charmonium_{era}":
-                agg_name = "Charmonium_2018"
-                break
-        if dataset_name == "signalBuToJpsiK_2018":
+        if dataset_name.startswith("Charmonium_2018"):
+            agg_name = "Charmonium_2018"
+        elif dataset_name.startswith("Charmonium_2016"):
+            agg_name = "Charmonium_2016"
+        elif dataset_name == "signalBuToJpsiK_2018":
             agg_name = "signalBuToJpsiK"
-        elif dataset_name == "BuToJpsiK_2018":
+        elif dataset_name.startswith("BuToJpsiK_2018"):
+            agg_name = "BuToJpsiK"
+        elif dataset_name.startswith("BuToJpsiK_2016"):
             agg_name = "BuToJpsiK"
         elif dataset_name == "BuToJpsiPi_2018":
             agg_name = "BuToJpsiPi"
@@ -468,65 +897,98 @@ if args.cutflow:
             for cut_name, value in result["cutflow"].items():
                 aggregated_cutflows[agg_name][cut_name] += value
 
-    # construct cutflow table
-    data_cutflow = aggregated_cutflows.get("Charmonium_2018", {})
-    signal_cutflow = aggregated_cutflows.get("signalBuToJpsiK", {})
-    bjk_cutflow = aggregated_cutflows.get("BuToJpsiK", {})
+    is_2016 = args.era.startswith("2016")
+    if is_2016:
+        data_cutflow = aggregated_cutflows.get("Charmonium_2016", {})
+        bjk_cutflow = aggregated_cutflows.get("BuToJpsiK", {})
+        cut_names = []
+        seen = set()
+        for name in data_cutflow.keys():
+            cut_names.append(name)
+            seen.add(name)
+        for name in bjk_cutflow.keys():
+            if name not in seen:
+                cut_names.append(name)
+                seen.add(name)
 
-    cut_names = list(data_cutflow.keys())
+        table_data = []
+        for cut_name in cut_names:
+            data_val = data_cutflow.get(cut_name, 0)
+            bjk_val = bjk_cutflow.get(cut_name, 0)
+            table_data.append([cut_name, f"{data_val:.2e}", f"{bjk_val:.2e}"])
+        col_labels = ["Selection", "Data", "B->Jpsi+K"]
+    else:
+        data_cutflow = aggregated_cutflows.get("Charmonium_2018", {})
+        signal_cutflow = aggregated_cutflows.get("signalBuToJpsiK", {})
+        bjk_cutflow = aggregated_cutflows.get("BuToJpsiK", {})
+        cut_names = list(data_cutflow.keys())
 
-    table_data = []
-    for cut_name in cut_names:
-        data_val = data_cutflow.get(cut_name, 0)
-        signal_val = signal_cutflow.get(cut_name, 0)
-        bjk_val = bjk_cutflow.get(cut_name, 0)
-        ratio = data_val / signal_val if signal_val != 0 else 0
-        ratio2 = bjk_val / signal_val if signal_val != 0 else 0
-        table_data.append(
-            [
-                cut_name,
-                f"{data_val:.2e}",
-                f"{signal_val:.2e}",
-                f"{bjk_val:.2e}",
-                f"{ratio:.3f}",
-                f"{ratio2:.3f}",
-            ]
-        )
-
-    fig, ax = plt.subplots(figsize=(8, len(cut_names) * 0.4))
-    ax.axis("off")
-
-    table = ax.table(
-        cellText=table_data,
-        colLabels=[
+        table_data = []
+        for cut_name in cut_names:
+            data_val = data_cutflow.get(cut_name, 0)
+            signal_val = signal_cutflow.get(cut_name, 0)
+            bjk_val = bjk_cutflow.get(cut_name, 0)
+            ratio = data_val / signal_val if signal_val != 0 else 0
+            ratio2 = bjk_val / signal_val if signal_val != 0 else 0
+            table_data.append(
+                [
+                    cut_name,
+                    f"{data_val:.2e}",
+                    f"{signal_val:.2e}",
+                    f"{bjk_val:.2e}",
+                    f"{ratio:.3f}",
+                    f"{ratio2:.3f}",
+                ]
+            )
+        col_labels = [
             "Selection",
             "Data",
             "Signal",
             "B->Jpsi+K",
             "Data/Signal",
             "B->Jpsi+K/Signal",
-        ],
-        loc="center",
-    )
+        ]
 
-    if args.saveCutflow:
-        os.makedirs(args.saveCutflow, exist_ok=True)
-        cutflow_postfix = args.cutflowName if args.cutflowName else args.postfix
-        cutflow_path = f"{args.saveCutflow}/cutflow_{cutflow_postfix}.png"
-        plt.savefig(cutflow_path, bbox_inches="tight", dpi=300)
-        logger.info(f"Table saved as {cutflow_path}")
-    else:
-        print("\nCutflow Table:")
-        print(
-            f"{'Selection':<30} {'Data':>15} {'Signal':>15} {'B->Jpsi+K':>15} {'Data/Signal':>10} {'B->Jpsi+K/Signal':>10}"
+    if not table_data:
+        logger.warning(
+            f"Cutflow plotting skipped for era {args.era} because no cutflow entries were found."
         )
-        print("-" * 75)
-        for row in table_data:
-            print(
-                f"{row[0]:<30} {row[1]:>15} {row[2]:>15} {row[3]:>15} {row[4]:>10} {row[5]:>10}"
-            )
-        print()
-    plt.close()
+    else:
+        fig, ax = plt.subplots(figsize=(8, max(1, len(cut_names)) * 0.4))
+        ax.axis("off")
+
+        table = ax.table(
+            cellText=table_data,
+            colLabels=col_labels,
+            loc="center",
+        )
+
+        if args.saveCutflow:
+            os.makedirs(args.saveCutflow, exist_ok=True)
+            cutflow_postfix = args.cutflowName if args.cutflowName else args.postfix
+            cutflow_path = f"{args.saveCutflow}/cutflow_{cutflow_postfix}.png"
+            plt.savefig(cutflow_path, bbox_inches="tight", dpi=300)
+            logger.info(f"Table saved as {cutflow_path}")
+        else:
+            if is_2016:
+                print("\nCutflow Table:")
+                print(f"{'Selection':<30} {'Data':>15} {'B->Jpsi+K':>15}")
+                print("-" * 60)
+                for row in table_data:
+                    print(f"{row[0]:<30} {row[1]:>15} {row[2]:>15}")
+                print()
+            else:
+                print("\nCutflow Table:")
+                print(
+                    f"{'Selection':<30} {'Data':>15} {'Signal':>15} {'B->Jpsi+K':>15} {'Data/Signal':>10} {'B->Jpsi+K/Signal':>10}"
+                )
+                print("-" * 75)
+                for row in table_data:
+                    print(
+                        f"{row[0]:<30} {row[1]:>15} {row[2]:>15} {row[3]:>15} {row[4]:>10} {row[5]:>10}"
+                    )
+                print()
+        plt.close()
 
 
 print(

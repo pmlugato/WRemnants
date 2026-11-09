@@ -15,6 +15,17 @@ data_dir = common.data_dir
 
 
 def define_jpsi_triggers(df, trigger_name="", cutflow={}):
+    # for ~tighter than nominal selections...
+    # 2016
+    # Dimuon16_Jpsi: 1.39e+05
+    # Dimuon20_Jpsi 1.46e+05
+    # DoubleMu4_3_Jpsi_Displaced: 2.06e+05
+    # DoubleMu4_JpsiTrk_Displaced: 5.55e+05
+    # DoubleMu4_PsiPrimeTrk_Displaced: 5.37e+02
+    # 2018
+    # Dimuon25_Jpsi: 2.90e+05
+    # DoubleMu4_3_Jpsi: 2.87e+05
+    # DoubleMu4_JpsiTrk_Displaced: 1.79e+06
     if trigger_name == "":
         logger.error("no trigger name provided, cannot filter DataFrame")
         return df, None
@@ -58,6 +69,7 @@ def select_only_passing_bkmm_candidates(
     gen_match_nonsignal: bool = False,
     gen_filter_stats=None,
     dataset_name: Optional[str] = None,
+    vertex_prefix: str = "jpsimc",
 ):
     logger.info("Selecting passing bkmm candidates")
 
@@ -116,17 +128,17 @@ def select_only_passing_bkmm_candidates(
 
         df = df.Define(
             "bkmm_best_idx",
-            """
+            f"""
             int best_idx = -1;
             float best_prob = -1.f;
-            for (size_t i = 0; i < bkmm_passes.size(); ++i) {
+            for (size_t i = 0; i < bkmm_passes.size(); ++i) {{
                 if (!bkmm_passes[i]) continue;
-                float prob = bkmm_jpsimc_vtx_prob[i];
-                if (prob > best_prob) {
+                float prob = bkmm_{vertex_prefix}_vtx_prob[i];
+                if (prob > best_prob) {{
                     best_prob = prob;
                     best_idx = static_cast<int>(i);
-                }
-            }
+                }}
+            }}
             return best_idx;
             """,
         )
@@ -280,17 +292,17 @@ def select_opposite_sign_dimuon(df):
     return df.Redefine("bkmm_passes", condition)
 
 
-def select_kaon_eta(df, max_eta):
+def select_kaon_eta(df, max_eta, vertex_prefix: str = "jpsimc"):
     """Require |eta| < max_eta for kaon."""
-    # condition = _generate_abs_kaon_condition("bkmm_kaon_eta", "<", max_eta)
-    condition = _generate_abs_kaon_condition("bkmm_jpsimc_kaon1eta", "<", max_eta)
+    condition = _generate_abs_kaon_condition(
+        f"bkmm_{vertex_prefix}_kaon1eta", "<", max_eta
+    )
     return df.Redefine("bkmm_passes", condition)
 
 
-def select_kaon_pt(df, max_pt):
+def select_kaon_pt(df, max_pt, vertex_prefix: str = "jpsimc"):
     """Require pT < max_pt GeV for kaon."""
-    # condition = _generate_kaon_condition("bkmm_kaon_pt", "<", max_pt)
-    condition = _generate_kaon_condition("bkmm_jpsimc_kaon1pt", "<", max_pt)
+    condition = _generate_kaon_condition(f"bkmm_{vertex_prefix}_kaon1pt", "<", max_pt)
     return df.Redefine("bkmm_passes", condition)
 
 
@@ -336,15 +348,19 @@ def select_dimuon_sl3d(df, min_sl3d):
     return df.Redefine("bkmm_passes", condition)
 
 
-def select_bkmm_vtx_prob(df, min_prob):
-    """Require bkmm J/psi+MC vertex probability > min_prob."""
-    condition = _generate_bkmm_condition("bkmm_jpsimc_vtx_prob", ">", min_prob)
+def select_bkmm_vtx_prob(df, min_prob, vertex_prefix: str = "jpsimc"):
+    """Require bkmm vertex probability > min_prob."""
+    condition = _generate_bkmm_condition(
+        f"bkmm_{vertex_prefix}_vtx_prob", ">", min_prob
+    )
     return df.Redefine("bkmm_passes", condition)
 
 
-def select_bkmm_mass_window(df, center, width):
+def select_bkmm_mass_window(df, center, width, vertex_prefix: str = "jpsimc"):
     """Require |bkmm mass - center| < width GeV."""
-    condition = _generate_mass_window_condition("bkmm_jpsimc_mass", center, width)
+    condition = _generate_mass_window_condition(
+        f"bkmm_{vertex_prefix}_mass", center, width
+    )
     return df.Redefine("bkmm_passes", condition)
 
 
