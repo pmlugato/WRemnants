@@ -195,26 +195,6 @@ parser.add_argument(
     "silently turns it into the prompt class and nothing downstream can tell.",
 )
 parser.add_argument(
-    "--scaleVarMuonSource",
-    type=int,
-    default=None,
-    help="Override the per-leg class tag with a single code on every leg. "
-    "Under --responseModel muon the default is 443, the J/psi-leg class, used "
-    "for the bachelor too because that family has no hadron class; 1 is the "
-    "prompt W/Z class, and running with it measures how much the choice "
-    "matters rather than assuming it does not. Under 'kpi' the default is "
-    "per-leg (bachelor 321, muons 13) and this flag collapses it to one code, "
-    "which is a diagnostic, not a configuration.",
-)
-parser.add_argument(
-    "--useSmearedTrainedModel",
-    action="store_true",
-    help="Load the muon model trained on SMEARED reco pt. This channel smears "
-    "nothing, so the un-smeared model is correct and is now the default; every "
-    "production before 2026-09-08 took the smeared one by accident. Use this "
-    "only to reproduce those numbers for comparison.",
-)
-parser.add_argument(
     "--perLegResponseModel",
     action="store_true",
     help="Config D: keep the muon legs on the muon network and move only the "
@@ -263,16 +243,6 @@ parser.add_argument(
     "model and not of the channel: the muon model's J/psi class breaks by a "
     "factor 21 across 1.5-1.95 GeV so it needs 2.0, while the kaon/pion model "
     "is smooth there and 2.0 would clamp away the region it was built for.",
-)
-parser.add_argument(
-    "--genPtReweightSaturationMode",
-    choices=["condition", "rescale"],
-    default="condition",
-    help="'condition' (default) floors only the network's conditioning input "
-    "log pt_gen, leaving the response residual and the physical shift at the "
-    "true kinematics. 'rescale' would scale both reco and gen pt, which "
-    "preserves qopr but evaluates the shift at the saturated pt; it is not "
-    "implemented here and is rejected by the argument check below.",
 )
 parser.add_argument("--massLow", type=float, default=5.0)
 parser.add_argument("--massHigh", type=float, default=5.5)
@@ -465,14 +435,6 @@ if args.scaleVariations:
             "changes at once. It is a planned cross-check once that model is "
             "regenerated."
         )
-    if args.genPtReweightSaturationMode != "condition":
-        raise ValueError(
-            "Only --genPtReweightSaturationMode condition is implemented here. "
-            "'rescale' scales both reco and gen pt, which floors gen pt while "
-            "preserving qopr but then evaluates the physical shift at the "
-            "saturated pt; 'condition' keeps the shift honest and moves only "
-            "the network's conditioning input."
-        )
     if 48 % args.scaleVariationEtaBins:
         raise ValueError(
             f"--scaleVariationEtaBins {args.scaleVariationEtaBins} must divide "
@@ -498,19 +460,7 @@ if args.scaleVariations:
             "bachelor varied there are no muon legs to assign a model to."
         )
 
-    if args.scaleVarMuonSource is not None:
-        # Explicit override: one code on every leg. Checked against the
-        # selected model's alphabet rather than accepted blindly.
-        if args.scaleVarMuonSource not in _spec["codes"].values():
-            raise ValueError(
-                f"--scaleVarMuonSource {args.scaleVarMuonSource} is not a "
-                f"class of the {args.responseModel!r} response model, whose "
-                f"codes are {sorted(_spec['codes'].values())}. Passing a code "
-                "from the other model family is silently absorbed by the "
-                "graph's remap, so it is refused here instead."
-            )
-        _leg_codes = args.scaleVarMuonSource
-    elif args.responseModel == "kpi":
+    if args.responseModel == "kpi":
         # Bachelor first, then the two muons -- SCALE_VAR_LEGS order.
         _kaon = muon_calibration.response_model_code("kpi", "kaon")
         _mu = muon_calibration.response_model_code("kpi", "muon")
@@ -518,26 +468,18 @@ if args.scaleVariations:
     else:
         _leg_codes = _spec["default_code"]
 
-    # The kpi family is trained on un-smeared reco pt and ships no smeared
-    # variant (confirmed with the author, 2026-09-08). This channel smears
-    # nothing either, so un-smeared is right on both sides -- see the
-    # --noSmearing note below.
-    _smearing = (not args.noSmearing) if _spec["smearing_variants"] else False
-
     if args.perLegResponseModel:
         # Config D: model 0 = kpi for the bachelor, model 1 = muon for the
         # muon legs. Codes follow the model each leg is assigned to.
         _muon_spec = muon_calibration.response_model_spec("muon")
-        # Both un-smeared. The kpi family has no smeared variant, and this
-        # channel smears nothing, so the muon leg wants the un-smeared model
-        # too -- writing `not args.noSmearing` here would quietly reintroduce
-        # the very mismatch the single-model branch below fixes.
+        # Both un-smeared: this channel applies no resolution smearing, and
+        # the kpi family ships no smeared variant.
         _onnx_paths = [
             muon_calibration.default_shift_smear_reweight_onnx(
                 smearing=False, model="kpi"
             ),
             muon_calibration.default_shift_smear_reweight_onnx(
-                smearing=args.useSmearedTrainedModel, model="muon"
+                smearing=False, model="muon"
             ),
         ]
         _leg_model = [0] + [1] * (len(_legs) - 1)
@@ -605,27 +547,19 @@ if args.scaleVariations:
             if args.scaleVarLegs == "all"
             else [sel.KAON_MASS_GEV]
         ),
-        # FIXED 2026-09-08. This channel applies no resolution smearing --
-        # nothing in btojpsik_cvhnano_selections.py smears anything -- so the
-        # model has to be the one trained on un-smeared reco pt. The old
-        # expression was `smearing=not args.noSmearing`, which contradicted the
-        # comment above it: --noSmearing is store_true and defaults False, so
-        # every production run silently loaded the SMEARED-trained model onto
-        # an unsmeared sample. The two differ by a factor 7.5 in response slope
-        # at 1 GeV and 8.3 at 1.5, though only 0.58-2.0 above the 2 GeV clamp,
-        # which is why it never showed up as a pathology.
-        # --useSmearedTrainedModel reproduces the old behaviour, for the
-        # baseline comparison only.
-        smearing=(args.useSmearedTrainedModel if _spec["smearing_variants"] else False),
+        # This channel applies no resolution smearing, so the response model
+        # must be the one trained on un-smeared reco pt. The common
+        # --noSmearing flag is deliberately not consulted: it defaults to
+        # False, which would load the smeared-trained muon model, whose
+        # response slope differs by a factor 7-8 at 1-1.5 GeV.
+        smearing=False,
         cond_pt_gen_min=_cond_floor if not args.perLegResponseModel else None,
         e_convention=args.eConvention,
         onnx_path=(
             None
             if args.perLegResponseModel
             else muon_calibration.default_shift_smear_reweight_onnx(
-                smearing=(
-                    args.useSmearedTrainedModel if _spec["smearing_variants"] else False
-                ),
+                smearing=False,
                 model=args.responseModel,
             )
         ),
