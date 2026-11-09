@@ -65,8 +65,7 @@ VARS=(
   "nominal_cand_mu0Eta:mu0_eta"
   "nominal_BuJpsiK_kaonPt:bachelor_pt"
   "nominal_BuJpsiK_kaonEta:bachelor_eta"
-  "nominal_cand_bachelorDxy:bachelor_dxy"
-  # Same quantity referenced to the PV instead of the origin (gap G13).
+  # Impact parameters, referenced to the primary vertex.
   "nominal_cand_bachelorD0:bachelor_d0"
   "nominal_cand_bachelorDzPV:bachelor_dzPV"
   "nominal_cand_bachelorNValidHits:bachelor_nValidHits"

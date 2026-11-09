@@ -291,10 +291,6 @@ def define_leg_kinematics(df):
         ("Pt", "Track_pt", "float"),
         ("Eta", "Track_eta", "float"),
         ("Phi", "Track_phi", "float"),
-        # Referenced to the ORIGIN, not to the primary vertex. Kept for one
-        # cycle so the fix below can be demonstrated rather than asserted; the
-        # phi modulation of the median is 0.187 cm here and 0.002 cm in D0.
-        ("Dxy", "Track_dxy", "float"),
         ("Dz", "Track_dz", "float"),
         # Needed by the momentum-scale variations: the A/e/M shift on 1/pt is
         # charge dependent through the M term.
@@ -675,8 +671,9 @@ def select_bachelor_n_valid_hits(df, min_hits):
 def select_bachelor_abs_d0(df, min_abs_d0):
     """Displacement of the bachelor track from the primary vertex.
 
-    PV-referenced, unlike the origin-referenced `bachelorDxy` kept only to keep
-    gap G13 visible. A kaon from a B decay is displaced; a prompt track is not.
+    PV-referenced: the NanoAOD's `Track_dxy` is measured from the origin and
+    is dominated by the beam-spot offset. A kaon from a B decay is displaced; a
+    prompt track is not.
 
     The sentinel check is not optional and is not decoration. A failed Track
     lookup writes -98, and this is the one cut in the set taken on an absolute

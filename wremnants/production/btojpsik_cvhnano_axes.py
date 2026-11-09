@@ -463,8 +463,7 @@ def _shared_axes() -> Dict[str, hist.axis.AxesMixin]:
         "cand_mu0Eta": _reg(48, -2.4, 2.4, "mu0_eta"),
         "cand_mu1Pt": _reg(60, 0.0, 30.0, "mu1_pt"),
         "cand_mu1Eta": _reg(48, -2.4, 2.4, "mu1_eta"),
-        # Raw, origin-referenced (gap G13). Kept so the defect stays visible.
-        "cand_bachelorDxy": _reg(60, -0.5, 0.5, "bachelor_dxy"),
+        # Origin-referenced.
         "cand_bachelorDz": _reg(60, -2.0, 2.0, "bachelor_dz"),
         # PV-referenced, which is what an impact parameter is supposed to be.
         # Ranges are tighter because the origin-referenced versions are
@@ -498,11 +497,6 @@ def _shared_axes() -> Dict[str, hist.axis.AxesMixin]:
         "cand_dimuonRawMass": _reg(80, 2.9, 3.3, "dimuon_raw_mass"),
         "cand_dimuonRawPt": _reg(60, 0.0, 60.0, "dimuon_raw_pt"),
         "cand_dimuonRawEta": _reg(48, -2.4, 2.4, "dimuon_raw_eta"),
-        # Truth. `genB*` is the old candidate-level direction match, kept for
-        # one cycle so the parentage categorisation can be compared against it.
-        f"{c}_genBPt": _reg(60, 0.0, 60.0, "genB_pt"),
-        f"{c}_genBEta": _reg(48, -2.4, 2.4, "genB_eta"),
-        f"{c}_genBDR": _reg(60, 0.0, 0.5, "genB_dR"),
         # Per-leg parentage (gap G2, closed). Legs 0 and 1 are the muons, leg 2
         # the bachelor -- confirmed empirically, not assumed: leg 2 is the
         # bachelor for 139 185 of 139 185 candidates over 30 files.
@@ -531,9 +525,6 @@ all_axes = build_axes()
 
 # Columns that only exist in simulation, so they are skipped for data.
 MC_ONLY_AXES = {
-    f"{CAND}_genBPt",
-    f"{CAND}_genBEta",
-    f"{CAND}_genBDR",
     f"{CAND}_nLegsGenMatched",
     f"{CAND}_leg2GenPt",
     f"{CAND}_leg2GenDR",
