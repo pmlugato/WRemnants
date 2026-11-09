@@ -542,7 +542,9 @@ def build_fit_pt_quantile_hists(dataset):
         f"static_cast<double>({reco_sel_GF}_recoCharge[0])",
     )
 
-    return narf.histutils.build_quantile_hists(
+    # build_quantile_hists returns (quantile_hists, centers_hist, volume_hist);
+    # only the quantile edges are needed here.
+    quantile_hists, _, _ = narf.histutils.build_quantile_hists(
         df,
         [
             f"{reco_sel_GF}_recoEta_scalar",
@@ -564,6 +566,7 @@ def build_fit_pt_quantile_hists(dataset):
             )
         ],
     )
+    return quantile_hists
 
 
 def configure_fit_histogram(df, reco_sel_GF, vprefix="jpsimc", hist_to_fit="mB"):
@@ -587,7 +590,7 @@ def configure_fit_histogram(df, reco_sel_GF, vprefix="jpsimc", hist_to_fit="mB")
         quantile_cols = [fit_eta_col, fit_charge_col, fit_pt_col]
         if fit_pt_quantile_hists is None:
             raise RuntimeError("fit_pt_quantile_hists was not initialized.")
-        df, _, _ = narf.histutils.define_quantile_ints(
+        df, _, _ = narf.histutils.define_quantiles(
             df, cols=quantile_cols, quantile_hists=fit_pt_quantile_hists
         )
         fit_pt_col = f"{fit_pt_col}_iquant"
