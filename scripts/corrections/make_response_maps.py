@@ -57,12 +57,6 @@ def parse_args():
         help="Number of sigma steps used to define interpolation cdf points",
     )
     parser.add_argument(
-        "--pdfFloorEvents",
-        type=float,
-        default=None,
-        help="If set positive, floor the derivative denominator to the density corresponding to this many effective events per qopr bin in each response cell.",
-    )
-    parser.add_argument(
         "--localPchipCellsJson",
         type=str,
         default=None,
@@ -175,7 +169,6 @@ def main():
         hist_response_scaled,
         hist_response_smeared,
         interp_cdfvals,
-        pdf_floor_events=args.pdfFloorEvents,
         local_pchip_cells=local_pchip_cells,
     )
     response_maps_utils.log_quantile_diagnostics(response_map)

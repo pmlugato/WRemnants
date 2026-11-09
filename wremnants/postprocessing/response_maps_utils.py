@@ -148,25 +148,6 @@ def make_dsigmasq(hist_response_smeared):
     return tf.constant(dsigma**2, tf.float64)
 
 
-def make_pdf_floor(hist_response, pdf_floor_events):
-    if pdf_floor_events is None or pdf_floor_events <= 0.0:
-        return None
-
-    qopr_edges = np.asarray(hist_response.axes[1].edges, dtype=float)
-    qopr_widths = np.diff(qopr_edges)
-    if qopr_widths.size == 0 or not np.allclose(qopr_widths, qopr_widths[0]):
-        raise ValueError(
-            "PDF floor requires a regular qopr axis to convert support counts to a density floor."
-        )
-
-    qopr_bin_width = qopr_widths[0]
-    hist_sums = np.sum(hist_response.values(flow=False), axis=1, dtype=float)
-    pdf_floor = np.zeros_like(hist_sums, dtype=float)
-    positive = hist_sums > 0.0
-    pdf_floor[positive] = pdf_floor_events / (hist_sums[positive] * qopr_bin_width)
-    return tf.constant(pdf_floor, tf.float64)
-
-
 def load_regularized_cells(cells_json):
     if cells_json is None:
         return None
@@ -251,7 +232,6 @@ class ResponseMapInterpolator:
         grid_points,
         bounds,
         dsigmasq,
-        pdf_floor,
         local_pchip_regions,
     ):
         self.quants = tf.constant(quants, tf.float64)
@@ -266,7 +246,6 @@ class ResponseMapInterpolator:
         self.eta_low = bounds["eta_low"]
         self.eta_high = bounds["eta_high"]
         self.dsigmasq = dsigmasq
-        self.pdf_floor = pdf_floor
         self.local_pchip_regions = local_pchip_regions
         if local_pchip_regions:
             self.local_pchip_charge = tf.constant(
@@ -302,17 +281,6 @@ class ResponseMapInterpolator:
         )
 
         return tf.reshape(quants_interp, [-1])
-
-    def _interp_charge_field(self, field_sel, gen_pt, gen_eta, gen_charge):
-        charge_idx = tf.where(gen_charge > 0.0, 1, 0)
-        field_charge = field_sel[charge_idx]
-
-        x = tf.stack([gen_pt, gen_eta], axis=0)
-        x = x[None, :]
-        field_interp = tfp.math.batch_interp_rectilinear_nd_grid(
-            x, x_grid_points=self.grid_points, y_ref=field_charge, axis=0
-        )
-        return tf.reshape(field_interp, [-1])
 
     def _interp_cdf_with_mode(
         self, mode, quants_sel, gen_pt, gen_eta, gen_charge, qopr
@@ -402,15 +370,8 @@ class ResponseMapInterpolator:
             self.quants_smeared, gen_pt, gen_eta, gen_charge, qopr
         )
 
-        pdf_denom = pdf
-        if self.pdf_floor is not None:
-            pdf_floor = self._interp_charge_field(
-                self.pdf_floor, gen_pt, gen_eta, gen_charge
-            )
-            pdf_denom = tf.maximum(pdf, pdf_floor)
-
-        dweightdscale = -dpdf / pdf_denom
-        dweightdsigmasq = (pdf_smeared - pdf) / pdf_denom / self.dsigmasq
+        dweightdscale = -dpdf / pdf
+        dweightdsigmasq = (pdf_smeared - pdf) / pdf / self.dsigmasq
 
         in_range = (
             (qopr > self.qopr_low)
@@ -445,7 +406,6 @@ def build_response_map_interpolator(
     hist_response_scaled,
     hist_response_smeared,
     interp_cdfvals,
-    pdf_floor_events=None,
     local_pchip_cells=None,
 ):
     quant_cdfvals = make_quant_cdfvals(interp_cdfvals)
@@ -455,7 +415,6 @@ def build_response_map_interpolator(
     grid_points = make_grid_points(hist_response)
     bounds = make_axis_bounds(hist_response)
     dsigmasq = make_dsigmasq(hist_response_smeared)
-    pdf_floor = make_pdf_floor(hist_response, pdf_floor_events)
     local_pchip_regions = build_regularized_cell_regions(
         hist_response, local_pchip_cells
     )
@@ -467,7 +426,6 @@ def build_response_map_interpolator(
         grid_points=grid_points,
         bounds=bounds,
         dsigmasq=dsigmasq,
-        pdf_floor=pdf_floor,
         local_pchip_regions=local_pchip_regions,
     )
 
