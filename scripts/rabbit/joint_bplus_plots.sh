@@ -16,7 +16,7 @@ NOJPSI=0; NOB=0; NOZ=0; POI=massShiftZ100MeV; POISCALE=100; DATANAME=Asimov
 while [[ $# -gt 0 ]]; do case $1 in --noJpsi) NOJPSI=1; shift ;; --noB) NOB=1; shift ;; --noZ) NOZ=1; shift ;; --data) DATANAME=Data; shift ;; --poi) POI=$2; shift 2 ;; --poiScale) POISCALE=$2; shift 2 ;; *) echo "unknown option $1" >&2; exit 2 ;; esac; done
 WREM="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMAGE=/cvmfs/unpacked.cern.ch/gitlab-registry.cern.ch/bendavid/cmswmassdocker/wmassdevrolling:latest
-LOG=/ceph/submit/data/user/p/pmlugato/mz/logs/joint_bplus_plots_${TAG}.log
+LOG="$PLOTS/joint_bplus_plots_${TAG}.log"
 run() { singularity exec --bind /scratch/,/ceph/,/home/,/work/,/tmp/ "$IMAGE" bash -lc "cd '$WREM' && source setup.sh >/dev/null 2>&1 && $1"; }
 mkdir -p "$PLOTS"; : > "$LOG"
 STYLE="--titlePos 0 --legPos 'upper left' --legCols 1 --lowerLegPos 'upper left' --lowerLegCols 1 --dataName $DATANAME"
