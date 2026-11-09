@@ -117,16 +117,6 @@ parser.add_argument(
     help="Fit observable for nominal_HistToFit. 'mB': B mass (default). "
     "'m32': Q = m(B) - m(J/psi), with J/psi mass from mm_kin_mass.",
 )
-parser.add_argument(
-    "--alcarecoPreset",
-    "--alcareco-preset",
-    default=None,
-    choices=["A", "B"],
-    help="Route the build-graph through the TkAlJpsiX AlCaReco-stage selection "
-    "preset (A = mass windows only; B = A + kinematic + geometric, no Kalman "
-    "vertex fit). When unset, the analysis-level selections run unchanged. "
-    "Phase 1 of openspec change add-jpsi-x-selection-comparison.",
-)
 
 parser = parsing.set_parser_default(
     parser, "aggregateGroups", ["Diboson", "Top", "Wtaunu", "Wmunu"]
@@ -393,77 +383,6 @@ def get_bkmm_selections(vprefix="jpsimc", vtx_prob_cut=vtx_prob_cut):
     ]
 
 
-def get_bkmm_alcareco_selections(preset, vprefix="jpsimc"):
-    """TkAlJpsiX AlCaReco-stage selections for B+ channel, Phase-1 validation.
-
-    Disjoint from analysis-path get_bkmm_selections — that function stays
-    untouched. Routed in when --alcarecoPreset is set.
-
-    Per the AlCaReco-emulation variable policy in the proposal: cuts use
-    ONLY class-1 (raw reco-track kinematics) and class-2 (track-to-track
-    geometric without a Kalman fit) variables. The bkmm_jpsimc_* /
-    bkmm_nomc_* (class 4: B-vertex Kalman fit) and mm_kin_* (class 3:
-    dimuon Kalman vertex fit) branches are not consulted. Raw masses
-    and pT are computed on the fly via define_raw_kinematics.
-
-    Preset A: structural opposite-sign dimuon + J/psi mass window (raw
-    mu+mu- mass) + B+ mass window (raw mu+mu-K mass).
-
-    Preset B: A + kinematic + geometric cuts chosen to be meaningfully
-    beyond the BMM Tools upstream pre-filter (HadronMinPt=1.0,
-    HadronMaxEta=2.4, maxTwoTrackDOCA=0.1, B mass window [4,6]).
-
-    NB. vprefix is accepted for API symmetry with get_bkmm_selections but
-    is not used: every cut here is on raw or derived-from-raw quantities.
-    """
-    assert preset in ("A", "B"), f"unknown AlCaReco preset {preset!r}"
-
-    common_cuts = [
-        (
-            "dimuon cand neutral",
-            lambda d: btojpsik_selections.select_opposite_sign_dimuon(d),
-        ),
-        (
-            "raw mumu mass 2p95 3p25",
-            lambda d: btojpsik_selections.select_raw_mumu_mass_window(d, 2.95, 3.25),
-        ),
-        (
-            "raw b mass 5p0 5p5",
-            lambda d: btojpsik_selections.select_raw_b_mass_window(d, 5.0, 5.5),
-        ),
-    ]
-
-    if preset == "A":
-        return common_cuts
-
-    return common_cuts + [
-        (
-            "muon pT gt 4",
-            lambda d: btojpsik_selections.select_muon_pt(d, 4.0),
-        ),
-        (
-            "raw kaon pT gt 1p5",
-            lambda d: btojpsik_selections.select_raw_kaon_pt(d, 1.5),
-        ),
-        (
-            "raw kaon abseta lt 1p8",
-            lambda d: btojpsik_selections.select_raw_kaon_eta(d, 1.8),
-        ),
-        (
-            "raw mumu pT gt 3",
-            lambda d: btojpsik_selections.select_raw_mumu_pt(d, 3.0),
-        ),
-        (
-            "raw b pT gt 5",
-            lambda d: btojpsik_selections.select_raw_b_pt(d, 5.0),
-        ),
-        (
-            "kaon mu doca lt 0p03 both",
-            lambda d: btojpsik_selections.select_kaon_mu_doca(d, 0.03),
-        ),
-    ]
-
-
 def build_fit_pt_quantile_hists(dataset):
     logger.info(
         "Building common HistToFit pT quantiles from reference dataset %s.",
@@ -694,20 +613,8 @@ def build_graph(df, dataset):
                 )
                 hist_names.add(hist_name)
 
-    if args.alcarecoPreset is not None:
-        df = btojpsik_selections.define_raw_kinematics(df)
-        selections_for_run = get_bkmm_alcareco_selections(
-            args.alcarecoPreset, vertex_prefix
-        )
-        logger.info(
-            f"AlCaReco preset {args.alcarecoPreset}: using "
-            f"{len(selections_for_run)} cuts (analysis selections bypassed; "
-            f"raw kinematics defined)."
-        )
-    else:
-        selections_for_run = get_bkmm_selections(vertex_prefix)
     df, cutflow_bkmm, dfs_per_cut = btojpsik_selections.bkmm_selections(
-        df, dataset.name, selections_for_run
+        df, dataset.name, get_bkmm_selections(vertex_prefix)
     )
 
     for i, (selection, action) in enumerate(cutflow_bkmm.items()):
