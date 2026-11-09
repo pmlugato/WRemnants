@@ -82,7 +82,6 @@
 #                        10). The primary of add-cvhnano-per-eta-resolution is
 #                        5.05 5.45 20; its fallback is 5.20 5.40 10.
 #   --dataScale X        scale the observed histogram before writing    [1]
-#   --noBinByBinStat     drop the template's own statistical nuisance
 #   --postfixSuffix S    appended to the output postfix                  [""]
 #   --mzDir DIR          base output dir   [/ceph/submit/data/user/p/pmlugato/mz]
 #   --tensorDir DIR      [<mzDir>/tensors]     --fitDir DIR  [<mzDir>/fitresults]
@@ -124,7 +123,7 @@ declare -A RETIRED=(
   [ETA_REBIN]=--etaRebin [PT_BINS]=--ptBins [SLOPE_AXES]=--slopeAxes
   [CURV_AXES]=--curvAxes [NORM_AXES]=--normAxes [MCBKG]=--mcBkg
   [MCBKG_NORM_AXES]=--mcBkgNormAxes [RESVAR]=--resVar [RESCONSTR]=--resConstrained
-  [DATASCALE]=--dataScale [NOBBB]=--noBinByBinStat [POSTFIX_SUFFIX]=--postfixSuffix
+  [DATASCALE]=--dataScale [POSTFIX_SUFFIX]=--postfixSuffix
   [TENSOR_DIR]=--tensorDir [FIT_DIR]=--fitDir [LOG_DIR]=--logDir [PLOTDIR]=--plotDir
 )
 STALE=()
@@ -188,7 +187,6 @@ SKIPSCALEPARAMS=""
 # The A-e degeneracy is the one thing the per-nuisance sensitivities cannot see,
 # so a 2D scan on a chosen pair is a first-class output rather than a follow-up.
 SCAN2D=""
-NOBBB=0
 POSTFIX_SUFFIX=""
 FIT_EXTRA=""
 DRYRUN=0
@@ -224,7 +222,6 @@ while [[ $# -gt 0 ]]; do
     --massBins)        need "$@"; MASS_BINS=$2; shift 2 ;;
     --bkgSeed)         need "$@"; BKGSEED=$2; shift 2 ;;
     --dataScale)       need "$@"; DATASCALE=$2; shift 2 ;;
-    --noBinByBinStat)  NOBBB=1; shift ;;
     --postfixSuffix)   need "$@"; POSTFIX_SUFFIX=$2; shift 2 ;;
     --mzDir)           need "$@"; MZ=$2; shift 2 ;;
     --tensorDir)       need "$@"; TENSOR_DIR=$2; shift 2 ;;
@@ -294,7 +291,6 @@ if [[ $ASIMOV == 1 ]]; then POSTFIX="${POSTFIX}_asimov"; else POSTFIX="${POSTFIX
 [[ $ETA_REBIN != 1 ]] && POSTFIX="${POSTFIX}_eta${ETA_REBIN}"
 [[ -n $NORM_AXES ]] && POSTFIX="${POSTFIX}_normgrouped"
 [[ $SCALEVAR == 1 ]] && POSTFIX="${POSTFIX}_aem"
-[[ $NOBBB == 1 ]] && POSTFIX="${POSTFIX}_nobbb"
 [[ $BKGMODEL == exppoly ]] && POSTFIX="${POSTFIX}_n${POLYORDER}"
 [[ $MCBKG != none ]] && POSTFIX="${POSTFIX}_mc${MCBKG}"
 [[ $DATASCALE != 1 ]] && POSTFIX="${POSTFIX}_ds$(echo "$DATASCALE" | tr -d '.')"
@@ -420,12 +416,6 @@ FIT_CMD="/opt/venv/bin/python rabbit/bin/rabbit_fit.py '$TENSOR' -v 4 --diagnost
   $MODELS \
   -m Project $CHANNEL $MASS \
   -m Project $CHANNEL ${CELL_AXES[*]} $MASS"
-if [[ $NOBBB == 1 ]]; then
-  # Turning off the template's own statistical nuisance is a diagnostic, not a
-  # configuration: it says how much of the constraint the simulated sample size
-  # is costing, which is a different question from how much the data costs.
-  FIT_CMD="$FIT_CMD --noBinByBinStat"
-fi
 if [[ $SCALEVAR == 1 ]]; then
   # Impacts and the nuisance covariance are the point of adding the nuisances:
   # without --doImpacts the fit reports uncertainties and never says what they

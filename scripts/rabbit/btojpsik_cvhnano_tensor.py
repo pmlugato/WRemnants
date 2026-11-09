@@ -353,13 +353,6 @@ def parse_args():
         "(notes/aem_unit_mismatch.md 9.4). Recorded in the tensor metadata.",
     )
     parser.add_argument(
-        "--scaleVarTrim",
-        type=float,
-        default=0.0,
-        help="Set a variation bin back to nominal where |var - nom| is below this. "
-        "0 disables. Only worth using if empty-cell noise destabilises the fit.",
-    )
-    parser.add_argument(
         "--scaleParamNaming",
         choices=["standalone", "joint"],
         default="standalone",
@@ -396,7 +389,6 @@ def split_scale_variations(
     nominal,
     params,
     scale=1.0,
-    trim=0.0,
     skip=(),
     logger=None,
     naming="standalone",
@@ -491,9 +483,6 @@ def split_scale_variations(
                     # log-ratio to stretch; it is left as built
                     nkept += int(np.count_nonzero(~ok & (var != nom)))
                     h.values()[...] = out
-                if trim > 0.0:
-                    close = np.abs(h.values() - nominal.values()) < trim
-                    h.values()[close] = nominal.values()[close]
             ups.append(up)
             downs.append(down)
             if naming == "joint":
@@ -1214,7 +1203,6 @@ def main():
             scaled_signal,
             args.scaleParams,
             scale=args.scaleVarScale,
-            trim=args.scaleVarTrim,
             skip=args.skipScaleParams,
             naming=args.scaleParamNaming,
             joint_eta_bins=args.jointEtaBins,
