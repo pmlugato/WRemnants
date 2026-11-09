@@ -14,13 +14,14 @@
 # rest of btojpsik_cvhnano_plots.sh carries. Raw yields are in
 # scripts/btojpsik/kaon_pt_spectrum_fig.py.
 #
-# Usage: btojpsik_cvhnano_softkaon_pt.sh <histmaker.hdf5> [outfolder]
+# Usage: btojpsik_cvhnano_softkaon_pt.sh <histmaker.hdf5> [outfolder] [outpath]
+#   outpath: base directory for the plots              [$HOME/public_html/mz]
 
 set -euo pipefail
 
-INFILE=${1:?usage: $0 <histmaker.hdf5> [outfolder]}
+INFILE=${1:?usage: $0 <histmaker.hdf5> [outfolder] [outpath]}
 OUTFOLDER=${2:-btojpsik_softkaon_pt}
-OUTPATH=${OUTPATH:-$HOME/public_html/mz}
+OUTPATH=${3:-$HOME/public_html/mz}
 
 WREM_BASE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PLOTTER=$WREM_BASE/scripts/plotting/makeDataMCStackPlot.py

@@ -21,14 +21,15 @@
 # the flow bins where they cannot be seen -- an N-1 plot in eta is visually
 # identical to the N plot.
 #
-# Usage: btojpsik_cvhnano_n1_bachelor.sh <kpt0.hdf5> <kpt1.hdf5> [outfolder]
+# Usage: btojpsik_cvhnano_n1_bachelor.sh <kpt0.hdf5> <kpt1.hdf5> [outfolder] [outpath]
+#   outpath: base directory for the plots              [$HOME/public_html/mz]
 
 set -euo pipefail
 
-F0=${1:?usage: $0 <kpt0.hdf5> <kpt1.hdf5> [outfolder]}
-F1=${2:?usage: $0 <kpt0.hdf5> <kpt1.hdf5> [outfolder]}
-OUTFOLDER=${3:-cutvars_260908}
-OUTPATH=${OUTPATH:-$HOME/public_html/mz}
+F0=${1:?usage: $0 <kpt0.hdf5> <kpt1.hdf5> [outfolder] [outpath]}
+F1=${2:?usage: $0 <kpt0.hdf5> <kpt1.hdf5> [outfolder] [outpath]}
+OUTFOLDER=${3:-cutvars}
+OUTPATH=${4:-$HOME/public_html/mz}
 
 WREM_BASE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PLOTTER=$WREM_BASE/scripts/plotting/makeDataMCStackPlot.py

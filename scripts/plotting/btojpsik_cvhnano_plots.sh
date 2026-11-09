@@ -26,13 +26,14 @@
 # column on top of the CMS label. --noRatio because with --noData there is
 # nothing to take a ratio to, and the tool still draws the empty panel.
 #
-# Usage: btojpsik_cvhnano_plots.sh <histmaker.hdf5> [outfolder]
+# Usage: btojpsik_cvhnano_plots.sh <histmaker.hdf5> [outfolder] [outpath]
+#   outpath: base directory for the plots              [$HOME/public_html/mz]
 
 set -euo pipefail
 
-INFILE=${1:?usage: $0 <histmaker.hdf5> [outfolder]}
+INFILE=${1:?usage: $0 <histmaker.hdf5> [outfolder] [outpath]}
 OUTFOLDER=${2:-btojpsik_cvhnano}
-OUTPATH=${OUTPATH:-$HOME/public_html/mz}
+OUTPATH=${3:-$HOME/public_html/mz}
 
 WREM_BASE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PLOTTER=$WREM_BASE/scripts/plotting/makeDataMCStackPlot.py

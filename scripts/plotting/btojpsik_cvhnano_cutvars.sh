@@ -27,15 +27,16 @@
 # --vertLineEdges draws the threshold on both panels. It needs the ratio panel,
 # so --noRatio and a vertical line cannot be combined.
 #
-# Usage: btojpsik_cvhnano_cutvars.sh <loose_histmaker.hdf5> [outfolder] [group]
-#   group: all (default) | active | off | jpsi
+# Usage: btojpsik_cvhnano_cutvars.sh <loose_histmaker.hdf5> [outfolder] [group] [outpath]
+#   group:   all (default) | active | off | jpsi
+#   outpath: base directory for the plots              [$HOME/public_html/mz]
 
 set -euo pipefail
 
-INFILE=${1:?usage: $0 <loose_histmaker.hdf5> [outfolder]}
-OUTFOLDER=${2:-cutvars_260908}
+INFILE=${1:?usage: $0 <loose_histmaker.hdf5> [outfolder] [group] [outpath]}
+OUTFOLDER=${2:-cutvars}
 GROUP=${3:-all}
-OUTPATH=${OUTPATH:-$HOME/public_html/mz}
+OUTPATH=${4:-$HOME/public_html/mz}
 
 WREM_BASE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PLOTTER=$WREM_BASE/scripts/plotting/makeDataMCStackPlot.py
