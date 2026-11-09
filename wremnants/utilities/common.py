@@ -67,8 +67,7 @@ calib_filepaths = {
     "tflite_file": f"{calib_dir}/muon_response.tflite",
     # 'tflite_file': f"{calib_dir}/muon_response_nosmearing.tflite"
     "tflite_file_nosmearing": f"{calib_dir}/muon_response_nosmearing.tflite",
-    # "kaon_tflite_file": f"{calib_dir}/kaon_response.tflite",
-    "kaon_tflite_file": "/ceph/submit/data/user/p/pmlugato/mz/calibration/kaon_response_studyanchorplusresidualpchipcells_v1.tflite",
+    "kaon_tflite_file": f"{calib_dir}/kaon_response_studyanchorplusresidualpchipcells_v1.tflite",
 }
 closure_filepaths = {
     "parametrized": f"{closure_dir}/parametrizedClosureZ_ORkinweight_binsel_MCstat_fullres.root",
