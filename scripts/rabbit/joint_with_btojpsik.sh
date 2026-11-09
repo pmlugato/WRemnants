@@ -57,11 +57,8 @@
 # The repro Z/J/psi chain was built at scale 1/1/1 and the full one at 5/5/1, so
 # the B+ histogram has to match whichever chain it is merged with.
 #
-# All configuration is by flag. The old TAG= / BHIST= / JOINT_N_ETA= environment
-# knobs are refused (retired 2026-09-11). The one environment variable that
-# survives is JOINT_N_ETA *inside the container*, set here from --nEta: it is
-# how lowmass_z_rename.py learns the basis size, because merge_inputs.py
-# --rename takes a bare module and offers no way to pass it an argument.
+# All configuration is by flag; TAG / BHIST / JOINT_N_ETA set in the environment
+# are refused rather than ignored, so a stale export cannot change a fit.
 set -uo pipefail
 
 usage() { sed -n '2,/^set -uo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; }
@@ -218,9 +215,8 @@ fi   # channel names JPsi_prompt / JPsi_displaced are the same in both tensors, 
 case $JPSI_MODEL in pou|mu) ;; *) echo "--jpsiModel must be pou or mu" >&2; exit 2 ;; esac
 
 run() {
-  # JOINT_N_ETA is exported for lowmass_z_rename.py only; see the header.
   singularity exec --bind /scratch/,/ceph/,/home/,/work/,/tmp/ "$IMAGE" bash -lc \
-    "cd '$WREM' && source setup.sh >/dev/null 2>&1 && export JOINT_N_ETA=$N_ETA && $1"
+    "cd '$WREM' && source setup.sh >/dev/null 2>&1 && $1"
 }
 
 mkdir -p "$TENSORS" "$FITS" "$LOGS"

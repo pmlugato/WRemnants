@@ -9,8 +9,8 @@
 # check_joint_tensor.py verifies them from the recorded arguments before the fit
 # is allowed to run.
 #
-#   --etaBins $JOINT_N_ETA         same on BOTH histmakers, and the same value
-#                                  the rename map reads from the environment
+#   --etaBins <nEta>               same on BOTH histmakers (--nEta, default
+#                                  24), and the --nEta the check is run with
 #   --scale_A 5.0 --scale_e 5.0    same on BOTH histmakers. The J/psi histmaker
 #                                  overrides BOTH to 5.0 via set_parser_default;
 #                                  mz_dilepton inherits 1.0 for both. Missing
@@ -27,18 +27,50 @@
 #   joint_mz_jpsi_fit.sh full             # everything
 #   joint_mz_jpsi_fit.sh pilot 4,5,6      # only the listed stages
 #
+# Options, after the positionals:
+#   --nEta N        nuisance eta basis for both histmakers and the check  [24]
+#   --nThreads N    histmaker threads (-j)                               [160]
+#
 # Stages: 1 Z histmaker, 2 J/psi histmaker, 3 Z tensor, 4 J/psi tensor,
 #         5 merge + check, 6 fit, 7 plots.
 
 set -euo pipefail
 
-MODE="${1:-pilot}"
-STAGES="${2:-1,2,3,4,5,6,7}"
+MODE=pilot
+STAGES=1,2,3,4,5,6,7
+if [[ $# -gt 0 && $1 != --* ]]; then MODE=$1; shift; fi
+if [[ $# -gt 0 && $1 != --* ]]; then STAGES=$1; shift; fi
 
 case "$MODE" in
   pilot|full|repro) ;;
-  *) echo "usage: $0 {pilot|full} [stages]" >&2; exit 2 ;;
+  *) echo "usage: $0 {pilot|full|repro} [stages] [--nEta N] [--nThreads N]" >&2; exit 2 ;;
 esac
+
+# Configuration is by flag only; a stale export must not change a fit silently.
+for name in JOINT_N_ETA NTHREADS; do
+  if [[ -n ${!name+x} ]]; then
+    echo "ERROR: $name is set in the environment; $(basename "$0") does not read it." >&2
+    echo "Use --nEta / --nThreads instead." >&2
+    exit 2
+  fi
+done
+
+# Nuisance eta binning, shared by BOTH histmakers. The calibration file is
+# native 48 bins of 0.1, but the J/psi histogram eta axis is 24 bins of 0.2, so
+# at 48 each histogram bin spans two nuisance bins and adjacent pairs come out
+# nearly degenerate (measured rho = -0.81 / -0.75 / -0.44 for A / e / M). 24
+# aligns the basis 1:1 with what the data resolves.
+N_ETA=24
+# The histmakers are I/O-bound on the NanoAOD reads, so more threads than
+# cores-in-use still helps; lower it on a busy node.
+NTHREADS=160
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --nEta)     [[ $# -ge 2 ]] || { echo "--nEta needs a value" >&2; exit 2; }; N_ETA=$2; shift 2 ;;
+    --nThreads) [[ $# -ge 2 ]] || { echo "--nThreads needs a value" >&2; exit 2; }; NTHREADS=$2; shift 2 ;;
+    *) echo "unknown option '$1'" >&2; exit 2 ;;
+  esac
+done
 
 run_stage() { [[ ",$STAGES," == *",$1,"* ]]; }
 
@@ -50,18 +82,6 @@ FITS="$CEPH/fitresults"
 LOGS="$CEPH/logs"
 PLOTS="$HOME/public_html/mz"
 TAG="joint_${MODE}"
-# The node has 768 cores. 64 was leaving capacity unused; measured mid-run, the
-# histmaker averaged only ~47 of the 64 requested, so it is I/O-bound on the
-# NanoAOD reads rather than CPU-bound. More threads mainly buy more concurrent
-# reads, which still helps on NFS. Override with NTHREADS=... if the box is busy.
-NTHREADS="${NTHREADS:-160}"
-
-# Nuisance eta binning, shared by BOTH histmakers and by the rename map. The
-# calibration file is native 48 bins of 0.1, but the J/psi histogram eta axis is
-# 24 bins of 0.2, so at 48 each histogram bin spans two nuisance bins and
-# adjacent pairs come out nearly degenerate (measured rho = -0.81 / -0.75 /
-# -0.44 for A / e / M). 24 aligns the basis 1:1 with what the data resolves.
-export JOINT_N_ETA="${JOINT_N_ETA:-24}"
 
 mkdir -p "$HISTS" "$TENSORS" "$FITS" "$LOGS"
 mkdir -p "$PLOTS/joint_mz_jpsi_prefit_postfit" \
@@ -132,7 +152,7 @@ if run_stage 1; then
   echo "--- [1/7] mz_dilepton"
   sing python $WREM/scripts/histmakers/mz_dilepton.py \
       --axes $Z_AXES $Z_BINNING $Z_MAXFILES -j $NTHREADS \
-      --fitMuonScaleAndResolution $SCALES --etaBins $JOINT_N_ETA \
+      --fitMuonScaleAndResolution $SCALES --etaBins $N_ETA \
       -o $HISTS --postfix $TAG 2>&1 | tee "$LOGS/joint_mz_jpsi_z_${MODE}.log"
 fi
 Z_HIST=$(ls -t "$HISTS"/mz_dilepton_*_"$TAG".hdf5 2>/dev/null | head -1 || true)
@@ -142,7 +162,7 @@ if run_stage 2; then
   echo "--- [2/7] dimuon_resonances_calinput"
   sing python $WREM/scripts/histmakers/dimuon_resonances_calinput.py \
       --resonance jpsi --triggers dimuon20_jpsi doublemu4_jpsitrk_displaced \
-      --fitMuonScaleAndResolution $SCALES --etaBins $JOINT_N_ETA $JPSI_EXTRA \
+      --fitMuonScaleAndResolution $SCALES --etaBins $N_ETA $JPSI_EXTRA \
       -j $NTHREADS -o $HISTS --postfix $TAG 2>&1 | tee "$LOGS/joint_mz_jpsi_calinput_${MODE}.log"
 fi
 JPSI_HIST=$(ls -t "$HISTS"/dimuon_resonances_calinput_*_"$TAG".hdf5 2>/dev/null | head -1 || true)
@@ -200,7 +220,7 @@ if run_stage 5; then
   # than what it claims to, and the resulting mZ would be wrong-but-plausible.
   sing python $WREM/scripts/rabbit/check_joint_tensor.py $MERGED \
       --zHist $Z_HIST --jpsiHist $JPSI_HIST --zTensor $Z_TENSOR \
-      --nEta $JOINT_N_ETA --zChannel Z \
+      --nEta $N_ETA --zChannel Z \
       2>&1 | tee "$LOGS/joint_mz_jpsi_check_${MODE}.log"
 
   echo "--- [5/7] debug_inputdata"
@@ -270,7 +290,7 @@ if run_stage 7; then
   sing python $WREM/rabbit/bin/rabbit_print_impacts.py $FITRESULT \
       2>&1 | tee "$LOGS/joint_mz_jpsi_impacts_${MODE}.txt" || true
   # --params takes exact names, not regexes; a central-eta block stays readable.
-  CLO=$(( JOINT_N_ETA / 2 - 4 )); CHI=$(( JOINT_N_ETA / 2 + 3 ))
+  CLO=$(( N_ETA / 2 - 4 )); CHI=$(( N_ETA / 2 + 3 ))
   COVPARAMS="massShiftZ100MeV $(for i in $(seq $CLO $CHI); do echo -n "A$i e$i M$i "; done)"
   sing python $WREM/rabbit/bin/rabbit_plot_cov.py $FITRESULT \
       -o $PLOTS/joint_mz_jpsi_covariance --params $COVPARAMS \

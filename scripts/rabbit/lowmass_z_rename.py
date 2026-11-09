@@ -28,29 +28,20 @@ Verified on the probe tensors:
 * every ``unc`` index touches exactly one ``(eta, param)`` cell, checked for all
   144
 
-The J/psi *histogram* eta axis defaults to 24 bins and has nothing to do with
-this basis. Do not conflate the two.
+The joint fits group the basis into 24 eta bins of 0.2 (both histmakers run
+with ``--etaBins 24``; the B+ histmaker with ``--scaleVariationEtaBins 24``),
+because at 48 adjacent nuisance pairs come out nearly degenerate. The map does
+not need to know that number; see ``N_ETA_MAX``.
 """
 
-# Number of eta bins in the nuisance basis -- NOT the histogram binning.
-#
-# The calibration file is native 48 bins of width 0.1. Running the histmakers
-# with `--etaBins 24` coarsens the basis to 24 bins of 0.2, which is what the
-# J/psi histogram eta axis actually resolves; left at 48, adjacent pairs are
-# nearly degenerate (measured: rho = -0.81 for A, -0.75 for e, -0.44 for M,
-# because each histogram bin spans exactly two calibration bins).
-#
-# Read from the environment so the driver sets it in one place alongside
-# `--etaBins`, and so this file cannot drift out of step with the histmakers.
-# check_joint_tensor.py compares it against what the merged tensor actually
-# contains and fails loudly rather than silently correlating a subset.
-import os
-
-# The one environment variable left in this chain, and not a user knob:
-# merge_inputs.py --rename takes a bare module and offers no way to pass it an
-# argument, so joint_with_btojpsik.sh exports JOINT_N_ETA inside the container
-# from its --nEta flag. Do not set it by hand; pass --nEta to the driver.
-N_ETA = int(os.environ.get("JOINT_N_ETA", "24"))
+# Size of the calibration file's native eta basis. The rename is written for
+# all of it, because the index arithmetic below does not depend on how coarsely
+# the histmakers grouped the basis (their --etaBins / --scaleVariationEtaBins):
+# a Z tensor built on N eta groups carries Scale_correction_unc0 .. unc{3N-1},
+# exactly the first 3N keys of this map, and the remaining keys match nothing.
+# Which N the merge actually used is verified by check_joint_tensor.py --nEta,
+# against what the merged tensor contains.
+N_ETA_MAX = 48
 
 # Order matters: it is the order the packed histogram is filled in.
 PARAMS = ["A", "e", "M"]
@@ -61,7 +52,7 @@ Z_SCALE_BASE = "Scale_correction_unc"
 
 rename_systs = {
     f"{Z_SCALE_BASE}{ieta * len(PARAMS) + iparm}": f"{param}{ieta}"
-    for ieta in range(N_ETA)
+    for ieta in range(N_ETA_MAX)
     for iparm, param in enumerate(PARAMS)
 }
 
