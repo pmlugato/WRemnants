@@ -6,17 +6,19 @@ candidates with three CVH fit arms. It shares no physics branch name with the
 BMM-Tools NanoAOD that ``btojpsik.py`` reads, which is left untouched so the
 validated 2018 results stay reproducible.
 
-Scope is kinematic distributions and data/MC comparison. The kaon scale
-variations are not wired: they need gen kaon pT, which this NanoAOD does not
-provide (gap G2 in the proposal).
+It writes the ``fitbins`` histogram (mass in cells of kaon pT, eta and charge,
+split by generator category) that ``scripts/rabbit/btojpsik_cvhnano_tensor.py``
+turns into the fit tensor, the A/e/M momentum-scale variations of the
+simulated template (``--scaleVariations``), and per-variable diagnostic
+histograms (``--axes`` / ``--allaxes``) for data/MC comparison.
 
-Example:
+The histogram behind the joint mZ + J/psi + B+ fit:
 
     python scripts/histmakers/btojpsik_cvhnano.py \
         --era 2016PostVFP --dataPath /ceph/submit/data/group/cms/store \
         --filterProcs Charmonium_2016PostVFP_cvhNano InclusiveBToJpsiX_2016PostVFP \
-        --allaxes --cutflow --noScaleToData --theoryCorr none \
-        -o /ceph/submit/data/user/p/pmlugato/mz/histograms/ -p v1
+        --scaleVariations --fitBinsHist --scaleVariationEtaBins 24 \
+        --skipTriggerCheck --responseModel kpi -j 32 -o <outdir> -p kpiA_kpi
 """
 
 import json
@@ -84,9 +86,8 @@ parser.add_argument("--cutflow", action="store_true", help="Print the cutflow ta
 parser.add_argument(
     "--fitBinsHist",
     action="store_true",
-    help="Book the 5D differential histogram (bachelor pT, eta, charge, mass, "
-    "genCategory) used to measure whether the simulation can support the "
-    "intended fit binning.",
+    help="Book the 'fitbins' histogram (bachelor pT, eta, charge, mass, "
+    "genCategory) that the tensor writer reduces to the fit binning.",
 )
 parser.add_argument(
     "--qualityHists",
@@ -175,7 +176,7 @@ parser.add_argument(
     "the central-value corrector applies (1 + A - e*k)*k with no cosh(eta), so "
     "any eta-dependent factor is already inside the fitted e_i(eta). 'energy' "
     "treats it as a shift of total energy, which carries an extra 1/cosh(eta) "
-    "-- 1.0 at eta 0, 2.15 at 1.4, 5.56 at 2.4. See notes/E_IN_MATERIAL_TERM.md.",
+    "-- 1.0 at eta 0, 2.15 at 1.4, 5.56 at 2.4.",
 )
 parser.add_argument(
     "--responseModel",
@@ -202,13 +203,13 @@ parser.add_argument(
     "--scaleVariationEtaBins",
     type=int,
     default=4,
-    help="Number of eta bins the A/e/M variations are grouped into. The "
-    "correction file has 48, which would give 144 scale nuisances on a channel "
-    "with of order 1e4 signal candidates, so the default is deliberately "
-    "coarse. Each fine eta bin inside a group is still moved by its own "
-    "uncertainty under one shared nuisance -- a fully correlated variation "
-    "within the group, not an average over it. Must divide 48. Set to 48 to "
-    "recover the basis the joint mZ + J/psi fit correlates by name.",
+    help="Number of eta bins the A/e/M variations are grouped into; must "
+    "divide the 48 of the correction file. Each fine eta bin inside a group is "
+    "still moved by its own uncertainty under one shared nuisance -- a fully "
+    "correlated variation within the group, not an average over it. Must equal "
+    "the basis the Z and J/psi histmakers were run with (their --etaBins, 24 "
+    "for the joint fit), because the joint fit correlates the nuisances by "
+    "name.",
 )
 parser.add_argument(
     "--jpsiFixedAUnc",
@@ -276,8 +277,8 @@ parser.add_argument("--minSl3d", type=float, default=0.0)
 parser.add_argument("--maxAlphaBS", type=float, default=-1.0, help="<0 disables")
 parser.add_argument("--minLegsRefit", type=int, default=3)
 
-# Bachelor and joint-fit quality. All default to off: each is under study in
-# add-cvhnano-bachelor-quality-cuts and none is validated.
+# Bachelor and joint-fit quality. All default to off; none is part of the
+# validated selection.
 parser.add_argument(
     "--bachelorMinValidHits",
     type=int,
@@ -330,10 +331,9 @@ parser.add_argument(
     type=str,
     default=None,
     help="JSON file of int(Pileup_nTrueInt) -> weight, applied to simulation "
-    "only. Derive with scripts/plotting/btojpsik_cvhnano_pileup.py. Was keyed "
-    "on the reconstructed vertex count while the NanoAOD carried no truth "
-    "pileup (gap G4, now closed), which made the nPV agreement true by "
-    "construction rather than a test.",
+    "only. Derive with scripts/plotting/btojpsik_cvhnano_pileup.py. Keyed on "
+    "the true interaction count rather than the reconstructed vertex count, so "
+    "the nPV data/MC agreement remains a test rather than being imposed.",
 )
 parser.add_argument(
     "--noForcedDecayWeight",
@@ -424,11 +424,8 @@ if args.scaleVariations:
         raise ValueError(
             f"--muonScaleVariation {args.muonScaleVariation} is not wired in "
             "this channel. The analytic splines backend needs a per-leg "
-            "response-weight column from a tflite response model, and the only "
-            "kaon-trained one on disk predates this selection and this "
-            "NanoAOD, so comparing against it now would confound three "
-            "changes at once. It is a planned cross-check once that model is "
-            "regenerated."
+            "response-weight column from a kaon-trained tflite response model, "
+            "and none exists for this selection and NanoAOD."
         )
     if 48 % args.scaleVariationEtaBins:
         raise ValueError(
@@ -526,9 +523,9 @@ if args.scaleVariations:
         # Flat prefit widths instead of the massfit uncertainties. The joint
         # fit correlates A/e/M with the Z and J/psi BY NAME, so one unit has to
         # mean the same shift here as in their histmakers, which run with
-        # --fitMuonScaleAndResolution. Unwired before 2026-10-06, which left
-        # one unit 5-33x smaller here (notes/aem_unit_mismatch.md). The three
-        # central-correction helpers it would also zero are discarded above.
+        # --fitMuonScaleAndResolution; with the massfit uncertainties one unit
+        # would be 5-33x smaller here. The three central-correction helpers it
+        # would also zero are discarded above.
         fit_muon_scale=args.fitMuonScaleAndResolution,
         fixed_A_unc=args.jpsiFixedAUnc,
         fixed_e_unc=args.jpsiFixedEUnc,
@@ -706,10 +703,8 @@ def _selection_list():
                 lambda df: sel.select_bachelor_pt_max(df, args.bachelorMaxPt),
             )
         )
-    # Candidate vertex probability. Declared since the first version of this
-    # histmaker and never applied -- so every result so far was produced with it
-    # silently off, including at the 0.3 the 2018 selection used, which is that
-    # selection's tightest cut.
+    # Candidate vertex probability. Off by default; the 2018 selection cut it
+    # at 0.3, its tightest cut.
     if args.minVtxProb > 0:
         selections.append(
             (
@@ -769,9 +764,8 @@ def _selection_list():
 
 
 # Pileup reweighting for the simulation, on the generated number of true
-# interactions (gap G4, closed). What was previously reweighted -- the
-# reconstructed vertex count -- is now left alone, so its data/MC agreement is
-# a result rather than something imposed.
+# interactions. The reconstructed vertex count is left alone, so its data/MC
+# agreement is a result rather than something imposed.
 pileup_weights = None
 if args.pileupWeights:
     with open(args.pileupWeights) as fh:
@@ -796,7 +790,7 @@ def build_graph(df, dataset):
     else:
         # GenEvt_weight, not genWeight: this NanoAOD renames it. It is
         # identically 1.0 in this production, so the sum of weights is an
-        # event count -- see the normalisation section of the proposal.
+        # event count.
         df = df.Define("weight", "GenEvt_weight")
     df = sel.define_pileup_weight(df, dataset.is_data, pileup_weights)
     df = df.Define("nominal_weight", "static_cast<double>(weight) * cand_pileupWeight")
@@ -839,10 +833,8 @@ def build_graph(df, dataset):
     df = sel.define_leg_kinematics(df)
     df = sel.define_raw_dimuon(df)
 
-    # Both of these are defined before the selections, not after, because they are
-    # now cut on as well as ranked on. The vertex probability used to be computed
-    # only for the candidate ranking, which is why --minVtxProb existed for months
-    # without doing anything.
+    # Defined before the selections because they are cut on (--minVtxProb,
+    # --maxChisqNdof) as well as used to rank candidates.
     df, prob_col = sel.define_arm_vertex_probability(df, arm)
     df = sel.define_chisq_ndof(df, arm)
 
@@ -978,11 +970,11 @@ def build_graph(df, dataset):
         )
         hist_names.add("nominal_muonScaleSyst_responseWeights")
 
-        # The gen-match audit, counted on whatever sample is actually run rather
-        # than asserted from 12 files. Every candidate in the exclusive-signal
-        # and other-real-b categories was measured to have all three legs
-        # matched, and no not-fully-matched candidate was signal; this is the
-        # histogram that says so on the full statistics.
+        # The gen-match audit, counted on the sample actually run. Every
+        # candidate in the exclusive-signal and other-real-b categories should
+        # have all three legs matched, because the truth categorisation needs
+        # three matched legs; this histogram checks it, and the post-run audit
+        # below reports it.
         #
         # A hard throw would have been the natural assertion, but a throw inside
         # an RDataFrame Define kills the event loop -- the same reason the exact
@@ -1088,10 +1080,6 @@ def build_graph(df, dataset):
         )
     )
 
-    # The differential fit binning: mass in bins of bachelor (pT, eta, charge).
-    # Booked on fine, regular pT and mass axes rather than the eventual quantile
-    # binning, because quantile edges have to be derived *from* this histogram.
-    # eta is on the intended 0.1-wide binning already, since that one is fixed.
     if args.qualityHists:
         for col, axis in ID_AXES.items():
             if not df.HasColumn(f"{col}_scalar"):
@@ -1112,6 +1100,10 @@ def build_graph(df, dataset):
                 )
             )
 
+    # The differential fit binning: mass in bins of bachelor (pT, eta, charge).
+    # Booked on fine, regular pT and mass axes rather than the eventual quantile
+    # binning, because the quantile edges are derived from this histogram by
+    # the tensor writer. eta is on the 0.1-wide binning of the correction file.
     if args.fitBinsHist:
         # Defined here rather than relying on the --allaxes loop, so the
         # histogram does not silently depend on which axes were requested.

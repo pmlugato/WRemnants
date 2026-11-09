@@ -4,8 +4,7 @@
 # Correlation between the Z and J/psi channels happens by parameter name and by
 # nothing else (see scripts/rabbit/lowmass_z_rename.py). The settings below are
 # not defaults and must not be dropped: every one of them is a shared assumption
-# whose mismatch produces a wrong mZ without producing an error. They are
-# recorded in openspec/changes/add-joint-mz-jpsi-fit/assumptions.md, and
+# whose mismatch produces a wrong mZ without producing an error.
 # check_joint_tensor.py verifies them from the recorded arguments before the fit
 # is allowed to run.
 #
@@ -110,7 +109,7 @@ sing() {
 }
 
 # ---------------------------------------------------------------------------
-# repro: havyn's recipe, verbatim (mz updates, 5 Aug 2026). Keeps the full 5D
+# repro: havyn's recipe, verbatim. Keeps the full 5D
 # binning on BOTH channels and controls size with --sparse plus an MC-event
 # threshold, rather than projecting p_T away. That matters physically: the
 # correction is dk/k = A - e*k with k = 1/pT, so A and e are told apart ONLY by
@@ -144,7 +143,7 @@ else
 fi
 
 # Both histmakers at 1.0, matching havyn. The J/psi histmaker's own defaults are
-# 5.0 for BOTH scale_A and scale_e (set_parser_default, lines 199-200) while
+# 5.0 for BOTH scale_A and scale_e (set_parser_default) while
 # mz_dilepton inherits 1.0, so scale_A/scale_e must be passed explicitly to the
 # J/psi side to bring it down.
 SCALES="--scale_A 1.0 --scale_e 1.0"

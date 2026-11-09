@@ -28,16 +28,15 @@ SENTINEL = -98.0
 # genCategory axis encoding.
 #
 # Every bin below GEN_NO_B_ANCESTOR is a *real b-hadron decay*, identified from
-# the per-leg generator parentage the NanoAOD now carries. The previous encoding
-# was three bins deduced from a candidate-level direction match; it is retired
-# because that match cannot tell B+ -> J/psi K+ from B+ -> J/psi K*+, and the
-# two do not belong in the same template (the latter sits ~200 MeV low with no
-# entries at all in the peak window).
+# the per-leg generator parentage the NanoAOD carries. A candidate-level
+# direction match would not do: it cannot tell B+ -> J/psi K+ from
+# B+ -> J/psi K*+, and the two do not belong in the same template (the latter
+# sits ~200 MeV low with no entries at all in the peak window).
 #
 # GEN_NO_B_ANCESTOR is filled and is deliberately NOT a template: it is
 # combinatorial, and combinatorial is modelled in data by the analytic
 # background, together with the prompt and fake components this simulation does
-# not contain (gap G9). Keeping the bin costs nothing and keeps the composition
+# not contain. Keeping the bin costs nothing and keeps the composition
 # denominators available; `datagroups_cvhnano` is what excludes it from plots.
 #
 # The last bin is reserved for data so that data and simulation histograms are
@@ -131,8 +130,8 @@ GROUND_STATE = {
     5224: 5122,  # Sigma_b*+  -> Lambda_b
 }
 
-# Forced-decay branching fractions from the generator fragment
-# (condor/mc_inclusive_btojpsix_2016postvfp/fragments/BPH-RunIISummer20UL16GEN-00017-fragment.py).
+# Forced-decay branching fractions from the generator fragment of the inclusive
+# b -> J/psi X sample (BPH-RunIISummer20UL16GEN-00017).
 #
 # EvtGen was told to decay every b hadron in `list_forced_decays` into a J/psi
 # mode with total probability 1. The "original total forced BR" comment on each
@@ -160,7 +159,7 @@ FORCED_BR = {
 # *identifiable* -- the decay chain can be walked, and feed-down is 1.9% of
 # B+-ancestor candidates -- but the per-state factors are not applied, because
 # feed-down candidates are excluded from the signal category rather than
-# reweighted into it. See the gap record.
+# reweighted into it.
 
 
 @dataclass
@@ -239,7 +238,7 @@ def _geom(prefix: str) -> Dict[str, str]:
     return {g: f"{prefix}{g[0].upper()}{g[1:]}" for g in _GEOM}
 
 
-# Unconstrained dimuon mass per arm (gap G11, closed). The joint arm stores only
+# Unconstrained dimuon mass per arm. The joint arm stores only
 # the *constrained* J/psi mass, pinned to the PDG value for every candidate, so
 # this is the analysis' only fitted dimuon mass -- and the muon momentum-scale
 # handle that ties this channel to the J/psi calibration.
@@ -361,7 +360,7 @@ def _arm_axes(arm: ArmSpec) -> Dict[str, hist.axis.AxesMixin]:
     a[arm.col(arm.geom["sxy"])] = _reg(60, 0.0, 120.0, f"{p}_sxy")
     a[arm.col(arm.geom["l3d"])] = _reg(60, 0.0, 6.0, f"{p}_l3d")
     a[arm.col(arm.geom["sl3d"])] = _reg(60, 0.0, 120.0, f"{p}_sl3d")
-    # 3D pointing angle to the PV (gap G8, closed). The transverse alphaBS has
+    # 3D pointing angle to the PV. The transverse alphaBS has
     # a long tail because the missing daughter tilts the candidate out of the
     # plane; the 3D angle is the one the displacement cut should have used.
     a[arm.col(arm.geom["alpha3dPV"])] = _reg(64, 0.0, math.pi, f"{p}_alpha3dPV")
@@ -444,7 +443,7 @@ def _shared_axes() -> Dict[str, hist.axis.AxesMixin]:
         # Event level. Keys are the dataframe column that fills them.
         f"n{c}": hist.axis.Integer(0, 15, name="nCand", underflow=False, overflow=True),
         "nPV": hist.axis.Integer(0, 60, name="nPV", underflow=False, overflow=True),
-        # True pileup (gap G4, closed). nTrueInt is the Poisson mean, so it is
+        # True pileup. nTrueInt is the Poisson mean, so it is
         # a float; the axis is integer-edged because the reweighting is, and
         # because the official data profiles are binned that way.
         "Pileup_nTrueInt": _reg(60, 0.0, 60.0, "nTrueInt"),
@@ -472,7 +471,7 @@ def _shared_axes() -> Dict[str, hist.axis.AxesMixin]:
         "cand_bachelorDzPV": _reg(80, -1.0, 1.0, "bachelor_dzPV"),
         "cand_bachelorNormChi2": _reg(60, 0.0, 6.0, "bachelor_normChi2"),
         # Impact-parameter SIGNIFICANCE, the standard combinatorial
-        # discriminant, which had no input before (gap G6). Signed, so the
+        # discriminant. Signed, so the
         # symmetry of the distribution is visible rather than folded away.
         "cand_bachelorD0Sig": _reg(60, -30.0, 30.0, "bachelor_d0Sig"),
         "cand_bachelorDzPVSig": _reg(60, -30.0, 30.0, "bachelor_dzPVSig"),
@@ -490,16 +489,14 @@ def _shared_axes() -> Dict[str, hist.axis.AxesMixin]:
         ),
         "cand_bachelorNValidHits": _reg(40, 0.0, 40.0, "bachelor_nValidHits"),
         "cand_bachelorDedxHarmonic2": _reg(60, 0.0, 12.0, "bachelor_dedx"),
-        # Dimuon rebuilt from the raw muon tracks. The NanoAOD's only J/psi
-        # mass is the joint fit's CONSTRAINED parameter, pinned to the PDG
-        # value for every candidate, so it carries no information (gap G11).
-        # This is the only unconstrained dimuon mass available.
+        # Dimuon rebuilt from the raw muon tracks, with no vertex fit. The joint
+        # arm's J/psi mass is its CONSTRAINED parameter, pinned to the PDG
+        # value; the fitted unconstrained masses are the KVF arms' dimuon block.
         "cand_dimuonRawMass": _reg(80, 2.9, 3.3, "dimuon_raw_mass"),
         "cand_dimuonRawPt": _reg(60, 0.0, 60.0, "dimuon_raw_pt"),
         "cand_dimuonRawEta": _reg(48, -2.4, 2.4, "dimuon_raw_eta"),
-        # Per-leg parentage (gap G2, closed). Legs 0 and 1 are the muons, leg 2
-        # the bachelor -- confirmed empirically, not assumed: leg 2 is the
-        # bachelor for 139 185 of 139 185 candidates over 30 files.
+        # Per-leg parentage. Legs 0 and 1 are the muons, leg 2 the bachelor
+        # (checked on 139 185 candidates).
         f"{c}_nLegsGenMatched": hist.axis.Integer(
             0, 4, name="nLegsGenMatched", underflow=False, overflow=False
         ),
@@ -545,11 +542,10 @@ EVENT_SCALAR_AXES = {
 
 
 # --- axes for the differential fit binning ---------------------------------
-# The eventual fit bins mass in cells of bachelor (pT, eta, charge). eta is on
-# its intended final binning: 48 bins of 0.1 over [-2.4, 2.4]. pT is left fine
-# and regular here because the quantile edges have to be derived *from* this
-# histogram -- committing to quantile edges before measuring the occupancy
-# would be circular.
+# The fit bins mass in cells of bachelor (pT, eta, charge). eta is on the 48
+# bins of 0.1 of the correction file, which the tensor writer may rebin. pT is
+# left fine and regular here because the tensor writer derives its quantile
+# edges from this histogram.
 axis_fit_bachelor_pt = hist.axis.Regular(
     100, 0.0, 10.0, name="fit_bachelor_pt", underflow=False, overflow=True
 )
@@ -568,6 +564,10 @@ axis_fit_bachelor_eta = hist.axis.Regular(
 # the same sign but reading a charge off a particle-identity column would
 # suggest truth is involved, and it is not -- the pdgId is the +/-321
 # hypothesis.
+axis_fit_bachelor_charge = hist.axis.Regular(
+    2, -2.0, 2.0, name="fit_bachelor_charge", underflow=False, overflow=False
+)
+
 # --- axes for the kaon-ID study -------------------------------------------
 # The discriminants are studied against bachelor pT, not inclusively, because
 # every one of them depends on it: displacement significance improves with
@@ -577,7 +577,7 @@ axis_fit_bachelor_eta = hist.axis.Regular(
 # Coarse pT bins on purpose -- the point is overlays a reader can tell apart, and
 # the boundaries are placed where the physics changes: 0.7 GeV is where
 # ionisation stops separating kaons from pions, and 1 GeV is the 2018 production
-# floor this is meant to replace.
+# floor.
 axis_id_bachelor_pt = hist.axis.Variable(
     [0.0, 0.4, 0.7, 1.0, 1.5, 2.5, 4.0, 20.0],
     name="id_bachelor_pt",
@@ -600,10 +600,6 @@ ID_AXES = {
     "cand_bachelorNormChi2": _reg(50, 0.0, 5.0, "id_normChi2"),
     "cand_bachelorRelPtErr": _reg(60, 0.0, 0.12, "id_relPtErr"),
 }
-
-axis_fit_bachelor_charge = hist.axis.Regular(
-    2, -2.0, 2.0, name="fit_bachelor_charge", underflow=False, overflow=False
-)
 
 
 # --- axes for the generator-truth diagnostics ------------------------------

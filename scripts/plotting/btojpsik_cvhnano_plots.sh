@@ -9,8 +9,7 @@
 # tool needs nothing beyond the labels and colours in
 # wremnants/utilities/styles/styles.py.
 #
-#   --noData, and NOT --normToData. This changed on 2026-08-18 and the reason is
-#   physics, not taste. Every simulated component is a real b-hadron decay; the
+#   --noData, and NOT --normToData, for a physics reason. Every simulated component is a real b-hadron decay; the
 #   simulation contains none of the prompt-charmonium or fake-muon combinatorial
 #   that data also has, and the combinatorial it does contain is excluded from
 #   the groups on purpose. The stack is therefore ~12% of the data in the peak
@@ -50,12 +49,12 @@ VARS=(
   "nominal_BuJpsiK_jointCvhMassErr:jointCvh_massErr"
   "nominal_BuJpsiK_jointCvhPt:jointCvh_pt"
   # J/psi. jointCvhJpsiMass is the constrained parameter and is deliberately
-  # included to show that it carries no information (gap G11); the usable
-  # dimuon mass is the one rebuilt from the muon tracks.
+  # included to show that it carries no information; the raw-track rebuild
+  # and the KVF fits below are the unconstrained dimuon masses.
   "nominal_cand_dimuonRawMass:dimuon_raw_mass"
   "nominal_cand_dimuonRawPt:dimuon_raw_pt"
   "nominal_BuJpsiK_jointCvhJpsiMass:jointCvh_jpsi_mass"
-  # Unconstrained dimuon mass from a real vertex fit (gap G11, closed). This is
+  # Unconstrained dimuon mass from a real vertex fit. This is
   # the muon momentum-scale handle; the two above are a raw-track rebuild and a
   # constrained parameter respectively.
   "nominal_BuJpsiK_kvfCvhDimuonMass:kvfCvh_dimuon_mass"
@@ -70,7 +69,7 @@ VARS=(
   "nominal_cand_bachelorD0:bachelor_d0"
   "nominal_cand_bachelorDzPV:bachelor_dzPV"
   "nominal_cand_bachelorNValidHits:bachelor_nValidHits"
-  # Impact-parameter significance and track quality (gap G6, closed).
+  # Impact-parameter significance and track quality.
   "nominal_cand_bachelorD0Sig:bachelor_d0Sig"
   "nominal_cand_bachelorRelPtErr:bachelor_relPtErr"
   "nominal_cand_bachelorNValidPixelHits:bachelor_nValidPixelHits"
@@ -79,7 +78,7 @@ VARS=(
   "nominal_BuJpsiK_jointCvhSl3d:jointCvh_sl3d"
   "nominal_BuJpsiK_jointCvhLxy:jointCvh_lxy"
   "nominal_BuJpsiK_jointCvhAlphaBS:jointCvh_alphaBS"
-  # 3D pointing angle to the PV (gap G8, closed).
+  # 3D pointing angle to the PV.
   "nominal_BuJpsiK_jointCvhAlpha3dPV:jointCvh_alpha3dPV"
   "nominal_BuJpsiK_kvfCvhVtxProb:kvfCvh_vtxProb"
   # Fit diagnostics and event quantities
@@ -89,8 +88,8 @@ VARS=(
   "nominal_nBuJpsiK:nCand"
   "nominal_nPV:nPV"
   "nominal_nTrack:nTrack"
-  # True pileup (gap G4, closed). nPV is now a test rather than the thing the
-  # reweighting was fitted to.
+  # True pileup, the variable the reweighting is keyed on; nPV above is then
+  # a test of it.
   "nominal_Pileup_nTrueInt:nTrueInt"
 )
 

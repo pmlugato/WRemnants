@@ -51,7 +51,7 @@ MC_GROUPS = [
 #
 # Why it must not be fitted: the simulation is an inclusive b -> J/psi X
 # production, so it contains **none** of the prompt-charmonium or fake-muon
-# combinatorial that data also has (gap G9 in `add-jpsix-histmaker`). A template
+# combinatorial that data also has. A template
 # built from one third of the combinatorial would look like a measurement of all
 # of it. Combinatorial is modelled in data by the analytic background shape.
 #

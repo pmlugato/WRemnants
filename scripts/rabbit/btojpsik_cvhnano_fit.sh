@@ -15,11 +15,9 @@
 #
 #   config    full | ptcharge | inclusive
 #
-# Everything is a command-line flag. This script used to read ~25 knobs from the
-# environment (BKGMODEL=..., RESVAR=..., ...); that was retired on 2026-09-11
-# because a stale export in the shell silently changed a fit with nothing on the
-# command line to show it. If any of the old names is set, the script refuses to
-# run and says which flag replaces it.
+# Everything is a command-line flag. The environment names of an older version
+# of this script (BKGMODEL=..., RESVAR=..., ...) are refused, with the flag that
+# replaces each, so that a stale export cannot change a fit unseen.
 #
 # Options (defaults in brackets):
 #   --bkgModel M         exp | expquad | exppoly | bernstein            [exp]
@@ -29,11 +27,9 @@
 #   --observed           fit the observation instead of an Asimov dataset. Runs
 #                        UNBLINDED: rabbit multiplies every normalisation by
 #                        exp(N(0, 5)) on an observed fit unless --unblind is
-#                        passed, which put every B+ data fit before 2026-09-14
-#                        up to e^10 off at the start (prefit loss 986k blinded,
-#                        46k unblinded) and made trust-krylov stall. A
-#                        calibration channel has nothing to blind. Applied to
-#                        the fit AND the plot-ready pass.
+#                        passed, which starts the fit up to e^10 off and makes
+#                        trust-krylov stall. A calibration channel has nothing
+#                        to blind. Applied to the fit AND the plot-ready pass.
 #   --scaleVar           add the A/e/M nuisances from the histmaker's variation
 #                        tensor (off reproduces the old no-systematics fit)
 #   --scaleVarScale X    inflate every variation about the nominal      [1.0]
@@ -62,8 +58,8 @@
 #                        class is identical (a linear exponent is absorbed by
 #                        the poly's first order).                        [flat]
 #   --resVar W           signal resolution smearing width in GeV; 0 disables.
-#                        Use ~0.003 (matched-purity fit, openspec 17.5); NOT
-#                        the 0.0089 this once said.                       [0]
+#                        0.005 with --resAxes fit_bachelor_eta is the primary;
+#                        0.003 is the cross-check.                         [0]
 #   --resConstrained     give the resolution nuisance a unit Gaussian prior
 #                        (default: unconstrained, the data determines it)
 #   --resAxes CSV        cell axes the resolution nuisance varies over. Empty
@@ -163,10 +159,7 @@ CURV_AXES_SET=0; CURV_AXES=""
 POLYORDER=2
 MCBKG=none
 DATASCALE=1
-# Resolution nuisance: smearing width in GeV. ~0.003 from the matched-purity,
-# matched-window fit (openspec aem 17.5). The 0.0089 once recommended here was
-# sqrt(17.29^2 - 14.81^2), a data-versus-MC-SIGNAL comparison, and 0.005 was
-# the wide-window value where the background model absorbs shape.
+# Resolution nuisance: reference smearing width in GeV (0 = none).
 RESVAR=0
 RESCONSTR=0
 RES_AXES=""
@@ -369,11 +362,8 @@ done
 if [[ $BKGMODEL == exp ]]; then
   MODELS="$MODELS --paramModel AxisExpModel $CHANNEL $BKG $MASS $CELL_CSV${SLOPE_CSV:+ $SLOPE_CSV}"
 elif [[ $BKGMODEL == expquad ]]; then
-  # Alias for exppoly order 2. AxisExpQuadModel was lost when the rabbit
-  # submodule was reset to havyn/upstream-main-havyn on 2026-08-27; order 2 of
-  # the poly model was verified equivalent to it (span residual 3.2e-07, and the
-  # two Asimov fits agree to 2.2338972927e-29 vs 2.2338976236e-29), so the alias
-  # loses nothing and there is one class to maintain instead of two.
+  # Alias for exppoly order 2, which spans the same exp(quadratic) family as
+  # a dedicated exp-quadratic model (verified to agree to 1e-7).
   [[ -z $SLOPE_CSV ]] && SLOPE_CSV="$CELL_CSV"
   MODELS="$MODELS --paramModel AxisExpPolyModel $CHANNEL $BKG $MASS $CELL_CSV 2 $SLOPE_CSV"
 elif [[ $BKGMODEL == exppoly ]]; then
@@ -499,23 +489,20 @@ fi
 # --- convergence gate -------------------------------------------------------
 # A zero exit status is not convergence. rabbit writes its results whenever the
 # Hessian passes the Cholesky factorisation, and a Hessian at a NON-STATIONARY
-# point factorises perfectly well while being no covariance at all. The
-# normgrouped exp data fit ran to iteration 7199 with edmval 72668, wrote a
-# 442 kB results file with plots and impacts, and every data-side number taken
-# from it -- postfit chi-square, correlations, pulls, impacts -- was meaningless.
+# point factorises perfectly well while being no covariance at all: such a fit
+# writes plots and impacts whose correlations, pulls and impacts mean nothing.
 #
 # **edmval is the only verdict.** Two things that look like verdicts are not:
 #
 #   scipy's "success" flag: trust-krylov reports success: False on fits that have
-#   converged to edmval 1e-17. Measured on three toys, all three False. Using it
-#   as a verdict rejects every good fit, so it is a warning here and nothing more.
+#   converged to edmval 1e-17, so it is a warning here and nothing more.
 #
 #   "Maximum number of iterations has been exceeded": means the minimiser ran out
 #   of budget, which usually shows up in edmval anyway. Surfaced loudly, because a
 #   budget-limited fit is worth knowing about, but not itself fatal.
 #
-# Negative edmval fails. A failed fit elsewhere in this analysis reported
-# edmvalref = -0.0, and "-0.0 <= 1e-5" is true, so the test is two-sided.
+# Negative edmval fails: a failed fit can report -0.0, and "-0.0 <= 1e-5" is
+# true, so the test is two-sided.
 # Multiple edmvals (a multi-toy run prints one per toy) are all checked, and the
 # worst decides.
 FITLOG="$LOG_DIR/cvhnano_${POSTFIX}_fit.log"

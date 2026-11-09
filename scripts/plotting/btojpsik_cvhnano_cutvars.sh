@@ -63,8 +63,8 @@ ACTIVE=(
 )
 
 # Declared, at their no-op defaults. Thresholds are the values the studies used:
-# |d0|/sigma > 1.5 is the kaon ID from add-cvhnano-bachelor-quality-cuts 10.3;
-# the dimuon and B-vertex values are 2018's, from section 10.2.
+# |d0|/sigma > 1.5 is the kaon-ID working point; the dimuon and B-vertex values
+# are the 2018 selection's.
 OFF=(
   "nominal_cand_bachelorD0Sig:bachelor_d0Sig:-1.5 1.5:--logy --yscale 300"
   "nominal_cand_bachelorD0:bachelor_d0:-:--logy --yscale 300"

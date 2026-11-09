@@ -19,10 +19,8 @@ Three properties, each of which a plausible resolution of that merge breaks:
    itself a check: the mass enters only through E/p, so it must vanish for a hard
    track.
 
-Run under the container:
+Run inside the container, with setup.sh sourced:
 
-    singularity run --bind /scratch/,/ceph/,/home/,/work/,/cvmfs/ \
-      /cvmfs/unpacked.cern.ch/.../wmassdevrolling:latest
     python scripts/tests/test_perleg_mass_rule.py
 """
 

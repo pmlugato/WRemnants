@@ -24,9 +24,9 @@ B+ mass yield by different fractions. Instead the per-eta width of one unit of
 A, e and M is computed for each input from its recorded arguments, with the
 same function the helper uses (``muon_calibration.scale_param_widths``), and
 compared bin by bin. Where a histmaker also recorded the widths it actually
-built (``scaleVariationWidths``, the B+ histmaker since 2026-10-06), those are
-used, and they must agree with the flags -- that is what catches a flag that is
-recorded but not passed to the helper, the B+ bug of notes/aem_unit_mismatch.md.
+built (``scaleVariationWidths``, recorded by the B+ histmaker), those are used,
+and they must agree with the flags -- that is what catches a flag that is
+recorded but never passed to the helper.
 
 Traps this catches by construction:
 
@@ -350,9 +350,7 @@ def read_bplus_tensor_stretch(c, b_tensor, b_hist):
     base = 1.0 if base is None else float(base)
     built_from = meta.get("input_histogram")
     if built_from is None:
-        c.note(
-            f"{b_tensor} does not record its input histogram (written before 2026-10-06)"
-        )
+        c.note(f"{b_tensor} does not record its input histogram (older tensor writer)")
     else:
         c.check(
             os.path.realpath(built_from) == os.path.realpath(b_hist),
@@ -446,8 +444,7 @@ def provenance_checks(c, inputs, z_tensor, expect_stat_scaling, n_eta, b_tensor=
             c.note(
                 f"{l}: the bachelor's energy-loss reweight uses the kaon mass "
                 f"(eConvention {a.get('eConvention')}), the muon channels do not; "
-                "whether e should be shared with a kaon at all is open "
-                "(aem_unit_mismatch.md step 4)"
+                "whether e should be shared with a kaon at all is open"
             )
 
     if z_tensor is None:

@@ -10,7 +10,7 @@
 #
 #   kpt0 -- bachelorMinPt 0.   For bachelor_pt this IS the N-1 plot; for the
 #           kaon-ID variables it is N-1 in pT as well, which is the configuration
-#           the section 10.3 study was done in.
+#           the kaon-ID study was done in.
 #   kpt1 -- bachelorMinPt 1.0. The nominal selection. For bachelor_pt this is the
 #           N plot (truncated at the cut, shown for comparison); for the kaon-ID
 #           variables it is the working point a threshold would actually be

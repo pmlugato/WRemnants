@@ -1,43 +1,37 @@
 """Write the rabbit tensor for the CVH NanoAOD B+ -> J/psi K fit.
 
 Reads the `fitbins` histogram from `scripts/histmakers/btojpsik_cvhnano.py` and
-writes a single-channel tensor with exactly two processes:
+writes a single-channel tensor (`btojpsik_cvhnano`) with the processes
 
-    BuJpsiK      true B+ -> J/psi K+ from the inclusive simulation, fixed shape
-    BuJpsiKBkg   flat template, seeded from the data residual
+    BuJpsiK        true B+ -> J/psi K+ from the inclusive simulation
+    BuJpsiKMCPeak  with --mcBkgTemplate peak: the simulated peaking b-hadron
+                   backgrounds (other --mcBkgTemplate choices name theirs)
+    BuJpsiKBkg     analytic-background template, seeded from the data residual
 
-and, with `--scaleVariations`, one constrained nuisance per (A/e/M, eta group)
-taken from the histmaker's `nominal_muonScaleSyst_responseWeights` tensor. Every
-other free parameter of the fit belongs to a rabbit param model, so the tensor
-holds templates, data and the scale variations and nothing else. That is the
-opposite of `btojpsik_tensor.py`, whose per-bin normalisations and background
-amplitudes are template-morph NOIs, and it is why this tensor is small.
+and the systematics
 
-The variation histogram is pushed through **the same** `reduce_fitbins` call as
-the nominal, not a parallel implementation of it. That is the whole point of
-design decision 10: the pT overflow fold, the mass window and the pT rebin cannot
-drift between the nominal and its variations because there is one code path.
+    A{i} e{i} M{i}   with --scaleVariations: one constrained nuisance per
+                     (parameter, eta group) from the histmaker's
+                     `nominal_muonScaleSyst_responseWeights`; named
+                     scale{A,e,M}{i} unless --scaleParamNaming joint
+    sigRes[_eta{i}]  with --resolutionVariation: unconstrained signal width(s)
+    massShiftB<N>MeV with --massShiftB: the B+ mass nuisance-of-interest
 
-`btojpsik_tensor.py` is deliberately untouched: it produced the validated 2018
-fits, and half of it is A/e/M variation machinery that has no input in this
-NanoAOD (no per-leg gen kinematics, gap G2).
+Every other free parameter belongs to a rabbit param model, so the tensor holds
+templates, data and these nuisances only. The variation histogram goes through
+the same `reduce_fitbins` call as the nominal, so the pT overflow fold, the mass
+window and the pT rebin cannot drift between the two.
 
-The fit is run with two composed param models, for example
+The standalone fit is driven by `btojpsik_cvhnano_fit.sh`, the joint mZ + J/psi
++ B+ fit by `joint_with_btojpsik.sh`; the latter writes the tensor with
 
-    rabbit_fit.py <tensor> \\
-      --paramModel AxisNormModel btojpsik_cvhnano BuJpsiK \\
-            fit_bachelor_pt,fit_bachelor_eta,fit_bachelor_charge \\
-      --paramModel AxisExpModel btojpsik_cvhnano BuJpsiKBkg jointCvh_mass \\
-            fit_bachelor_pt,fit_bachelor_eta,fit_bachelor_charge \\
-            fit_bachelor_eta
-
-where the trailing argument groups the exponential slope on eta.
-
-Example:
-
-    python scripts/rabbit/btojpsik_cvhnano_tensor.py \\
-        -i /ceph/submit/data/user/p/pmlugato/mz/histograms/btojpsik_cvhnano_full.hdf5 \\
-        -o /ceph/submit/data/user/p/pmlugato/mz/tensors/ -p full
+    python scripts/rabbit/btojpsik_cvhnano_tensor.py -i <histmaker.hdf5> \
+        -o <tensordir> -p joint24_<tag> --ptBins 3 --etaRebin 2 \
+        --scaleVariations --scaleParamNaming joint --jointEtaBins 24 \
+        --mcBkgTemplate peak --resolutionVariation 0.005 \
+        --resolutionAxes fit_bachelor_eta \
+        --signalScale 18.2433 --signalScaleReferenceYield 1327932 \
+        --massLow 5.05 --massHigh 5.45 --massBins 20
 """
 
 import os
@@ -112,10 +106,10 @@ def parse_args():
         "along the mass axis with a Gaussian of this width in GeV; <=0 disables. "
         "This is the REFERENCE width: the nuisance is log-interpolated as "
         "(smeared/nominal)^theta, so the template only means 'a wider smear' "
-        "when the fitted theta lands near 1. Use 0.005 for the per-eta primary "
-        "(the data-minus-MC deficit runs 9 MeV at soft kaon pT to 3-4 MeV at "
-        "hard pT, and an eta-only nuisance averages over that) and check the "
-        "result at 0.003 (openspec add-cvhnano-per-eta-resolution, design 3).",
+        "when the fitted theta lands near 1. 0.005 is the per-eta primary (the "
+        "data-minus-MC width deficit runs 9 MeV at soft kaon pT to 3-4 MeV at "
+        "hard pT, and an eta-only nuisance averages over that); 0.003 is the "
+        "cross-check.",
     )
     parser.add_argument(
         "--resolutionAxes",
@@ -141,8 +135,8 @@ def parse_args():
         "starts. 'flat' (default, every recorded fit) spreads the per-cell "
         "residual evenly over the mass bins, so the exp*poly starts with zero "
         "slope against a spectrum that falls steeply: prefit loss 986k on the "
-        "observation, and trust-krylov stalled in the indefinite-Hessian region "
-        "it has to cross (2026-09-14). 'expSideband' fits exp(a + b*m) to each "
+        "observation, where trust-krylov can stall in the indefinite-Hessian "
+        "region it has to cross. 'expSideband' fits exp(a + b*m) to each "
         "cell's sideband residual and uses that as the template. The fitted model "
         "class is unchanged -- a linear exponent is absorbed exactly by the "
         "poly's first-order term -- only the starting point moves.",
@@ -162,8 +156,7 @@ def parse_args():
         "UNCONSTRAINED: the MC width is measured to be wrong, so no prior width is "
         "defensible, and a constrained nuisance absorbing a known mismodelling is "
         "what produces multi-sigma pulls. Note the deficit is NOT symmetric -- the "
-        "data falls off faster above the peak, and a low-side width ratio of 1.27 "
-        "is worth chi2 761 on its own (openspec 11.3).",
+        "data falls off faster above the peak.",
     )
     parser.add_argument(
         "--mcBkgTemplate",
@@ -182,17 +175,17 @@ def parse_args():
         "  peak  -- the peaking-b template (1-5: B+ -> J/psi K X, B+ -> J/psi pi "
         "X, B0, Bs, other b) ALONE. The combinatorial MC template is 3.3x "
         "noisier than the data it would describe and degenerate with the "
-        "analytic curvature (openspec aem 11.7, 9d.3), so the analytic component "
-        "carries the smooth part and the template carries the B0 edge in the low "
-        "shoulder that a polynomial cannot follow (11.6).",
+        "analytic curvature, so the analytic component carries the smooth part "
+        "and the template carries the B0 edge in the low shoulder that a "
+        "polynomial cannot follow.",
     )
     parser.add_argument(
         "--signalCategory",
         type=int,
         default=GEN_SIGNAL,
         help="genCategory bin holding the signal. An index rather than a "
-        "definition, so that tightening the truth match in the histmaker (Phase "
-        "3a task 9.2 adds a momentum-closure requirement) needs no change here.",
+        "definition, so that a change of the truth match in the histmaker needs "
+        "no change here.",
     )
     parser.add_argument("--dataCategory", type=int, default=GEN_DATA)
 
@@ -218,7 +211,7 @@ def parse_args():
         type=float,
         default=0.0138,
         help="Signal core width, used only to check the mass binning resolves the "
-        "peak. Measured in Phase 2 from the narrow+broad+linear fit.",
+        "peak. Measured from a narrow+broad+linear fit to the simulated signal.",
     )
     parser.add_argument(
         "--peakHalfWidth",
@@ -232,8 +225,8 @@ def parse_args():
         "--ptBins",
         type=int,
         default=3,
-        help="Number of bachelor pT quantile bins. Phase 2 put the ceiling at 3 to "
-        "4 at the 100-events-per-cell floor.",
+        help="Number of bachelor pT quantile bins. The simulation supports 3 to 4 "
+        "at a floor of 100 signal events per cell.",
     )
     parser.add_argument(
         "--ptEdges",
@@ -349,8 +342,9 @@ def parse_args():
         help="Per-parameter stretch of the variations in log(var/nominal), "
         "applied after --scaleVarScale, e.g. 'A=5 e=5'. This changes the unit of the "
         "nuisance: build the histogram where the reweight is linear (1/1/1) and "
-        "stretch here to the unit of the channel it is merged with "
-        "(notes/aem_unit_mismatch.md 9.4). Recorded in the tensor metadata.",
+        "stretch here to the unit of the channel it is merged with (e.g. A=5 e=5 "
+        "for a Z/J/psi chain built at --scale_A 5 --scale_e 5). Recorded in the "
+        "tensor metadata.",
     )
     parser.add_argument(
         "--scaleParamNaming",
@@ -533,13 +527,11 @@ def smear_along_mass(h, sigma, mass_axis_name, logger=None):
         it would be degenerate with it);
       * the kernel is the exact bin-to-bin transfer for a density uniform within
         each source bin, so the width means GeV rather than bins **and the result
-        is right when sigma is smaller than a bin**. The first version sampled
-        the Gaussian at bin centres; at 20 MeV bins and a 5 MeV width that
-        kernel is exp(-8) = 3e-4 off the diagonal, i.e. a delta function, and
-        the "resolution nuisance" it produced moved the peak bin by 0.02%
-        (found 2026-09-13 on the first per-eta tensor). The transfer matrix
-        gives about 10% of each bin's content to each neighbour at that ratio,
-        which is what a 5 MeV smear of a 20 MeV bin does;
+        is right when sigma is smaller than a bin**. Sampling the Gaussian at
+        bin centres instead would, at 20 MeV bins and a 5 MeV width, give a
+        kernel exp(-8) = 3e-4 off the diagonal -- a delta function. The transfer
+        matrix gives about 10% of each bin's content to each neighbour at that
+        ratio, which is what a 5 MeV smear of a 20 MeV bin does;
       * edges are handled by renormalising each source bin's transfer over the
         bins that exist rather than by zero-padding, which would quietly leak
         yield out of the window.
@@ -629,9 +621,9 @@ def smear_at_stored_granularity(
     is wrong for a peak whose core is 14 MeV wide: the density inside the peak
     bin is far from flat, and treating it as flat makes the smeared content
     change linearly in sigma where a convolution of the true density changes
-    as sigma^2. Measured 2026-09-14 on the first campaign: the fitted resolution
-    uncertainty scaled as 5/3 between 5 and 3 MeV reference widths instead of
-    (5/3)^2. The stored histogram has 5 MeV bins, so the smear is applied there
+    as sigma^2 (the fitted resolution uncertainty then scales as 5/3 between 5
+    and 3 MeV reference widths instead of (5/3)^2). The stored histogram has
+    5 MeV bins, so the smear is applied there
     -- where uniform-within-bin is a good approximation -- and the result is
     rebinned by the same factor the nominal was. Same reduction path
     (`reduce_fitbins`), same category selection, same scale, so the only

@@ -116,19 +116,11 @@ def validate_trigger_available(
     front. Every file is checked, not a sample -- one missing column anywhere is
     enough to kill the run.
 
-    **This used a ThreadPoolExecutor and did not parallelise.** The work looks
-    like pure I/O wait, but `TFile.Open` and `GetBranch` go through PyROOT,
-    which holds the GIL for the whole call, so sixteen threads ran one at a
-    time. Measured at 125 ms per file single-threaded, 22 327 files cost over an
-    hour of wall clock before the event loop began -- against the "minutes" this
-    docstring used to claim.
-
-    Two changes:
-
-    * processes instead of threads, so the GIL is not shared;
-    * an on-disk cache keyed by the file list, because the answer for a given
-      production does not change and re-deriving it on every run is the real
-      waste. Pass `cache=<path>` to enable it.
+    The check runs in a process pool, because `TFile.Open` and `GetBranch` go
+    through PyROOT, which holds the GIL, so threads would run one at a time
+    (about 125 ms per file; over an hour on the full data). Pass
+    `cache=<path>` to remember the verdict for a given file list, since it does
+    not change for a fixed production.
     """
     import hashlib
     import json
@@ -257,7 +249,6 @@ def apply_selections(df, selections, cutflow, cand_cutflow=None):
     count is what the analysis keeps. The candidate count is what a cut
     actually removes -- an event with several candidates survives a cut that
     kills most of them, so the event count understates every per-candidate cut.
-    The quality-gate fractions quoted in the proposal are candidate-level.
     """
     for index, (name, action) in enumerate(selections):
         logger.info("selection: %s", name)
@@ -295,10 +286,8 @@ def define_leg_kinematics(df):
         # Needed by the momentum-scale variations: the A/e/M shift on 1/pt is
         # charge dependent through the M term.
         ("Charge", "Track_charge", "int"),
-        # PV-referenced at source (gap G13, closed). These used to be computed
-        # downstream from PV_x/PV_y and the track phi, which reached a phi
-        # modulation of 0.0003 cm; the producer's version does better and is
-        # the same quantity, so the arithmetic is gone.
+        # Impact parameters referenced to the primary vertex, computed by the
+        # NanoAOD producer.
         ("D0", "Track_d0", "float"),
         ("D0Err", "Track_d0Err", "float"),
         ("DzPV", "Track_dzPV", "float"),
@@ -375,12 +364,10 @@ MUON_MASS = 0.1056583745
 def define_raw_dimuon(df):
     """Reconstruct the dimuon from the two muon legs' raw track momenta.
 
-    No longer the only unconstrained dimuon mass available: gap G11 is closed and
-    the NanoAOD now carries ``kvfRawDimuonMass`` / ``kvfCvhDimuonMass`` with
-    their errors, from a genuine vertex fit. Those are the mass-scale
-    observables; this stays for two reasons that are not aesthetic. It is the
-    only dimuon **pT** there is, which `select_dimuon_pt` needs, and being built
-    from the raw track momenta with no vertex constraint at all it is the
+    The fitted unconstrained dimuon masses are ``kvfRawDimuonMass`` /
+    ``kvfCvhDimuonMass``, from a vertex fit. This rebuild is kept because it is
+    the only dimuon **pT** there is, which `select_dimuon_pt` needs, and being
+    built from the raw track momenta with no vertex constraint at all it is the
     zeroth-order reference the fitted masses are compared against.
 
     ``jointCvhJpsiMass`` remains useless for this purpose: it is the joint fit's
@@ -576,7 +563,7 @@ def select_muon_global(df):
     """Both muon legs must be reconstructed as global muons.
 
     This is the only muon-quality handle in the NanoAOD: there is no soft-muon
-    MVA (gap G7), so the old analysis's `softMVA > 0.45` has no counterpart.
+    MVA, so the old analysis's `softMVA > 0.45` has no counterpart.
     """
     return _narrow(df, "cand_mu0IsGlobal[i] && cand_mu1IsGlobal[i]")
 
@@ -637,10 +624,9 @@ def select_dimuon_pt(df, min_pt):
     """Dimuon pT, from the dimuon rebuilt out of the raw muon tracks.
 
     Uses the raw dimuon rather than a fitted one because no arm stores a fitted
-    dimuon *pT*. The unconstrained dimuon *mass* is now stored per arm (gap G11,
-    closed), which is what the mass-scale work needs; the momentum is not, so a
-    pT cut still has to be taken on the rebuilt quantity. It exists for both
-    datasets and every arm, which a per-arm column would not.
+    dimuon *pT* (only the unconstrained dimuon *mass*), so a pT cut has to be
+    taken on the rebuilt quantity. It exists for both datasets and every arm,
+    which a per-arm column would not.
     """
     return _narrow(df, f"cand_dimuonRawPt[i] > {min_pt}")
 
@@ -911,8 +897,8 @@ def define_gen_category(df, is_data):
 def define_bachelor_pt_response(df, is_data):
     """Reconstructed over generated bachelor pT, where the leg matched.
 
-    The direct handle on the bachelor momentum scale, and the one quantity the
-    old NanoAOD could not supply at all (gap G2). Unmatched legs write a
+    The direct handle on the bachelor momentum scale, available because this
+    NanoAOD carries per-leg generator matching. Unmatched legs write a
     sentinel rather than zero: a spike at zero in a response histogram reads as
     a catastrophic mismeasurement, which is the opposite of "no truth here".
     """
@@ -946,8 +932,7 @@ SCALE_VAR_LEGS = [("bachelor", 2), ("mu0", 0), ("mu1", 1)]
 
 # The network's per-leg class tag. 443 is the muon family's J/psi-leg class;
 # that family has no hadron class, so the bachelor is tagged 443 as well,
-# following d0_mass.py. This is the assumption the channel rests on and it is
-# measured, not assumed: see task 6.5.
+# following d0_mass.py.
 #
 # The kpi model family removes the assumption -- it has real kaon and pion
 # classes -- but its alphabet is PDG ids, disjoint from this one. Codes for it
@@ -983,8 +968,8 @@ def define_scale_variation_inputs(
     three legs matched, and **no** not-fully-matched candidate is signal. The
     chain walk that assigns the truth category needs three matched legs to reach
     a common ancestor, so a partially matched signal candidate cannot exist.
-    ``{prefix}_allMatched`` carries the flag so the claim is counted on the full
-    sample rather than asserted from 12 files.
+    ``{prefix}_allMatched`` carries the flag so the claim is counted on every
+    run (the histmaker's ``scaleVarMatchAudit``).
 
     Data gets no gen columns at all, so the caller must not build variations for
     it -- the variations are a property of the simulated template.
@@ -1130,16 +1115,11 @@ def define_pileup_weight(df, is_data, weights):
     """Reweight the simulation to the data pileup profile.
 
     Keyed on ``int(Pileup_nTrueInt)`` -- the generated Poisson mean, which is
-    what a pileup profile is defined on (gap G4, closed). The previous version
-    reweighted the *reconstructed* vertex count, because the NanoAOD carried no
-    truth pileup at all. That stopgap removed the observable `nPV` disagreement
-    (chi2/bin 201.4 -> 1.34) without claiming to reproduce the true profile,
-    and it could not: `nPV` folds in the vertex-reconstruction efficiency, so
-    matching it absorbs a reconstruction difference into a pileup weight.
-
-    Now that the true profile is reweightable, the `nPV` agreement becomes a
-    *test* rather than something imposed by construction, which is the whole
-    point of having asked for the branch.
+    what a pileup profile is defined on. The *reconstructed* vertex count is
+    deliberately not used: `nPV` folds in the vertex-reconstruction efficiency,
+    so matching it would absorb a reconstruction difference into a pileup
+    weight, and the `nPV` data/MC agreement would be imposed rather than
+    tested.
 
     Weights outside the tabulated range fall back to 1.0 rather than to the
     nearest tabulated value: extrapolating a ratio measured where there is data

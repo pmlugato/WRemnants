@@ -7,15 +7,12 @@ The input is the `fitbins` histogram written by
     fit_bachelor_eta     Regular(48, -2.4, 2.4)
     fit_bachelor_charge  Regular(2, -2, 2)
     jointCvh_mass        Regular(100, 5.0, 5.5, overflow=True)
-    genCategory          Integer(0, 4)
+    genCategory          Integer(0, 8)
 
 with `Weight()` storage. This module reduces it to the fit binning and nothing
-else -- no tensor, no fitting, no plotting -- so that the same reduction path can
-later be applied to a scale-variation histogram when one exists (gap G2).
-
-The generic helpers (`rebin_histogram`, `collapse_axes`, `assert_matching_axes`)
-live in `rabbit_btojpsik_helpers.py` and are imported by the writer from there;
-they are not duplicated here.
+else -- no tensor, no fitting, no plotting -- so that the scale-variation
+histogram, which carries the same axes plus the variation axes, goes through
+exactly the same reduction path as the nominal.
 """
 
 import contextlib
@@ -463,9 +460,8 @@ def reduce_fitbins(
 ):
     """Take a raw `fitbins` histogram to the fit binning.
 
-    One function, applied in one order, so that a variation histogram can later
-    be passed through the identical path (design decision 10) and cannot drift
-    from what the nominal took.
+    One function, applied in one order, so that a variation histogram is passed
+    through the identical path and cannot drift from what the nominal took.
 
     Order matters: the pT overflow is folded before anything else, because after
     that point the histogram is flow-free and every later step is plain

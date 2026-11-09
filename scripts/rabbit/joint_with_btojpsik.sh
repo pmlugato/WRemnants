@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Combined Asimov: Z + J/psi + B+ -> J/psi K, one shared A/e/M basis.
-#
-# openspec/changes/add-cvhnano-kaon-aem-variations section 14.
+# Combined fit: Z + J/psi + B+ -> J/psi K, one shared A/e/M basis.
 #
 # The whole point is the naming. merge_inputs.py correlates systematics BY NAME
 # AND BY NOTHING ELSE, so the B+ tensor has to be written with
@@ -9,8 +7,8 @@
 # standalone scaleA0.. names. With the standalone names the merge correlates
 # ZERO parameters, the fit converges, and nothing downstream complains.
 #
-# The Z and J/psi tensors are reused from the `repro` chain rather than rebuilt:
-# they are Asimov, full 5D, and already validated against havyn's numbers.
+# The Z and J/psi tensors are those written by joint_mz_jpsi_fit.sh (the
+# `repro` chain by default: Asimov, full 5D) and are read from <baseDir>/tensors.
 #
 # Usage:  joint_with_btojpsik.sh --baseDir DIR [options]
 #   --baseDir DIR   base directory holding histograms/, tensors/, fitresults/
@@ -19,10 +17,10 @@
 #                   4 fit, 5 report, 6 plots                   [1,2,3,4,5,6]
 #   --tag TAG       output label; every artefact carries it   [btojpsik_asimov]
 #   --bhist FILE    B+ histmaker output, run at --scaleVariationEtaBins <nEta>
-#                                 [<hists>/btojpsik_cvhnano_eta24joint.hdf5]
+#                                 [<hists>/btojpsik_cvhnano_kpiA_kpi.hdf5]
 #   --nEta N        shared nuisance eta basis                            [24]
-#   --noJpsi        merge Z + B+ only, without the two J/psi channels (the
-#                   worklist point-5 comparison); the tag gets "_noJpsi"
+#   --noJpsi        merge Z + B+ only, without the J/psi channels; the tag
+#                   gets "_noJpsi"
 #   --noB           merge Z + J/psi only (the nominal the others are compared
 #                   to), with the same rabbit options; the tag gets "_noB"
 #   --massBins N    B+ tensor mass bins over [5.05, 5.45]                [20]
@@ -41,19 +39,23 @@
 #                   stretch the B+ A/e/M variations about the nominal, per
 #                   parameter, at the tensor stage. Use with a 1/1/1 B+ histogram
 #                   to reach the 5/5/1 unit of the full J/psi chain while the
-#                   reweight stays linear (aem_unit_mismatch.md 9.4)      [none]
+#                   reweight stays linear                                [none]
 #   --refTag TAG    tag of the fit the report compares against
 #                                            [<tag without _noJpsi>_noB]
 #   --plotDir DIR   base directory for the plot stage
 #                       [~/public_html/mz/joint_mz_jpsi_bplus_<yymmdd>/<tag>]
-#
-# The B+ arm is the 2026-09-14 primary: kpi histogram, peaking-b template,
-# 24 free per-eta resolution nuisances at a 5 MeV reference, signal scale
-# pinned to the data-fitted yield, 20 x 20 MeV over [5.05, 5.45]. Asimov is
-# not blinded, so no --unblind is needed here.
 #   --image PATH    singularity image
 #
-# Unit guard (notes/aem_unit_mismatch.md): stage 3 runs check_joint_tensor.py on
+# The B+ arm is the primary standalone configuration: kpi histogram,
+# peaking-b template, 24 free per-eta resolution nuisances at a 5 MeV
+# reference, signal scale pinned to the data-fitted yield, 20 x 20 MeV over
+# [5.05, 5.45]. Asimov is not blinded, so no --unblind is needed there.
+#
+# The joint fit of record:
+#   joint_with_btojpsik.sh --baseDir DIR --tag res5_260914 --nEta 24 --massBins 20
+# with --noJpsi / --noB for the Z + B+ and Z + J/psi references.
+#
+# Unit guard: stage 3 runs check_joint_tensor.py on
 # the merge and stage 4 re-runs its provenance half and refuses to fit on a
 # failure. One unit of A{i}/e{i}/M{i} must be the same shift in every channel.
 # The repro Z/J/psi chain was built at scale 1/1/1 and the full one at 5/5/1, so
@@ -110,7 +112,7 @@ PLOTBASE=""
 ZHIST=""
 JPSIHIST=""
 PARAM_SCALE=""
-# Statistics scaling of the B+ Asimov (notes/btojpsik_stat_scaling_test.md).
+# Statistics scaling of the B+ Asimov, for projections only.
 # --dataScale N multiplies the B+ Asimov yield by N; the pinned signal scale and
 # its reference yield are multiplied by the same N so the model starts on the
 # data. --mcStatScale F divides the B+ template variances by F (F = 1 is the
