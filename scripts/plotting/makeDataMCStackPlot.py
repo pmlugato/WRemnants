@@ -80,6 +80,13 @@ parser.add_argument(
 )
 parser.add_argument("--logy", action="store_true", help="Enable log scale for y axis")
 parser.add_argument(
+    "--logx",
+    action="store_true",
+    help="Enable log scale for x axis. Needed for axes whose bin edges are "
+    "log-spaced -- makeStackPlotWithRatio already supported it, this only "
+    "exposes it.",
+)
+parser.add_argument(
     "--procFilters",
     type=str,
     nargs="*",
@@ -655,6 +662,7 @@ for h in args.hists:
         ylim=args.ylim,
         yscale=args.yscale,
         logy=args.logy,
+        logx=args.logx,
         fill_between=args.fillBetween if hasattr(args, "fillBetween") else None,
         lower_panel_variations=(
             args.lowerPanelVariations if hasattr(args, "lowerPanelVariations") else 0

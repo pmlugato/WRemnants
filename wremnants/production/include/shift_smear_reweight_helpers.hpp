@@ -29,6 +29,7 @@
 #include <cmath>
 #include <eigen3/Eigen/Dense>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -169,13 +170,29 @@ private:
 //
 // ``NVar`` is the per-muon variation multiplicity (2 for
 // Z-non-closure down/up; 2 * n_unc for J/psi stats; etc.).
+//
+// ``raw_source`` selects the class-code convention, and it is not a free
+// parameter -- it belongs to the model. The two model families remap
+// ``c_raw[5]`` differently inside their own graphs:
+//
+//   muon family:  class = (s == 443) - (s == 1)
+//   kpi  family:  class = (s == 211) - (s == 321)
+//
+// ``muon_source_from_gen_part_flav`` is the adaptor from
+// ``Muon_genPartFlav`` to the FIRST alphabet, and it collapses everything
+// outside {15, 443} to 1. Applied ahead of a kpi graph it is destructive:
+// 321 becomes 1, which that graph reads as its residual class, so a kaon
+// is scored as a muon and no downstream check can see it. With
+// ``raw_source`` set the caller's code is written through untouched.
 template <std::size_t NVar> class ReweightEvaluator {
 public:
   using delta_r_t = std::array<float, NVar>;
   using alt_weights_t = Eigen::TensorFixedSize<double, Eigen::Sizes<NVar>>;
 
-  ReweightEvaluator(const std::string &onnx_path, unsigned int nslots = 1)
-      : model_(std::make_shared<ReweightModel<NVar>>(onnx_path, nslots)) {}
+  ReweightEvaluator(const std::string &onnx_path, unsigned int nslots = 1,
+                    bool raw_source = false)
+      : model_(std::make_shared<ReweightModel<NVar>>(onnx_path, nslots)),
+        raw_source_(raw_source) {}
 
   // Per-muon evaluation. ``muon_source_raw`` is the raw
   // ``Muon_genPartFlav`` value; the ORT graph remaps it internally.
@@ -201,7 +218,9 @@ public:
     const float condPt = (condGenPt > 0.0f) ? condGenPt : genPt;
     const float kappa_gen_cond =
         static_cast<float>(genCharge) / (condPt * std::cosh(genEta));
-    const int muon_source = muon_source_from_gen_part_flav(muonSource_raw);
+    const int muon_source = raw_source_
+                                ? muonSource_raw
+                                : muon_source_from_gen_part_flav(muonSource_raw);
 
     // RowMajor so the byte order forwarded to ONNX via ``.data()``
     // matches ORT's row-major expectation. See ``ReweightModel::run``.
@@ -252,6 +271,7 @@ public:
 
 private:
   std::shared_ptr<ReweightModel<NVar>> model_;
+  bool raw_source_ = false;
 };
 
 } // namespace shift_smear_reweight
@@ -293,16 +313,60 @@ public:
   // residual and delta_r_kappa keep the real pt. Use to move the conditioning
   // into the model's training range without distorting the (real) shift. <= 0
   // (default) disables it.
+  // ``raw_source`` bypasses the Muon_genPartFlav adaptor; it belongs to the
+  // model family, not to the caller. See ReweightEvaluator.
   JpsiCorrectionsUncReweightHelper(T &&corrections,
                                    const std::string &onnx_path,
                                    unsigned int nslots = 1,
                                    std::vector<double> masses = {},
                                    double cond_pt_gen_min = -1.0,
-                                   bool e_pt_convention = true)
+                                   bool e_pt_convention = true,
+                                   bool raw_source = false)
       : correctionHist_(std::make_shared<const T>(std::move(corrections))),
-        evaluator_(onnx_path, nslots), masses_(std::move(masses)),
-        cond_pt_gen_min_(cond_pt_gen_min), e_pt_convention_(e_pt_convention),
-        n_exact_fallback_(std::make_shared<std::atomic<std::size_t>>(0)) {}
+        masses_(std::move(masses)), e_pt_convention_(e_pt_convention),
+        n_exact_fallback_(std::make_shared<std::atomic<std::size_t>>(0)) {
+    evaluators_.emplace_back(onnx_path, nslots, raw_source);
+    cond_pt_gen_min_.push_back(cond_pt_gen_min);
+  }
+
+  // Per-leg model dispatch. ``onnx_paths`` and the three parallel vectors are
+  // indexed by MODEL, and ``leg_model`` maps leg position -> model index, so
+  // a three-body candidate can keep its muons on the network trained on muons
+  // while the hadron leg goes to the hadron network. This is the ONLY correct
+  // configuration if the hadron model's residual class turns out to be a
+  // catch-all rather than a trained muon class.
+  //
+  // The conditioning floor travels per model because the two want different
+  // ones -- 2.0 GeV for muon/443, ~1.0 for kpi -- and a single shared value
+  // would silently apply one model's floor to the other's legs.
+  JpsiCorrectionsUncReweightHelper(T &&corrections,
+                                   const std::vector<std::string> &onnx_paths,
+                                   const std::vector<int> &leg_model,
+                                   const std::vector<double> &cond_pt_gen_min,
+                                   const std::vector<bool> &raw_source,
+                                   unsigned int nslots,
+                                   std::vector<double> masses,
+                                   bool e_pt_convention)
+      : correctionHist_(std::make_shared<const T>(std::move(corrections))),
+        masses_(std::move(masses)), leg_model_(leg_model),
+        e_pt_convention_(e_pt_convention),
+        n_exact_fallback_(std::make_shared<std::atomic<std::size_t>>(0)) {
+    if (onnx_paths.empty())
+      throw std::invalid_argument("JpsiCorrectionsUncReweightHelper: no model");
+    if (cond_pt_gen_min.size() != onnx_paths.size() ||
+        raw_source.size() != onnx_paths.size())
+      throw std::invalid_argument(
+          "JpsiCorrectionsUncReweightHelper: cond_pt_gen_min and raw_source "
+          "must be one entry per model");
+    for (std::size_t m = 0; m < onnx_paths.size(); ++m) {
+      evaluators_.emplace_back(onnx_paths[m], nslots, raw_source[m]);
+      cond_pt_gen_min_.push_back(cond_pt_gen_min[m]);
+    }
+    for (const int m : leg_model_)
+      if (m < 0 || static_cast<std::size_t>(m) >= evaluators_.size())
+        throw std::invalid_argument(
+            "JpsiCorrectionsUncReweightHelper: leg_model index out of range");
+  }
 
   // Per-leg energy-loss mass (see constructor); <= 0 means "massless".
   double mass_for_leg(std::size_t i) const {
@@ -311,6 +375,17 @@ public:
     if (masses_.size() == 1)
       return masses_[0];
     return (i < masses_.size()) ? masses_[i] : -1.0;
+  }
+
+  // Model index for leg ``i``. Empty ``leg_model_`` means the single-model
+  // constructor was used, so every leg shares model 0 -- which is what keeps
+  // the pre-change behaviour bit-identical.
+  std::size_t model_for_leg(std::size_t i) const {
+    if (leg_model_.empty())
+      return 0;
+    return (i < leg_model_.size())
+               ? static_cast<std::size_t>(leg_model_[i])
+               : 0;
   }
 
   // Variadic templated bin lookup (lifted from JpsiCorrectionsUncHelperSplines
@@ -410,12 +485,16 @@ public:
       }
 
       // Conditioning-only gen-pt floor (real pt kept for delta_r_kappa and
-      // y_raw).
+      // y_raw). Both the floor and the model are resolved per leg, because
+      // the two model families want different floors and a shared value
+      // would apply one model's floor to the other's legs.
+      const std::size_t imodel = model_for_leg(i);
+      const double cond_min = cond_pt_gen_min_[imodel];
       const float condGenPt =
-          (cond_pt_gen_min_ > 0.0)
-              ? std::max<float>(genPt, static_cast<float>(cond_pt_gen_min_))
+          (cond_min > 0.0)
+              ? std::max<float>(genPt, static_cast<float>(cond_min))
               : -1.0f;
-      const auto alt_weights_flat = evaluator_.evaluate(
+      const auto alt_weights_flat = evaluators_[imodel].evaluate(
           recPt, recEta, recPhis[i], recCharge, genPt, genEta, genPhis[i],
           genCharge, muonSources[i], delta_r_kappa, condGenPt);
 
@@ -432,9 +511,11 @@ public:
 
 private:
   std::shared_ptr<const T> correctionHist_;
-  evaluator_t evaluator_;
+  // One entry per MODEL, not per leg; ``leg_model_`` indexes into them.
+  std::vector<evaluator_t> evaluators_;
+  std::vector<double> cond_pt_gen_min_;
   std::vector<double> masses_;
-  double cond_pt_gen_min_;
+  std::vector<int> leg_model_;
   bool e_pt_convention_ = true;
   // shared_ptr, not a bare atomic: narf copies the helper per slot and an
   // atomic member is not copyable. One counter shared across all slots.

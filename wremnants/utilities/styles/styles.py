@@ -204,6 +204,15 @@ axis_labels = {
         "unit": "cm",
     },
     "bachelor_dedx": r"$\mathrm{d}E/\mathrm{d}x^{\mathrm{K}}$ (harmonic-2)",
+    # Impact-parameter significances (gap G6). These are the kaon-ID
+    # discriminants measured in add-cvhnano-bachelor-quality-cuts section 10:
+    # d0 significance ranks best, dE/dx worst.
+    "bachelor_d0Sig": r"$\mathit{d}_{0}^{\mathrm{K}}/\mathit{\sigma}(\mathit{d}_{0})$ w.r.t. PV",
+    "bachelor_dzPVSig": r"$\mathit{d}_{z}^{\mathrm{K}}/\mathit{\sigma}(\mathit{d}_{z})$ w.r.t. PV",
+    "bachelor_relPtErr": r"$\mathit{\sigma}(\mathit{p}_{T})/\mathit{p}_{T}^{\mathrm{K}}$",
+    "bachelor_nValidPixelHits": r"$\mathit{N}_{\mathrm{pixel\ hits}}^{\mathrm{K}}$",
+    "bachelor_trackerLayers": r"$\mathit{N}_{\mathrm{tracker\ layers}}^{\mathrm{K}}$",
+    "bachelor_ptResponse": r"$\mathit{p}_{T}^{\mathrm{K}}/\mathit{p}_{T}^{\mathrm{K,gen}}$",
     "bachelor_nValidHits": r"$\mathit{N}_{\mathrm{hits}}^{\mathrm{K}}$",
     "bachelor_normChi2": r"$\mathit{\chi}^{2}/\mathrm{ndof}$ (K track)",
     "mu0_pt": {"label": r"$\mathit{p}_{T}^{\mu_{0}}$", "unit": "GeV"},
@@ -303,6 +312,9 @@ _cvh_arm_axes = {
     "massErr": ({"label": r"$\mathit{\sigma}_{m}(\mu\mu\mathrm{K})$", "unit": "GeV"}),
     "pt": ({"label": r"$\mathit{p}_{T}(\mu\mu\mathrm{K})$", "unit": "GeV"}),
     "alphaBS": r"$\mathit{\alpha}_{\mathrm{BS}}$ (xy only)",
+    # 3D pointing angle to the PV (gap G8). The transverse alphaBS has a long
+    # tail because a missing daughter tilts the candidate out of the plane.
+    "alpha3dPV": r"$\mathit{\alpha}_{\mathrm{3D}}$ (PV)",
     "lxy": ({"label": r"$\mathit{L}_{xy}$", "unit": "cm"}),
     "sxy": r"$\mathit{L}_{xy}/\mathit{\sigma}_{xy}$",
     "l3d": ({"label": r"$\mathit{L}_{3D}$", "unit": "cm"}),

@@ -42,13 +42,21 @@ Example:
 
 import os
 
+import hist
 import numpy as np
 
 from rabbit import tensorwriter
 from wremnants.postprocessing import rabbit_cvhnano_helpers as cvh
 from wremnants.production.btojpsik_cvhnano_axes import (
     GEN_DATA,
+    GEN_BD,
+    GEN_BS,
+    GEN_BU_KX,
+    GEN_BU_PIX,
     GEN_MC_CATEGORIES,
+    GEN_NON_SIGNAL_CATEGORIES,
+    GEN_NO_B_ANCESTOR,
+    GEN_OTHER_B,
     GEN_SIGNAL,
 )
 from wremnants.utilities import common, parsing
@@ -83,6 +91,101 @@ def parse_args():
     )
     parser.add_argument("--signalProcess", default="BuJpsiK")
     parser.add_argument("--bkgProcess", default="BuJpsiKBkg")
+    parser.add_argument(
+        "--dataScale",
+        type=float,
+        default=1.0,
+        help="Scale the observed histogram by this factor before writing the "
+        "tensor. The SHAPE is untouched, so the model is wrong by exactly the "
+        "same fraction, but every Poisson weight shrinks and a given fractional "
+        "mismodelling costs sqrt(scale) fewer sigma. That isolates 'the model is "
+        "wrong' from 'the model is wrong AND the data is precise enough to "
+        "notice': if the fit converges at 0.01 and fails at 1.0 with the same "
+        "shapes, the non-convergence is mis-specification amplified by "
+        "statistics, not a broken parameterisation.",
+    )
+    parser.add_argument(
+        "--resolutionVariation",
+        type=float,
+        default=0.0,
+        help="Add a signal resolution nuisance by convolving the signal template "
+        "along the mass axis with a Gaussian of this width in GeV; <=0 disables. "
+        "This is the REFERENCE width: the nuisance is log-interpolated as "
+        "(smeared/nominal)^theta, so the template only means 'a wider smear' "
+        "when the fitted theta lands near 1. Use 0.005 for the per-eta primary "
+        "(the data-minus-MC deficit runs 9 MeV at soft kaon pT to 3-4 MeV at "
+        "hard pT, and an eta-only nuisance averages over that) and check the "
+        "result at 0.003 (openspec add-cvhnano-per-eta-resolution, design 3).",
+    )
+    parser.add_argument(
+        "--resolutionAxes",
+        type=str,
+        nargs="*",
+        default=[],
+        choices=[cvh.PT_AXIS, cvh.ETA_AXIS, cvh.CHARGE_AXIS],
+        help="Cell axes over which the resolution nuisance varies. Empty (the "
+        "default) keeps the single global 'sigRes'. 'fit_bachelor_eta' emits one "
+        "free nuisance per eta bin of the FIT binning, each equal to the nominal "
+        "outside its bin and to the smeared template inside it, named "
+        "sigRes_eta{i}; 'fit_bachelor_eta fit_bachelor_pt' emits one per (eta, "
+        "pT) group named sigRes_eta{i}_pt{j}. Eta-only is the physics choice: "
+        "the multiple-scattering resolution is set by the material traversed, "
+        "which is a function of eta, while the pT dependence is kinematic and "
+        "already in the simulation. Requires --resolutionVariation > 0.",
+    )
+    parser.add_argument(
+        "--bkgSeed",
+        choices=["flat", "expSideband"],
+        default="flat",
+        help="Shape of the analytic background's TEMPLATE, i.e. where the optimiser "
+        "starts. 'flat' (default, every recorded fit) spreads the per-cell "
+        "residual evenly over the mass bins, so the exp*poly starts with zero "
+        "slope against a spectrum that falls steeply: prefit loss 986k on the "
+        "observation, and trust-krylov stalled in the indefinite-Hessian region "
+        "it has to cross (2026-09-14). 'expSideband' fits exp(a + b*m) to each "
+        "cell's sideband residual and uses that as the template. The fitted model "
+        "class is unchanged -- a linear exponent is absorbed exactly by the "
+        "poly's first-order term -- only the starting point moves.",
+    )
+    parser.add_argument(
+        "--signalScaleReferenceYield",
+        type=float,
+        default=None,
+        help="Metadata only: the data-fitted signal yield that --signalScale was "
+        "derived from, so a pinned tensor records where its scale came from.",
+    )
+    parser.add_argument(
+        "--resolutionConstrained",
+        action="store_true",
+        help="Give the resolution nuisance a unit Gaussian prior, so it behaves as "
+        "a systematic and propagates into the A/e/M uncertainty. Default is "
+        "UNCONSTRAINED: the MC width is measured to be wrong, so no prior width is "
+        "defensible, and a constrained nuisance absorbing a known mismodelling is "
+        "what produces multi-sigma pulls. Note the deficit is NOT symmetric -- the "
+        "data falls off faster above the peak, and a low-side width ratio of 1.27 "
+        "is worth chi2 761 on its own (openspec 11.3).",
+    )
+    parser.add_argument(
+        "--mcBkgTemplate",
+        choices=["none", "all", "comb", "split", "peak"],
+        default="none",
+        help="Add the simulation's own background shape as one or more template "
+        "processes, alongside the analytic one. The analytic component is always "
+        "kept, because the simulation has no prompt or non-b fake background and "
+        "so cannot describe the data on its own.\n"
+        "  none  -- analytic only (the original model)\n"
+        "  all   -- one template from every non-signal MC category (1-6)\n"
+        "  comb  -- one template from the no-b-ancestor (combinatorial) category 6\n"
+        "  split -- two templates, combinatorial (6) and peaking-b (1-5), "
+        "independently normalised, which tests whether the simulation got their "
+        "ratio right\n"
+        "  peak  -- the peaking-b template (1-5: B+ -> J/psi K X, B+ -> J/psi pi "
+        "X, B0, Bs, other b) ALONE. The combinatorial MC template is 3.3x "
+        "noisier than the data it would describe and degenerate with the "
+        "analytic curvature (openspec aem 11.7, 9d.3), so the analytic component "
+        "carries the smooth part and the template carries the B0 edge in the low "
+        "shoulder that a polynomial cannot follow (11.6).",
+    )
     parser.add_argument(
         "--signalCategory",
         type=int,
@@ -157,6 +260,28 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--massShiftB",
+        type=int,
+        default=0,
+        help="Add an UNCONSTRAINED nuisance-of-interest 'massShiftB<N>MeV' whose "
+        "up/down templates are the signal translated by +/- this many stored "
+        "mass bins (5 MeV each). The B+ pole-mass parameter of interest, the "
+        "analogue of the Z's massShiftZ100MeV. 0 = off.",
+    )
+    parser.add_argument(
+        "--mcStatScale",
+        type=float,
+        default=1.0,
+        help="Divide the variances of every simulation-derived template (signal, "
+        "peaking MC, scale variations, resolution slabs) by this factor, as if "
+        "that many times more events had been simulated. The template VALUES are "
+        "untouched, so the Asimov dataset and the data-statistics term are "
+        "unchanged; only the bin-by-bin MC-stat nuisances tighten. With a pinned "
+        "--signalScale s the template variance per bin is s times the Asimov "
+        "Poisson variance, so --mcStatScale s puts the simulation on the data's "
+        "footing and 2s emulates twice as much simulation as data.",
+    )
+    parser.add_argument(
         "--signalScale",
         type=float,
         default=None,
@@ -217,11 +342,44 @@ def parse_args():
         "nuisances easier to see in a first fit; the physical size is 1.0.",
     )
     parser.add_argument(
+        "--scaleVarParamScale",
+        nargs="+",
+        default=[],
+        metavar="PARAM=FACTOR",
+        help="Per-parameter stretch of the variations in log(var/nominal), "
+        "applied after --scaleVarScale, e.g. 'A=5 e=5'. This changes the unit of the "
+        "nuisance: build the histogram where the reweight is linear (1/1/1) and "
+        "stretch here to the unit of the channel it is merged with "
+        "(notes/aem_unit_mismatch.md 9.4). Recorded in the tensor metadata.",
+    )
+    parser.add_argument(
         "--scaleVarTrim",
         type=float,
         default=0.0,
         help="Set a variation bin back to nominal where |var - nom| is below this. "
         "0 disables. Only worth using if empty-cell noise destabilises the fit.",
+    )
+    parser.add_argument(
+        "--scaleParamNaming",
+        choices=["standalone", "joint"],
+        default="standalone",
+        help="How the A/e/M nuisances are named. 'standalone' (default) writes "
+        "scale{param}{group} -- scaleA0, scalee0 -- which is what every existing "
+        "B+ result was produced with. 'joint' writes {param}{group} -- A0, e0, M0 "
+        "-- matching lowmass_tensor.py, so that merge_inputs.py correlates them "
+        "with the Z and J/psi channels. merge_inputs correlates BY NAME AND "
+        "NOTHING ELSE, so with the default naming a merged fit correlates zero "
+        "parameters, converges, and looks entirely normal.",
+    )
+    parser.add_argument(
+        "--jointEtaBins",
+        type=int,
+        default=None,
+        help="Size of the shared nuisance eta basis, used ONLY to guard "
+        "--scaleParamNaming joint. Must equal the number of eta groups the "
+        "variation histogram actually carries, or the names would land on the "
+        "wrong parameters. Required with --scaleParamNaming joint; the drivers "
+        "pass it explicitly from their --nEta flag (no environment fallback).",
     )
     parser.add_argument(
         "--skipScaleParams",
@@ -234,9 +392,24 @@ def parse_args():
 
 
 def split_scale_variations(
-    hsyst, nominal, params, scale=1.0, trim=0.0, skip=(), logger=None
+    hsyst,
+    nominal,
+    params,
+    scale=1.0,
+    trim=0.0,
+    skip=(),
+    logger=None,
+    naming="standalone",
+    joint_eta_bins=None,
+    param_scale=None,
 ):
     """Per-nuisance up/down template pairs from a reduced variation histogram.
+
+    ``param_scale`` maps a parameter name to a factor f applied in LOG space,
+    up -> nominal * (up / nominal)**f, so that A and e can be stretched while M
+    is not (see --scaleVarParamScale). rabbit interpolates in
+    log(up / nominal), so this is the same nuisance with theta relabelled
+    theta -> f * theta: identical slope at small theta, never negative.
 
     `hsyst` carries the nominal's axes plus ('unc', 'downUpVar'); `nominal` is the
     signal template the variations belong to, already on the fit binning and
@@ -263,13 +436,40 @@ def split_scale_variations(
         )
     ngroups = nunc // nparams
 
+    # The joint basis is shared by name, so a wrong count silently lands every
+    # nuisance on a different eta bin -- and the fit still converges. Refuse.
+    if naming == "joint":
+        if joint_eta_bins is None:
+            raise RuntimeError(
+                "--scaleParamNaming joint needs --jointEtaBins"
+            )
+        if ngroups != joint_eta_bins:
+            raise RuntimeError(
+                f"--scaleParamNaming joint expects {joint_eta_bins} eta groups "
+                f"but the variation histogram carries {ngroups}. Rerun the "
+                f"histmaker with --scaleVariationEtaBins {joint_eta_bins}. "
+                "Writing this tensor would correlate A/e/M with the wrong eta "
+                "bins of the Z and J/psi channels, and nothing downstream would "
+                "notice."
+            )
+        if skip:
+            raise RuntimeError(
+                f"--scaleParamNaming joint refuses --skipScaleParams {list(skip)}: "
+                "a partially-correlated basis fits perfectly well and means "
+                "something other than what it says."
+            )
+
     # WRemnants writes downUpVar index 0 for down and 1 for up.
     DOWN, UP = 0, 1
 
     ups, downs, out_names, groups = [], [], [], []
+    param_scale = param_scale or {}
+    stretched = {}
     for iparam, param in enumerate(params):
         if param in skip:
             continue
+        pfac = param_scale.get(param, 1.0)
+        nkept = 0
         for group in range(ngroups):
             iunc = group * nparams + iparam
             up = hsyst[{"unc": iunc, "downUpVar": UP}].copy()
@@ -284,13 +484,36 @@ def split_scale_variations(
                     h.values()[...] = nominal.values() + scale * (
                         h.values() - nominal.values()
                     )
+                if pfac != 1.0:
+                    nom, var = nominal.values(), h.values()
+                    ok = (nom > 0) & (var > 0)
+                    out = var.copy()
+                    out[ok] = nom[ok] * (var[ok] / nom[ok]) ** pfac
+                    # a bin with no positive nominal or variation carries no
+                    # log-ratio to stretch; it is left as built
+                    nkept += int(np.count_nonzero(~ok & (var != nom)))
+                    h.values()[...] = out
                 if trim > 0.0:
                     close = np.abs(h.values() - nominal.values()) < trim
                     h.values()[close] = nominal.values()[close]
             ups.append(up)
             downs.append(down)
-            out_names.append(f"scale{param}{group}")
-            groups.append(f"scale{param}")
+            if naming == "joint":
+                out_names.append(f"{param}{group}")
+                groups.append(f"scale{param}")
+            else:
+                out_names.append(f"scale{param}{group}")
+                groups.append(f"scale{param}")
+        if pfac != 1.0:
+            stretched[param] = (pfac, nkept)
+
+    for param, (pfac, nkept) in stretched.items():
+        if logger is not None:
+            logger.info(
+                "  %s variations stretched x%g in log(var/nominal); %d differing "
+                "bins without a positive ratio left as built",
+                param, pfac, nkept,
+            )
 
     if logger is not None:
         for name, up, down in zip(out_names, ups, downs):
@@ -309,9 +532,355 @@ def split_scale_variations(
     return ups, downs, out_names, groups
 
 
+def smear_along_mass(h, sigma, mass_axis_name, logger=None):
+    """Convolve a histogram along its mass axis with a Gaussian of width `sigma`.
+
+    Resolution is a convolution, so this is the variation's definition rather
+    than an approximation of it. Three properties are enforced:
+
+      * the integral is preserved per cell, so the nuisance is a pure SHAPE
+        variation and cannot smuggle in a normalisation change (the signal
+        normalisation is already a free parameter, and a variation that overlapped
+        it would be degenerate with it);
+      * the kernel is the exact bin-to-bin transfer for a density uniform within
+        each source bin, so the width means GeV rather than bins **and the result
+        is right when sigma is smaller than a bin**. The first version sampled
+        the Gaussian at bin centres; at 20 MeV bins and a 5 MeV width that
+        kernel is exp(-8) = 3e-4 off the diagonal, i.e. a delta function, and
+        the "resolution nuisance" it produced moved the peak bin by 0.02%
+        (found 2026-09-13 on the first per-eta tensor). The transfer matrix
+        gives about 10% of each bin's content to each neighbour at that ratio,
+        which is what a 5 MeV smear of a 20 MeV bin does;
+      * edges are handled by renormalising each source bin's transfer over the
+        bins that exist rather than by zero-padding, which would quietly leak
+        yield out of the window.
+    """
+    from scipy.special import erf
+
+    axes = list(h.axes.name)
+    if mass_axis_name not in axes:
+        raise ValueError(f"No '{mass_axis_name}' axis to smear along: {axes}")
+    imass = axes.index(mass_axis_name)
+    edges = np.asarray(h.axes[mass_axis_name].edges, dtype=float)
+    width = float(edges[1] - edges[0])
+    n = len(edges) - 1
+
+    # T[i, j] = fraction of source bin j that lands in destination bin i, for a
+    # density uniform over source bin j convolved with N(0, sigma). Closed form:
+    # integrate Phi((E - x)/sigma) over x in the source bin, evaluated at both
+    # destination edges. Uses G(t) = t*Phi(t) + phi(t), the antiderivative of
+    # Phi, so that int_a^b Phi((E - x)/s) dx = s * [G((E - a)/s) - G((E - b)/s)].
+    def G(t):
+        Phi = 0.5 * (1.0 + erf(t / np.sqrt(2.0)))
+        phi = np.exp(-0.5 * t * t) / np.sqrt(2.0 * np.pi)
+        return t * Phi + phi
+
+    a = edges[:-1][None, :]  # source bin low edges, shape (1, n)
+    b = edges[1:][None, :]   # source bin high edges
+    E = edges[:, None]       # destination edges, shape (n+1, 1)
+    # C[k, j] = P(x + noise < E_k) integrated over source bin j, divided by width
+    C = sigma * (G((E - a) / sigma) - G((E - b) / sigma)) / width
+    T = C[1:, :] - C[:-1, :]  # (n, n): destination i, source j
+    T = np.clip(T, 0.0, None)
+    # Edge renormalisation: whatever would have left the window stays, spread
+    # over the existing destination bins in proportion.
+    T /= T.sum(axis=0, keepdims=True)
+
+    out = h.copy()
+    v = np.moveaxis(np.asarray(h.values(), dtype=float), imass, -1)
+    var = np.moveaxis(np.asarray(h.variances(), dtype=float), imass, -1)
+    sv = v @ T.T
+    # Variances transform with the square of the kernel; this keeps the smeared
+    # template's own MC statistical uncertainty honest rather than copying it.
+    svar = var @ (T.T ** 2)
+    out.view(flow=False)["value"] = np.moveaxis(sv, -1, imass)
+    out.view(flow=False)["variance"] = np.moveaxis(svar, -1, imass)
+
+    before = float(h.values().sum())
+    after = float(out.values().sum())
+    if before > 0 and abs(after / before - 1.0) > 1e-6 and logger is not None:
+        logger.warning(
+            "Smearing changed the integral by %.3g (%.6g -> %.6g); the kernel "
+            "normalisation is meant to prevent this.",
+            after / before - 1.0, before, after,
+        )
+    if logger is not None:
+        logger.info(
+            "Smeared the signal template by %.2f MeV (%.2f bins of %.2f MeV; an "
+            "interior bin keeps %.1f%% of its content); integral %.6g -> %.6g "
+            "(ratio %.9f)",
+            sigma * 1e3, sigma / width, width * 1e3,
+            100.0 * float(np.mean(np.diag(T)[1:-1])) if n > 2 else 100.0 * T[0, 0],
+            before, after, after / max(before, 1e-12),
+        )
+    return out
+
+
+def smear_at_stored_granularity(
+    mc_raw, reduce_kwargs, category, signal_scale, sigma, nominal, logger=None,
+    var_scale=None,
+):
+    """Smear the signal template at the histmaker's 5 MeV mass granularity, then
+    rebin to the fit binning.
+
+    The transfer matrix in `smear_along_mass` is exact for a density that is
+    uniform within each source bin. At the fit binning (20 MeV) that assumption
+    is wrong for a peak whose core is 14 MeV wide: the density inside the peak
+    bin is far from flat, and treating it as flat makes the smeared content
+    change linearly in sigma where a convolution of the true density changes
+    as sigma^2. Measured 2026-09-14 on the first campaign: the fitted resolution
+    uncertainty scaled as 5/3 between 5 and 3 MeV reference widths instead of
+    (5/3)^2. The stored histogram has 5 MeV bins, so the smear is applied there
+    -- where uniform-within-bin is a good approximation -- and the result is
+    rebinned by the same factor the nominal was. Same reduction path
+    (`reduce_fitbins`), same category selection, same scale, so the only
+    difference from the nominal is the convolution.
+    """
+    stored = float(np.diff(mc_raw.axes[cvh.MASS_AXIS].edges)[0])
+    low, high = reduce_kwargs["mass_low"], reduce_kwargs["mass_high"]
+    n_fine = int(round((high - low) / stored))
+    n_coarse = int(reduce_kwargs["mass_bins"])
+    if n_fine % n_coarse:
+        raise RuntimeError(
+            f"{n_fine} stored mass bins in the window do not divide by "
+            f"{n_coarse} fit bins; cannot smear at stored granularity"
+        )
+    factor = n_fine // n_coarse
+    fine_kwargs = dict(reduce_kwargs, mass_bins=n_fine)
+    fine = cvh.select_category(cvh.reduce_fitbins(mc_raw, **fine_kwargs), category)
+    fine.view(flow=False)["value"] *= signal_scale
+    fine.view(flow=False)["variance"] *= (
+        signal_scale**2 if var_scale is None else var_scale
+    )
+    smeared_fine = smear_along_mass(fine, sigma, cvh.MASS_AXIS, logger=logger)
+    smeared = smeared_fine[{cvh.MASS_AXIS: hist.rebin(factor)}]
+    # The rebinned un-smeared fine template must be the nominal, exactly. If it
+    # is not, the two took different paths and the variation is not a smear.
+    check = fine[{cvh.MASS_AXIS: hist.rebin(factor)}]
+    if not np.allclose(check.values(), nominal.values(), rtol=1e-9, atol=1e-9):
+        raise RuntimeError(
+            "Rebinned fine signal template differs from the nominal; the smear "
+            "would not be a pure convolution of the template being fitted"
+        )
+    if logger is not None:
+        logger.info(
+            "Resolution smear applied at the stored %.1f MeV granularity (%d bins) "
+            "and rebinned by %d to the %d fit bins",
+            stored * 1e3, n_fine, factor, n_coarse,
+        )
+    return smeared
+
+
+def shift_at_stored_granularity(
+    mc_raw, reduce_kwargs, category, signal_scale, n_shift, nominal, logger=None,
+    var_scale=None,
+):
+    """Translate the signal template along the mass axis by +/- n_shift stored
+    bins (5 MeV each) and rebin to the fit binning: the B+ pole-mass variation.
+
+    A pole-mass shift moves every reconstructed candidate by the same delta (no
+    usable natural width, resolution 20-30 MeV), so the variation is a pure
+    translation. It is done at the stored granularity, where it is exact, over
+    a window n_shift stored bins wider than the fit window so that nothing is
+    lost at the edges; the shifted fine template is then cropped to the fit
+    window and rebinned by the same factor as the nominal. Returns (up, down),
+    up = mass increased by n_shift x stored width.
+    """
+    stored = float(np.diff(mc_raw.axes[cvh.MASS_AXIS].edges)[0])
+    low, high = reduce_kwargs["mass_low"], reduce_kwargs["mass_high"]
+    n_fine = int(round((high - low) / stored))
+    n_coarse = int(reduce_kwargs["mass_bins"])
+    if n_fine % n_coarse:
+        raise RuntimeError("stored bins do not divide the fit bins; cannot shift")
+    factor = n_fine // n_coarse
+    pad = int(n_shift)
+    wide_kwargs = dict(
+        reduce_kwargs,
+        mass_low=low - pad * stored, mass_high=high + pad * stored,
+        mass_bins=n_fine + 2 * pad, check_totals=False,
+    )
+    wide = cvh.select_category(cvh.reduce_fitbins(mc_raw, **wide_kwargs), category)
+    wide.view(flow=False)["value"] *= signal_scale
+    wide.view(flow=False)["variance"] *= (
+        signal_scale**2 if var_scale is None else var_scale
+    )
+    imass = list(wide.axes.name).index(cvh.MASS_AXIS)
+    v = np.asarray(wide.values(), dtype=float)
+    var = np.asarray(wide.variances(), dtype=float)
+    sl = [slice(None)] * v.ndim
+    out = []
+    for sign in (+1, -1):
+        # rolling +pad moves content to higher mass; the wrapped edge bins fall
+        # outside the fit window and are dropped by the crop below
+        sv = np.roll(v, sign * pad, axis=imass); svar = np.roll(var, sign * pad, axis=imass)
+        sl[imass] = slice(pad, pad + n_fine)
+        fine = nominal.copy()  # coarse template, to be overwritten after rebinning
+        fine_h = wide[{cvh.MASS_AXIS: slice(pad, pad + n_fine)}]
+        fine_h.view(flow=False)["value"] = sv[tuple(sl)]
+        fine_h.view(flow=False)["variance"] = svar[tuple(sl)]
+        coarse = fine_h[{cvh.MASS_AXIS: hist.rebin(factor)}]
+        fine.view(flow=False)["value"] = coarse.values()
+        fine.view(flow=False)["variance"] = coarse.variances()
+        out.append(fine)
+    # closure: the unshifted crop must be the nominal
+    sl[imass] = slice(pad, pad + n_fine)
+    check = wide[{cvh.MASS_AXIS: slice(pad, pad + n_fine)}][{cvh.MASS_AXIS: hist.rebin(factor)}]
+    if not np.allclose(check.values(), nominal.values(), rtol=1e-9, atol=1e-9):
+        raise RuntimeError("cropped wide template differs from the nominal; the shift is not a pure translation")
+    if logger is not None:
+        up, down = out
+        n0 = float(nominal.values().sum())
+        logger.info(
+            "B+ mass shift templates: +/-%d stored bins = +/-%.1f MeV, at %.1f MeV granularity, "
+            "rebinned by %d; integral up/nominal %.6f, down/nominal %.6f (edge leakage only)",
+            pad, pad * stored * 1e3, stored * 1e3, factor,
+            float(up.values().sum()) / n0, float(down.values().sum()) / n0,
+        )
+    return out
+
+
+def exp_sideband_seed(residual, cell_total, ref_hist, mass_index, peak_half_width):
+    """Per-cell exponential template from the sideband residual.
+
+    For each cell, weighted least squares of log(residual) against mass over
+    the sideband bins with positive residual (weights = residual, the Poisson
+    variance of a count), then exp(a + b (m - m0)) normalised to `cell_total`.
+    Cells with fewer than three usable sideband bins keep the flat seed. Returns
+    the shaped array, the number of fitted cells, the number of flat fallbacks,
+    and the fitted slopes.
+    """
+    mass_axis = ref_hist.axes[cvh.MASS_AXIS]
+    centres = np.asarray(mass_axis.centers, dtype=float)
+    n_mass = len(centres)
+    side = ~cvh.peak_mask(ref_hist, peak_half_width)
+    m0 = float(centres.mean())
+    x = centres - m0
+
+    r = np.moveaxis(np.asarray(residual, dtype=float), mass_index, -1)
+    tot = np.moveaxis(np.asarray(cell_total, dtype=float), mass_index, -1)
+    shape = r.shape
+    r2 = r.reshape(-1, n_mass)
+    tot2 = tot.reshape(-1)
+    out = np.empty_like(r2)
+    n_fit = n_flat = 0
+    slopes = []
+    for i in range(r2.shape[0]):
+        ok = side & (r2[i] > 0.0)
+        if ok.sum() < 3:
+            out[i] = tot2[i] / n_mass
+            n_flat += 1
+            continue
+        w = r2[i][ok]
+        A = np.column_stack([np.ones(ok.sum()), x[ok]])
+        coef, *_ = np.linalg.lstsq(A * np.sqrt(w)[:, None], np.log(w) * np.sqrt(w), rcond=None)
+        shape_m = np.exp(coef[0] + coef[1] * x)
+        out[i] = shape_m * (tot2[i] / shape_m.sum())
+        slopes.append(float(coef[1]))
+        n_fit += 1
+    return np.moveaxis(out.reshape(shape), -1, mass_index), n_fit, n_flat, slopes
+
+
+def split_resolution_by_axes(nominal, smeared, axes, logger=None):
+    """Cut one smeared template into per-cell-group nuisances.
+
+    Returns a list of (name, template) pairs, one per bin of the flattened index
+    over `axes`. Template k equals `nominal` everywhere except in the cells of
+    group k, where it equals `smeared`. Three properties are asserted on every
+    slab, because a slab that fails any of them is a nuisance that does not mean
+    what its name says:
+
+      * its integral equals the nominal's (relative 1e-9): the convolution
+        preserves the integral per cell, so the slab must too;
+      * it is bit-identical to the nominal outside its group;
+      * at least one bin inside its group moved.
+
+    Names carry the bin indices, `sigRes_eta7` or `sigRes_eta7_pt1`, so a name
+    can be read back to a cell without the tensor.
+    """
+    names_all = list(nominal.axes.name)
+    for a in axes:
+        if a not in names_all:
+            raise ValueError(f"No '{a}' axis to split the resolution over: {names_all}")
+    idx = [names_all.index(a) for a in axes]
+    sizes = [nominal.axes[a].size for a in axes]
+    short = {cvh.ETA_AXIS: "eta", cvh.PT_AXIS: "pt", cvh.CHARGE_AXIS: "q"}
+
+    nom_v = np.asarray(nominal.values(), dtype=float)
+    nom_var = np.asarray(nominal.variances(), dtype=float)
+    sm_v = np.asarray(smeared.values(), dtype=float)
+    sm_var = np.asarray(smeared.variances(), dtype=float)
+    nom_total = float(nom_v.sum())
+
+    out = []
+    for flat in range(int(np.prod(sizes))):
+        multi = np.unravel_index(flat, sizes)
+        mask = np.ones(nom_v.shape, dtype=bool)
+        for ax_i, b in zip(idx, multi):
+            sel = [slice(None)] * nom_v.ndim
+            sel[ax_i] = slice(b, b + 1)
+            keep = np.zeros(nom_v.shape, dtype=bool)
+            keep[tuple(sel)] = True
+            mask &= keep
+        h = nominal.copy()
+        v = np.where(mask, sm_v, nom_v)
+        var = np.where(mask, sm_var, nom_var)
+        h.view(flow=False)["value"] = v
+        h.view(flow=False)["variance"] = var
+
+        name = "sigRes_" + "_".join(
+            f"{short.get(a, a)}{b}" for a, b in zip(axes, multi)
+        )
+        total = float(v.sum())
+        if nom_total > 0 and abs(total / nom_total - 1.0) > 1e-9:
+            raise RuntimeError(
+                f"{name}: integral {total:.9g} != nominal {nom_total:.9g}"
+            )
+        if np.any(v[~mask] != nom_v[~mask]):
+            raise RuntimeError(f"{name}: differs from the nominal outside its slab")
+        moved = np.abs(v[mask] - nom_v[mask])
+        if moved.size == 0 or moved.max() <= 0.0:
+            raise RuntimeError(
+                f"{name}: no bin inside the slab moved; the slab is empty or the "
+                "smear did nothing there"
+            )
+        if logger is not None:
+            peak = float(nom_v[mask].max()) if mask.any() else 0.0
+            logger.info(
+                "  %-18s cells %5d  largest single-bin shift %.4g events (%.2f%% of "
+                "the slab's peak bin)",
+                name, int(mask.sum()), float(moved.max()),
+                100.0 * float(moved.max()) / max(peak, 1e-12),
+            )
+        out.append((name, h))
+    return out
+
+
 def main():
     args = parse_args()
+    param_scale = {}
+    for item in args.scaleVarParamScale:
+        name, _, factor = item.partition("=")
+        if name not in args.scaleParams or not factor:
+            raise ValueError(
+                f"--scaleVarParamScale entry '{item}' must be PARAM=FACTOR with "
+                f"PARAM in {args.scaleParams}"
+            )
+        param_scale[name] = float(factor)
     logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
+
+    # Refused rather than ignored: a per-eta resolution with no reference width
+    # is a request for nothing, and silently emitting nothing is the failure
+    # mode the flags exist to remove.
+    if args.resolutionAxes and args.resolutionVariation <= 0.0:
+        raise RuntimeError(
+            f"--resolutionAxes {args.resolutionAxes} needs --resolutionVariation > 0"
+        )
+    collapsed_res = [a for a in args.resolutionAxes if a in args.collapse]
+    if collapsed_res:
+        raise RuntimeError(
+            f"--resolutionAxes names {collapsed_res}, which --collapse sums over; "
+            "a nuisance cannot vary over an axis the tensor does not have"
+        )
 
     data_raw, mc_raw, (data_key, mc_key) = cvh.load_fitbins(
         args.infile, args.datasetData, args.datasetMC
@@ -363,8 +932,51 @@ def main():
     )
 
     data_hist = cvh.select_category(data_reduced, args.dataCategory)
+    if args.dataScale != 1.0:
+        # Applied HERE, before the signal scale, the background seed and the MC
+        # template scaling are derived, so every one of them is computed from the
+        # scaled data and the fit starts at a consistent point. Applying it later
+        # -- after the signal template has been scaled to the FULL data yield --
+        # leaves the model over-predicting by 1/dataScale at iteration zero, and
+        # then the test measures the optimiser's ability to travel a factor of
+        # 100 rather than anything about statistics.
+        data_hist = data_hist.copy()
+        data_hist.view(flow=False)["value"] *= args.dataScale
+        data_hist.view(flow=False)["variance"] *= args.dataScale
+        logger.info(
+            "Data scaled by %.4g -> %.6g events. Shape unchanged, so the model is "
+            "wrong by the same FRACTION, but per-bin precision is %.2fx worse and "
+            "a given mismodelling costs sqrt(%.4g) fewer sigma.",
+            args.dataScale, float(data_hist.values().sum()),
+            1.0 / np.sqrt(args.dataScale), args.dataScale,
+        )
     signal_hist = cvh.select_category(mc_reduced, args.signalCategory)
     mc_total_hist = cvh.sum_categories(mc_reduced, GEN_MC_CATEGORIES)
+
+    # MC background templates. Names are fixed rather than derived so the fit
+    # script can name them on the --paramModel command line without knowing which
+    # variant was built.
+    PEAKING = [GEN_BU_KX, GEN_BU_PIX, GEN_BD, GEN_BS, GEN_OTHER_B]
+    mc_bkg_specs = {
+        "none": [],
+        "all": [("BuJpsiKMCBkg", GEN_NON_SIGNAL_CATEGORIES)],
+        "comb": [("BuJpsiKMCComb", [GEN_NO_B_ANCESTOR])],
+        "split": [
+            ("BuJpsiKMCComb", [GEN_NO_B_ANCESTOR]),
+            ("BuJpsiKMCPeak", PEAKING),
+        ],
+        "peak": [("BuJpsiKMCPeak", PEAKING)],
+    }[args.mcBkgTemplate]
+    mc_bkg_hists = []
+    for name, cats in mc_bkg_specs:
+        h = cvh.sum_categories(mc_reduced, cats)
+        mc_bkg_hists.append((name, cats, h))
+        logger.info(
+            "MC background template %s from categories %s: %.6g raw events",
+            name,
+            cats,
+            float(h.values().sum()),
+        )
 
     if list(data_hist.axes.name) != list(signal_hist.axes.name):
         raise RuntimeError(
@@ -412,9 +1024,22 @@ def main():
         signal_scale, seed_cap = cvh.cap_seed_scale(
             signal_scale, data_hist, signal_hist, headroom=args.seedHeadroom
         )
+    if args.mcStatScale <= 0.0:
+        raise ValueError("--mcStatScale must be positive")
+    # Every simulation-derived template gets its values scaled by signal_scale
+    # and its variances by var_scale. With mcStatScale = 1 the two are the usual
+    # pair (s, s^2); a larger mcStatScale shrinks the variances alone.
+    var_scale = signal_scale**2 / args.mcStatScale
+    if args.mcStatScale != 1.0:
+        logger.info(
+            "MC-stat scale %.4g: template variances divided by %.4g, values untouched. "
+            "Template variance / Asimov Poisson variance per bin is %.3f (was %.3f).",
+            args.mcStatScale, args.mcStatScale,
+            signal_scale / args.mcStatScale, signal_scale,
+        )
     scaled_signal = signal_hist.copy()
     scaled_signal.view(flow=False)["value"] *= signal_scale
-    scaled_signal.view(flow=False)["variance"] *= signal_scale**2
+    scaled_signal.view(flow=False)["variance"] *= var_scale
 
     if args.pseudoData == "mcTotal":
         # Substituting the observation, not adding processes: the fit model stays
@@ -445,12 +1070,37 @@ def main():
     # Flat at the residual level per cell, so that AxisExpModel's default
     # lnAmpl = 0 starts the amplitude where the data is rather than at one event
     # per bin. The shape is then owned entirely by the param model.
+    # The MC templates carry the same global scale as the signal, so a fitted
+    # normalisation of 1 means "the simulation's own prediction" and the fit is a
+    # measurement of the composition rather than of an arbitrary scale. Their
+    # variances are KEPT -- unlike the analytic component's, these are genuine MC
+    # statistical uncertainties and deserve bin-by-bin nuisances.
+    scaled_mc_bkgs = []
+    for name, cats, h in mc_bkg_hists:
+        sh = h.copy()
+        sh.view(flow=False)["value"] *= signal_scale
+        sh.view(flow=False)["variance"] *= var_scale
+        scaled_mc_bkgs.append((name, sh))
+        logger.info(
+            "  %s scaled by %.4f -> %.6g events (%.2f%% of the data window)",
+            name,
+            signal_scale,
+            float(sh.values().sum()),
+            100.0 * float(sh.values().sum()) / max(float(observed.values().sum()), 1e-12),
+        )
+
     bkg_hist = signal_hist.copy()
     bkg_hist.view(flow=False)["value"] = 0.0
     bkg_hist.view(flow=False)["variance"] = 0.0
 
     mass_index = list(signal_hist.axes.name).index(cvh.MASS_AXIS)
+    # Subtract the MC templates as well as the signal: the analytic component is
+    # there for what the simulation does NOT contain (prompt and non-b fakes), so
+    # seeding it from data-minus-signal alone would double count everything the
+    # templates already describe.
     residual = observed.values() - scaled_signal.values()
+    for _, sh in scaled_mc_bkgs:
+        residual = residual - sh.values()
     residual_per_cell = np.clip(residual.sum(axis=mass_index, keepdims=True), 0.0, None)
     # The floor is a small fraction of the cell's own data rather than an
     # absolute epsilon. A cell whose residual is zero still has data in it, so
@@ -461,6 +1111,20 @@ def main():
     floor = np.maximum(0.05 * observed_per_cell, 1e-6)
     seed = np.maximum(residual_per_cell, floor) / n_mass
     bkg_hist.view(flow=False)["value"] = np.broadcast_to(seed, bkg_hist.values().shape)
+    if args.bkgSeed == "expSideband":
+        shaped, n_fit, n_flat, slopes = exp_sideband_seed(
+            residual, seed * n_mass, signal_hist, mass_index, args.peakHalfWidth
+        )
+        bkg_hist.view(flow=False)["value"] = shaped
+        logger.info(
+            "Background seed 'expSideband': exp(a + b m) fitted to the sideband "
+            "residual in %d of %d cells (%d fell back to flat); slope b median %.2f, "
+            "range [%.2f, %.2f] per GeV. Cell integrals unchanged.",
+            n_fit, n_cells, n_flat,
+            float(np.median(slopes)) if slopes else float("nan"),
+            float(np.min(slopes)) if slopes else float("nan"),
+            float(np.max(slopes)) if slopes else float("nan"),
+        )
 
     n_floored = int(np.sum(residual_per_cell <= 0.0))
     logger.info(
@@ -487,6 +1151,8 @@ def main():
     writer.add_channel(signal_hist.axes, name=args.channel)
     writer.add_data(observed, channel=args.channel)
     writer.add_process(scaled_signal, args.signalProcess, args.channel, signal=True)
+    for name, sh in scaled_mc_bkgs:
+        writer.add_process(sh, name, args.channel)
     writer.add_process(bkg_hist, args.bkgProcess, args.channel)
 
     scale_names = []
@@ -496,7 +1162,7 @@ def main():
         # small-normalisation) variation rather than a rescaling.
         syst_signal = cvh.select_category(syst_reduced, args.signalCategory)
         syst_signal.view(flow=False)["value"] *= signal_scale
-        syst_signal.view(flow=False)["variance"] *= signal_scale**2
+        syst_signal.view(flow=False)["variance"] *= var_scale
 
         logger.info("Scale nuisances:")
         ups, downs, scale_names, groups = split_scale_variations(
@@ -506,7 +1172,10 @@ def main():
             scale=args.scaleVarScale,
             trim=args.scaleVarTrim,
             skip=args.skipScaleParams,
+            naming=args.scaleParamNaming,
+            joint_eta_bins=args.jointEtaBins,
             logger=logger,
+            param_scale=param_scale,
         )
         for up, down, name, group in zip(ups, downs, scale_names, groups):
             writer.add_systematic(
@@ -524,12 +1193,113 @@ def main():
             sorted(set(groups)),
         )
 
+    # --- resolution nuisance -------------------------------------------------
+    # ONE smeared template: the signal convolved with a Gaussian. rabbit's
+    # mirror=True then interpolates multiplicatively as (up/nominal)^theta, so
+    # theta = 0 is the nominal, +1 the smeared template, and -1 a narrower one
+    # obtained by log-extrapolation. Positive for every theta, which a hand-built
+    # additive mirror is not: 2*nominal - up went negative in 274 of 1280 bins,
+    # because smearing by 1.78 bins moves enough yield into the tails that twice
+    # the nominal cannot cover it there.
+    #
+    # A log-symmetric variation is also the right shape for this nuisance. The
+    # data/template width ratio is multiplicative (1.168), not additive.
+    #
+    # With --resolutionAxes the one smeared template is cut into slabs: nuisance
+    # i is the nominal everywhere except in cell-group i, where it is the smeared
+    # template. Each slab is a pure shape variation (the convolution preserves
+    # the integral per cell) and has no lever outside its group, so 24 of them
+    # on eta are 24 independent widths that share nothing with the per-eta
+    # signal normalisation.
+    resolution_names = []
+    if args.resolutionVariation > 0.0:
+        res_up = smear_at_stored_granularity(
+            mc_raw, reduce_kwargs, args.signalCategory, signal_scale,
+            args.resolutionVariation, scaled_signal, logger=logger,
+            var_scale=var_scale,
+        )
+        constrained_label = (
+            "CONSTRAINED (unit Gaussian prior)" if args.resolutionConstrained
+            else "UNCONSTRAINED (no prior; the data determines it)"
+        )
+        if not args.resolutionAxes:
+            shift = np.abs(res_up.values() - scaled_signal.values()).max()
+            logger.info(
+                "Resolution nuisance 'sigRes': %s, largest single-bin shift %.4g "
+                "events (%.2f%% of the peak bin)",
+                constrained_label,
+                shift, 100.0 * shift / max(float(scaled_signal.values().max()), 1e-12),
+            )
+            writer.add_systematic(
+                res_up,
+                "sigRes",
+                args.signalProcess,
+                args.channel,
+                mirror=True,
+                groups=["resolution"],
+                constrained=bool(args.resolutionConstrained),
+            )
+            resolution_names.append("sigRes")
+        else:
+            slab_templates = split_resolution_by_axes(
+                scaled_signal, res_up, args.resolutionAxes, logger=logger
+            )
+            logger.info(
+                "Resolution nuisances over %s: %d slabs, %s",
+                args.resolutionAxes, len(slab_templates), constrained_label,
+            )
+            for name, h in slab_templates:
+                writer.add_systematic(
+                    h,
+                    name,
+                    args.signalProcess,
+                    args.channel,
+                    mirror=True,
+                    groups=["resolution"],
+                    constrained=bool(args.resolutionConstrained),
+                )
+                resolution_names.append(name)
+
+    mass_shift_name = None
+    if args.massShiftB > 0:
+        stored_mev = float(np.diff(mc_raw.axes[cvh.MASS_AXIS].edges)[0]) * 1e3
+        mass_shift_name = f"massShiftB{int(round(args.massShiftB * stored_mev))}MeV"
+        up, down = shift_at_stored_granularity(
+            mc_raw, reduce_kwargs, args.signalCategory, signal_scale,
+            args.massShiftB, scaled_signal, logger=logger, var_scale=var_scale,
+        )
+        writer.add_systematic(
+            [up, down],
+            mass_shift_name,
+            args.signalProcess,
+            args.channel,
+            mirror=False,
+            groups=["massShiftB"],
+            constrained=False,
+            noi=True,   # a nuisance-of-interest: rabbit computes impacts ON it, like massShiftZ100MeV
+        )
+        logger.info("Added the B+ mass POI '%s' (unconstrained, signal template only)", mass_shift_name)
+
     meta = {
         "signal_scale": signal_scale,
+        "mass_shift_noi": mass_shift_name,
+        "data_scale": args.dataScale,
+        "mc_stat_scale": args.mcStatScale,
+        "resolution_variation": args.resolutionVariation,
+        "resolution_constrained": bool(args.resolutionConstrained),
+        "bkg_seed": args.bkgSeed,
+        "resolution_axes": list(args.resolutionAxes),
+        "resolution_nuisances": resolution_names,
+        "signal_scale_reference_yield": (
+            args.signalScaleReferenceYield if args.signalScale is not None else None
+        ),
         "signal_scale_cap": seed_cap,
         "seed_cells_floored": n_floored,
         "signal_process": args.signalProcess,
         "bkg_process": args.bkgProcess,
+        "mc_bkg_template": args.mcBkgTemplate,
+        "mc_bkg_processes": [n for n, _ in scaled_mc_bkgs],
+        "mc_bkg_integrals": {n: float(h.values().sum()) for n, h in scaled_mc_bkgs},
         "signal_template_integral": float(scaled_signal.values().sum()),
         "unscaled_signal_integral": float(signal_hist.values().sum()),
         "mass_low": args.massLow,
@@ -546,8 +1316,15 @@ def main():
         "pseudodata": args.pseudoData,
         "scale_nuisances": scale_names,
         "scale_var_scale": args.scaleVarScale if args.scaleVariations else None,
+        # Per-parameter factor on top of scale_var_scale. One unit of A_i in this
+        # tensor is (histmaker width) x scale_var_scale x this; the joint-fit
+        # guard (check_joint_tensor.py --bTensor) reads both.
+        "scale_var_param_scale": param_scale if args.scaleVariations else {},
+        "input_histogram": os.path.realpath(args.infile),
         "scale_params": args.scaleParams if args.scaleVariations else [],
         "scale_params_skipped": list(args.skipScaleParams),
+        "scale_param_naming": args.scaleParamNaming,
+        "joint_eta_bins": args.jointEtaBins if args.scaleParamNaming == "joint" else None,
     }
     if true_signal is not None:
         meta["pseudodata_scale"] = pseudo_scale

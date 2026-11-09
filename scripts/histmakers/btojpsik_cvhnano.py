@@ -25,6 +25,7 @@ import os
 import hist
 
 import narf
+import numpy as np
 from wremnants.production import btojpsik_cvhnano_selections as sel
 from wremnants.production import muon_calibration
 from wremnants.production.btojpsik_cvhnano_axes import (
@@ -182,14 +183,45 @@ parser.add_argument(
     "-- 1.0 at eta 0, 2.15 at 1.4, 5.56 at 2.4. See notes/E_IN_MATERIAL_TERM.md.",
 )
 parser.add_argument(
+    "--responseModel",
+    choices=["muon", "kpi"],
+    default="muon",
+    help="Which trained response network backs the A/e/M reweight. 'muon' "
+    "(default) reproduces every existing result. 'kpi' is the kaon/pion model, "
+    "whose class alphabet is PDG ids rather than Muon_genPartFlav codes and "
+    "whose training sits at 3 GeV rather than 28. Selecting it also sets the "
+    "per-leg class codes, the raw-source mode and the conditioning floor, "
+    "because those are one decision: handing 321 to the muon graph's remap "
+    "silently turns it into the prompt class and nothing downstream can tell.",
+)
+parser.add_argument(
     "--scaleVarMuonSource",
     type=int,
-    default=443,
-    help="The network's per-leg class tag. 443 is the J/psi-leg class and is "
-    "the default for every leg including the bachelor, following d0_mass.py -- "
-    "there is no hadron class in the training. 1 is the prompt W/Z class; "
-    "running with it measures how much the choice matters rather than "
-    "assuming it does not.",
+    default=None,
+    help="Override the per-leg class tag with a single code on every leg. "
+    "Under --responseModel muon the default is 443, the J/psi-leg class, used "
+    "for the bachelor too because that family has no hadron class; 1 is the "
+    "prompt W/Z class, and running with it measures how much the choice "
+    "matters rather than assuming it does not. Under 'kpi' the default is "
+    "per-leg (bachelor 321, muons 13) and this flag collapses it to one code, "
+    "which is a diagnostic, not a configuration.",
+)
+parser.add_argument(
+    "--useSmearedTrainedModel",
+    action="store_true",
+    help="Load the muon model trained on SMEARED reco pt. This channel smears "
+    "nothing, so the un-smeared model is correct and is now the default; every "
+    "production before 2026-09-08 took the smeared one by accident. Use this "
+    "only to reproduce those numbers for comparison.",
+)
+parser.add_argument(
+    "--perLegResponseModel",
+    action="store_true",
+    help="Config D: keep the muon legs on the muon network and move only the "
+    "bachelor to the kaon/pion one. Requires --responseModel kpi. This is the "
+    "only correct configuration if the kpi model's residual class turns out to "
+    "be a catch-all rather than a trained muon class, and it is the cleanest "
+    "way to see the bachelor dominate the candidate's scale variation.",
 )
 parser.add_argument(
     "--scaleVariationEtaBins",
@@ -224,10 +256,13 @@ parser.add_argument(
 parser.add_argument(
     "--genPtReweightSaturation",
     type=float,
-    default=2.0,
-    help="Gen-pt floor for the response network, in GeV; <=0 disables. The "
-    "training sample floors gen pt at 2.0 GeV, so a bachelor below that is "
-    "outside the model's domain even after the 1 GeV selection.",
+    default=None,
+    help="Gen-pt floor for the response network's CONDITIONING input, in GeV; "
+    "<=0 disables. Unset (the default) takes the floor recorded for the "
+    "selected --responseModel, because the right value is a property of the "
+    "model and not of the channel: the muon model's J/psi class breaks by a "
+    "factor 21 across 1.5-1.95 GeV so it needs 2.0, while the kaon/pion model "
+    "is smooth there and 2.0 would clamp away the region it was built for.",
 )
 parser.add_argument(
     "--genPtReweightSaturationMode",
@@ -443,6 +478,103 @@ if args.scaleVariations:
             f"--scaleVariationEtaBins {args.scaleVariationEtaBins} must divide "
             "the 48 eta bins of the correction file"
         )
+    # One decision, resolved once: model file, per-leg class codes, raw-source
+    # mode and conditioning floor all come from the same registry entry. They
+    # are not independently settable because a mismatch between them is
+    # numerically valid and undetectable downstream -- 321 through the muon
+    # remap becomes 1, which the kpi graph reads as its residual class.
+    _spec = muon_calibration.response_model_spec(args.responseModel)
+    _legs = (
+        sel.SCALE_VAR_LEGS if args.scaleVarLegs == "all" else sel.SCALE_VAR_LEGS[:1]
+    )
+    if args.perLegResponseModel and args.responseModel != "kpi":
+        raise ValueError(
+            "--perLegResponseModel is config D: the muon legs stay on the muon "
+            "network and only the bachelor moves, so it needs "
+            "--responseModel kpi. With --responseModel muon every leg is "
+            "already on the muon network and the flag would do nothing."
+        )
+    if args.perLegResponseModel and args.scaleVarLegs != "all":
+        raise ValueError(
+            "--perLegResponseModel needs --scaleVarLegs all: with only the "
+            "bachelor varied there are no muon legs to assign a model to."
+        )
+
+    if args.scaleVarMuonSource is not None:
+        # Explicit override: one code on every leg. Checked against the
+        # selected model's alphabet rather than accepted blindly.
+        if args.scaleVarMuonSource not in _spec["codes"].values():
+            raise ValueError(
+                f"--scaleVarMuonSource {args.scaleVarMuonSource} is not a "
+                f"class of the {args.responseModel!r} response model, whose "
+                f"codes are {sorted(_spec['codes'].values())}. Passing a code "
+                "from the other model family is silently absorbed by the "
+                "graph's remap, so it is refused here instead."
+            )
+        _leg_codes = args.scaleVarMuonSource
+    elif args.responseModel == "kpi":
+        # Bachelor first, then the two muons -- SCALE_VAR_LEGS order.
+        _kaon = muon_calibration.response_model_code("kpi", "kaon")
+        _mu = muon_calibration.response_model_code("kpi", "muon")
+        _leg_codes = [_kaon] + [_mu] * (len(_legs) - 1)
+    else:
+        _leg_codes = _spec["default_code"]
+
+    # The kpi family is trained on un-smeared reco pt and ships no smeared
+    # variant (confirmed with the author, 2026-09-08). This channel smears
+    # nothing either, so un-smeared is right on both sides -- see the
+    # --noSmearing note below.
+    _smearing = (not args.noSmearing) if _spec["smearing_variants"] else False
+
+    if args.perLegResponseModel:
+        # Config D: model 0 = kpi for the bachelor, model 1 = muon for the
+        # muon legs. Codes follow the model each leg is assigned to.
+        _muon_spec = muon_calibration.response_model_spec("muon")
+        # Both un-smeared. The kpi family has no smeared variant, and this
+        # channel smears nothing, so the muon leg wants the un-smeared model
+        # too -- writing `not args.noSmearing` here would quietly reintroduce
+        # the very mismatch the single-model branch below fixes.
+        _onnx_paths = [
+            muon_calibration.default_shift_smear_reweight_onnx(
+                smearing=False, model="kpi"
+            ),
+            muon_calibration.default_shift_smear_reweight_onnx(
+                smearing=args.useSmearedTrainedModel, model="muon"
+            ),
+        ]
+        _leg_model = [0] + [1] * (len(_legs) - 1)
+        _leg_codes = [muon_calibration.response_model_code("kpi", "kaon")] + [
+            _muon_spec["default_code"]
+        ] * (len(_legs) - 1)
+        _raw_source = [True, False]
+        _cond_floor = [
+            (
+                args.genPtReweightSaturation
+                if args.genPtReweightSaturation is not None
+                else _spec["cond_pt_gen_min"]
+            ),
+            _muon_spec["cond_pt_gen_min"],
+        ]
+    else:
+        _onnx_paths = None
+        _leg_model = None
+        _raw_source = _spec["raw_source"]
+        _cond_floor = (
+            args.genPtReweightSaturation
+            if args.genPtReweightSaturation is not None
+            else _spec["cond_pt_gen_min"]
+        )
+
+    logger.info(
+        "Response model %s: onnx %s, per-leg codes %s, raw_source %s, "
+        "conditioning floor %s",
+        args.responseModel,
+        "per-leg" if args.perLegResponseModel else "single",
+        _leg_codes,
+        _raw_source,
+        _cond_floor,
+    )
+
     _, _, _, scale_unc_helper = muon_calibration.make_jpsi_crctn_helpers(
         common.calib_filepaths,
         muon_corr_mc=args.muonCorrMC,
@@ -456,6 +588,13 @@ if args.scaleVariations:
         # available without the covariance, and this channel constrains one
         # parameter group at a time rather than the full 48-bin basis.
         include_covariance=False,
+        # Flat prefit widths instead of the massfit uncertainties. The joint
+        # fit correlates A/e/M with the Z and J/psi BY NAME, so one unit has to
+        # mean the same shift here as in their histmakers, which run with
+        # --fitMuonScaleAndResolution. Unwired before 2026-10-06, which left
+        # one unit 5-33x smaller here (notes/aem_unit_mismatch.md). The three
+        # central-correction helpers it would also zero are discarded above.
+        fit_muon_scale=args.fitMuonScaleAndResolution,
         fixed_A_unc=args.jpsiFixedAUnc,
         fixed_e_unc=args.jpsiFixedEUnc,
         fixed_M_unc=args.jpsiFixedMUnc,
@@ -468,14 +607,37 @@ if args.scaleVariations:
             if args.scaleVarLegs == "all"
             else [sel.KAON_MASS_GEV]
         ),
-        # This channel applies no resolution smearing, so the model has to be
-        # the one trained on un-smeared reco pt. Tied to --noSmearing rather
-        # than chosen independently, so the two cannot drift apart.
-        smearing=not args.noSmearing,
-        cond_pt_gen_min=(
-            args.genPtReweightSaturation if args.genPtReweightSaturation > 0 else None
-        ),
+        # FIXED 2026-09-08. This channel applies no resolution smearing --
+        # nothing in btojpsik_cvhnano_selections.py smears anything -- so the
+        # model has to be the one trained on un-smeared reco pt. The old
+        # expression was `smearing=not args.noSmearing`, which contradicted the
+        # comment above it: --noSmearing is store_true and defaults False, so
+        # every production run silently loaded the SMEARED-trained model onto
+        # an unsmeared sample. The two differ by a factor 7.5 in response slope
+        # at 1 GeV and 8.3 at 1.5, though only 0.58-2.0 above the 2 GeV clamp,
+        # which is why it never showed up as a pathology.
+        # --useSmearedTrainedModel reproduces the old behaviour, for the
+        # baseline comparison only.
+        smearing=(args.useSmearedTrainedModel if _spec["smearing_variants"] else False),
+        cond_pt_gen_min=_cond_floor if not args.perLegResponseModel else None,
         e_convention=args.eConvention,
+        onnx_path=(
+            None
+            if args.perLegResponseModel
+            else muon_calibration.default_shift_smear_reweight_onnx(
+                smearing=(
+                    args.useSmearedTrainedModel
+                    if _spec["smearing_variants"]
+                    else False
+                ),
+                model=args.responseModel,
+            )
+        ),
+        raw_source=_raw_source if not args.perLegResponseModel else None,
+        onnx_paths=_onnx_paths,
+        leg_model=_leg_model,
+        per_leg_cond_pt_gen_min=_cond_floor if args.perLegResponseModel else None,
+        per_leg_raw_source=_raw_source if args.perLegResponseModel else None,
     )
     if scale_unc_helper is None:
         raise ValueError(
@@ -488,6 +650,13 @@ if args.scaleVariations:
         args.scaleVariationEtaBins,
         scale_unc_helper.tensor_axes[0].size,
         args.scaleVarLegs,
+    )
+    # Recorded in meta_info["args"] for check_joint_tensor.py: per fine eta
+    # bin, what one unit of (A, e, M) moves the track by.
+    args.scaleVariationWidths = scale_unc_helper.scale_param_widths.tolist()
+    logger.info(
+        "Scale variation widths (A, e, M), eta-median: %s",
+        np.median(scale_unc_helper.scale_param_widths, axis=0),
     )
 
 for a in args.axes:
@@ -830,7 +999,7 @@ def build_graph(df, dataset):
                 if args.scaleVarLegs == "all"
                 else sel.SCALE_VAR_LEGS[:1]
             ),
-            muon_source=args.scaleVarMuonSource,
+            muon_source=_leg_codes,
         )
         df, scale_cols = muon_calibration.muon_reweight_helper_cols(
             df, scale_unc_helper, scale_prefix, None
@@ -843,7 +1012,16 @@ def build_graph(df, dataset):
         # Booked over the fit binning, not over mass alone: the deliverable is
         # the shift the variation induces per fit cell, which is what says
         # whether the channel has constraining power.
-        for col in (f"{CAND}_kaonPt", f"{CAND}_kaonEta", f"{CAND}_charge"):
+        # arm.mass_col too: this histogram fills with `{arm.mass_col}_scalar`,
+        # which the --allaxes/--axes loop happens to define only when the mass
+        # axis was requested. Without it --scaleVariations fails at graph-build
+        # time on an axis list that never mentions mass.
+        for col in (
+            f"{CAND}_kaonPt",
+            f"{CAND}_kaonEta",
+            f"{CAND}_charge",
+            arm.mass_col,
+        ):
             if not df.HasColumn(f"{col}_scalar"):
                 df = sel.define_scalar(df, col, f"{col}_scalar")
         results.append(

@@ -955,10 +955,15 @@ def define_bachelor_pt_response(df, is_data):
 # than being re-derived at each use.
 SCALE_VAR_LEGS = [("bachelor", 2), ("mu0", 0), ("mu1", 1)]
 
-# The network's per-muon class tag. 443 is the J/psi-leg class; there is no
-# hadron class, so the bachelor is tagged 443 as well, following d0_mass.py.
-# This is the assumption the channel rests on and it is measured, not assumed:
-# see task 6.5.
+# The network's per-leg class tag. 443 is the muon family's J/psi-leg class;
+# that family has no hadron class, so the bachelor is tagged 443 as well,
+# following d0_mass.py. This is the assumption the channel rests on and it is
+# measured, not assumed: see task 6.5.
+#
+# The kpi model family removes the assumption -- it has real kaon and pion
+# classes -- but its alphabet is PDG ids, disjoint from this one. Codes for it
+# come from `muon_calibration.response_model_code`, never from a literal here,
+# so the two alphabets cannot be mixed by hand.
 MUON_SOURCE_JPSI = 443
 
 # PDG charged-kaon mass [GeV]. Enters the scale variations through the e term,
@@ -1052,9 +1057,23 @@ def define_scale_variation_inputs(
             """,
         )
 
+    # Per-leg class codes. A three-body candidate has two muons and one hadron,
+    # and expressing that is the entire content of the kpi model family -- a
+    # single code broadcast to every leg cannot. A scalar is still accepted and
+    # broadcast, which is what keeps the muon-model path unchanged.
+    if isinstance(muon_source, (list, tuple)):
+        codes = [int(c) for c in muon_source]
+        if len(codes) != len(legs):
+            raise ValueError(
+                f"muon_source has {len(codes)} entries for {len(legs)} legs; "
+                "pass one code per leg in SCALE_VAR_LEGS order, or a single "
+                "scalar to broadcast"
+            )
+    else:
+        codes = [int(muon_source)] * len(legs)
     df = df.Define(
         f"{prefix}_muon_source",
-        "ROOT::VecOps::RVec<int>{%s}" % ", ".join([str(int(muon_source))] * len(legs)),
+        "ROOT::VecOps::RVec<int>{%s}" % ", ".join(str(c) for c in codes),
     )
     return df, prefix
 
