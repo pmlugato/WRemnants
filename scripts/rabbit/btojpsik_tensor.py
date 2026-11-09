@@ -237,9 +237,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def _add_aem_systematics(
-    writer, variation_hist, signal_hist, args, labels, n_eta_bins, name_suffix=""
-):
+def _add_aem_systematics(writer, variation_hist, signal_hist, args, labels, n_eta_bins):
     for eta_idx in range(n_eta_bins):
         for label in labels:
             offset = labels.index(label)
@@ -316,7 +314,7 @@ def _add_aem_systematics(
 
             writer.add_systematic(
                 [up_hist, down_hist],
-                name=f"{label}{name_suffix}_eta{eta_idx}",
+                name=f"{label}_eta{eta_idx}",
                 process=args.signalProcess,
                 channel=args.channel,
                 constrained=False,
@@ -385,11 +383,6 @@ def main():
         )
         variation_rebinning.pop(args.etaAxis, None)
     variation_hist = rebin_histogram(variation_hist, variation_rebinning)
-
-    # lose stats quick at "high" pT...
-
-    # import pdb
-    # pdb.set_trace()
 
     background_hists = {}
     for spec in args.background:
@@ -474,7 +467,6 @@ def main():
                 signal_slice = signal_hist[sel]
                 data_slice = data_hist[sel]
                 signal_yield = signal_slice.values().sum()
-                data_yield = data_slice.values().sum()
                 residual_spectrum = np.clip(
                     data_slice.values() - signal_slice.values(), 0.0, None
                 )

@@ -638,9 +638,6 @@ def build_graph(df, dataset):
                 "bkmm_kaon_charge",
             ],
         )
-    # import pdb
-    # pdb.set_trace()
-
     reco_sel_GF = "bkmm_kaon_stuff"
     df = df.Alias(f"{reco_sel_GF}_recoPt", "kaon_jpsiCorrectedPt")
     df = df.Alias(f"{reco_sel_GF}_recoEta", f"bkmm_{vertex_prefix}_kaon1eta")
@@ -828,9 +825,6 @@ def build_graph(df, dataset):
                             storage_type=storage_type,
                             hist_suffix=hist_suffix,
                         )
-
-        # import pdb
-        # pdb.set_trace()
 
     if dataset.is_data:
         # df = df.Define("bkmm_kaon_curvature", "1. / bkmm_kaon_pt")
