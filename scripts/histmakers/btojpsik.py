@@ -49,12 +49,10 @@ parser.add_argument(
     "--csVarsHist", action="store_true", help="Add CS variables to dilepton hist"
 )
 parser.add_argument("--axes", type=str, nargs="*", default=[], help="")
-# Selection toggles, added 2026-08-18 to test whether the two discriminants the
-# CVH NanoAOD cannot supply are what makes the 2018 data and simulation agree.
-# `softMuonMva` needs the muon inner track, which is unavailable for 100% of the
-# muons persisted in our AlCaReco, and the BMM BDT has no counterpart at all --
-# so if dropping them here breaks the 2018 agreement, that is the explanation,
-# and if it does not, the difference lies elsewhere.
+# Selection toggles for comparing this (2018, BMM NanoAOD) selection with the
+# CVH NanoAOD B+ analysis, which has no muon softMVA (it needs the muon inner
+# track) and no BMM BDT, and accepts kaons up to the tracker edge. The defaults
+# are the nominal BMM selection.
 parser.add_argument(
     "--kaonMaxEta",
     type=float,

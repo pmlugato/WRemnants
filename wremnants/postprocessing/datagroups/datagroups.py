@@ -98,14 +98,11 @@ class Datagroups(object):
                 make_datagroups_cvhnano as make_datagroups,
             )
         elif self.mode == "btojpsik":
-            # The BMM-Tools NanoAOD analysis, whose exclusive BuToJpsiK /
-            # signalBuToJpsiK / BuToJpsiPi split is by dataset. This branch was
-            # MISSING: `datagroups_btojpsik` existed but nothing dispatched to
-            # it, so a 2018 output fell through to `datagroups_default`, which
-            # merged every simulated sample into one "Simulation" group. The
-            # recorded 2018 reference plots -- which show BuToJpsiK against data
-            # -- could not be reproduced at all, and the failure looked like an
-            # empty stack rather than a wrong grouping.
+            # The BMM-Tools NanoAOD analysis: BuToJpsiK / signalBuToJpsiK /
+            # BuToJpsiPi are separate datasets, grouped by datagroups_btojpsik.
+            # Without this branch a btojpsik output falls through to
+            # datagroups_default and every simulated sample is merged into a
+            # single "Simulation" group.
             from wremnants.postprocessing.datagroups.datagroups_btojpsik import (
                 make_datagroups_btojpsik as make_datagroups,
             )

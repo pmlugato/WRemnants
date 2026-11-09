@@ -113,8 +113,10 @@ def parse_args():
     parser.add_argument(
         "--nomc",
         action="store_true",
-        help="Switch to nomc mode: use bkmm_nomc_mass as fit observable and add "
-        "A/e/M nuisances for each J/psi muon.",
+        help="Input histograms were made with the histmaker's --nomc option: "
+        "the default --massAxis becomes bkmm_nomc_mass. The muon A/e/M "
+        "variations are already folded into the single combined kaon+muon "
+        "variation histogram, so no extra nuisances are added.",
     )
     parser.add_argument(
         "--massAxis",

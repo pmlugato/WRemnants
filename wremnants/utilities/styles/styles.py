@@ -204,9 +204,8 @@ axis_labels = {
         "unit": "cm",
     },
     "bachelor_dedx": r"$\mathrm{d}E/\mathrm{d}x^{\mathrm{K}}$ (harmonic-2)",
-    # Impact-parameter significances (gap G6). These are the kaon-ID
-    # discriminants measured in add-cvhnano-bachelor-quality-cuts section 10:
-    # d0 significance ranks best, dE/dx worst.
+    # Impact-parameter significances, used as kaon-ID discriminants: d0
+    # significance separates best, dE/dx worst.
     "bachelor_d0Sig": r"$\mathit{d}_{0}^{\mathrm{K}}/\mathit{\sigma}(\mathit{d}_{0})$ w.r.t. PV",
     "bachelor_dzPVSig": r"$\mathit{d}_{z}^{\mathrm{K}}/\mathit{\sigma}(\mathit{d}_{z})$ w.r.t. PV",
     "bachelor_relPtErr": r"$\mathit{\sigma}(\mathit{p}_{T})/\mathit{p}_{T}^{\mathrm{K}}$",
@@ -221,7 +220,7 @@ axis_labels = {
     "mu1_eta": r"$\mathit{\eta}^{\mu_{1}}$",
     # The only dimuon mass the NanoAOD stores is the joint fit's *constrained*
     # parameter, pinned to 3.097 -- so this one is rebuilt from the muon tracks
-    # in the histmaker (gap G11) and is pre-fit.
+    # in the histmaker and is pre-fit.
     "dimuon_raw_mass": {
         "label": r"$\mathit{m}(\mu\mu)$ from tracks",
         "unit": "GeV",
@@ -312,7 +311,7 @@ _cvh_arm_axes = {
     "massErr": ({"label": r"$\mathit{\sigma}_{m}(\mu\mu\mathrm{K})$", "unit": "GeV"}),
     "pt": ({"label": r"$\mathit{p}_{T}(\mu\mu\mathrm{K})$", "unit": "GeV"}),
     "alphaBS": r"$\mathit{\alpha}_{\mathrm{BS}}$ (xy only)",
-    # 3D pointing angle to the PV (gap G8). The transverse alphaBS has a long
+    # 3D pointing angle to the PV. The transverse alphaBS has a long
     # tail because a missing daughter tilts the candidate out of the plane.
     "alpha3dPV": r"$\mathit{\alpha}_{\mathrm{3D}}$ (PV)",
     "lxy": ({"label": r"$\mathit{L}_{xy}$", "unit": "cm"}),
