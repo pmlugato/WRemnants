@@ -62,9 +62,10 @@ def set_parser_default(parser, argument, newDefault):
     return set_parser_attribute(parser, argument, "default", newDefault)
 
 
-def base_parser():
-    # manually adding help at the end lets inheriting parsers use it correctly
-    parser = argparse.ArgumentParser(add_help=False)
+def base_parser(add_help=True):
+    # common_parser passes add_help=False and registers -h itself once all of its
+    # arguments exist, so the early parse_known_args() there does not swallow -h
+    parser = argparse.ArgumentParser(add_help=add_help)
     parser.add_argument(
         "-v",
         "--verbose",
@@ -81,7 +82,7 @@ def base_parser():
 
 def common_parser(analysis_label=""):
     for_reco_highPU = "gen" not in analysis_label and "lowpu" not in analysis_label
-    parser = base_parser()
+    parser = base_parser(add_help=False)
     parser.add_argument(
         "-j",
         "--nThreads",
