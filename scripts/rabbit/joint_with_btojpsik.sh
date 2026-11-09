@@ -12,7 +12,9 @@
 # The Z and J/psi tensors are reused from the `repro` chain rather than rebuilt:
 # they are Asimov, full 5D, and already validated against havyn's numbers.
 #
-# Usage:  joint_with_btojpsik.sh [options]
+# Usage:  joint_with_btojpsik.sh --baseDir DIR [options]
+#   --baseDir DIR   base directory holding histograms/, tensors/, fitresults/
+#                   and logs/ (required)
 #   --stages LIST   comma-separated subset of 1 B+ tensor, 2 merge, 3 check,
 #                   4 fit, 5 report, 6 plots                   [1,2,3,4,5,6]
 #   --tag TAG       output label; every artefact carries it   [btojpsik_asimov]
@@ -72,8 +74,7 @@ for name in TAG BHIST JOINT_N_ETA; do
 done
 
 WREM="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CEPH=/ceph/submit/data/user/p/pmlugato/mz
-HISTS="$CEPH/histograms"; TENSORS="$CEPH/tensors"; FITS="$CEPH/fitresults"; LOGS="$CEPH/logs"
+BASE=""
 IMAGE=/cvmfs/unpacked.cern.ch/gitlab-registry.cern.ch/bendavid/cmswmassdocker/wmassdevrolling:latest
 
 STAGES="1,2,3,4,5,6"
@@ -122,6 +123,7 @@ REF_YIELD_1FB=1327932         # the data-fitted signal yield behind it
 need() { [[ $# -ge 2 ]] || { echo "$1 needs a value" >&2; exit 2; }; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --baseDir)  need "$@"; BASE=$2; shift 2 ;;
     --stages)   need "$@"; STAGES=$2; shift 2 ;;
     --tag)      need "$@"; TAG=$2; shift 2 ;;
     --bhist)    need "$@"; BHIST=$2; shift 2 ;;
@@ -146,6 +148,8 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown option '$1'" >&2; usage >&2; exit 2 ;;
   esac
 done
+[[ -n $BASE ]] || { echo "--baseDir <base directory> is required" >&2; exit 2; }
+HISTS="$BASE/histograms"; TENSORS="$BASE/tensors"; FITS="$BASE/fitresults"; LOGS="$BASE/logs"
 BHIST=${BHIST:-$HISTS/btojpsik_cvhnano_kpiA_kpi.hdf5}
 SIGNAL_SCALE=$(python3 -c "print(f'{$SIGNAL_SCALE_1FB * $DATA_SCALE:.10g}')")
 REF_YIELD=$(python3 -c "print(int(round($REF_YIELD_1FB * $DATA_SCALE)))")

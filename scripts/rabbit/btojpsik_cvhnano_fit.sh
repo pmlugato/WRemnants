@@ -83,7 +83,7 @@
 #                        5.05 5.45 20; its fallback is 5.20 5.40 10.
 #   --dataScale X        scale the observed histogram before writing    [1]
 #   --postfixSuffix S    appended to the output postfix                  [""]
-#   --mzDir DIR          base output dir   [/ceph/submit/data/user/p/pmlugato/mz]
+#   --mzDir DIR          base output dir (required)
 #   --tensorDir DIR      [<mzDir>/tensors]     --fitDir DIR  [<mzDir>/fitresults]
 #   --logDir DIR         [<mzDir>/logs]        --plotDir DIR [<mzDir>/plots/cvhnano_<postfix>]
 #   --image PATH         singularity image
@@ -93,14 +93,15 @@
 #   --dryRun             write the commands file and print the plan; run nothing
 #
 # Examples:
-#   btojpsik_cvhnano_fit.sh $HIST full
-#   btojpsik_cvhnano_fit.sh $HIST full --bkgModel bernstein
-#   btojpsik_cvhnano_fit.sh $HIST inclusive --observed
-#   btojpsik_cvhnano_fit.sh $HIST full -- --pseudoData mcTotal
-#   btojpsik_cvhnano_fit.sh $HIST full --bkgModel exppoly --etaRebin 2 \
+#   # the primary data fit (3 pT x 24 eta x 2 charge cells, 20 x 20 MeV)
+#   btojpsik_cvhnano_fit.sh $HIST full --mzDir $MZ --observed \
+#       --bkgModel exppoly --polyOrder 2 --etaRebin 2 \
 #       --normAxes fit_bachelor_eta --scaleVar --mcBkg peak \
-#       --resVar 0.005 --resAxes fit_bachelor_eta --signalScale 22.1 \
-#       --massLow 5.05 --massHigh 5.45 --massBins 20
+#       --resVar 0.005 --resAxes fit_bachelor_eta \
+#       --signalScale 18.2433 --refYield 1327932 \
+#       --massLow 5.05 --massHigh 5.45 --massBins 20 --postfixSuffix _kpi
+#   btojpsik_cvhnano_fit.sh $HIST inclusive --mzDir $MZ --observed
+#   btojpsik_cvhnano_fit.sh $HIST full --mzDir $MZ -- --pseudoData mcTotal
 
 set -uo pipefail
 
@@ -139,7 +140,7 @@ fi
 
 # --- defaults ------------------------------------------------------------------
 WREM_BASE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-MZ=/ceph/submit/data/user/p/pmlugato/mz
+MZ=""
 TENSOR_DIR=""; FIT_DIR=""; LOG_DIR=""; PLOTDIR=""
 IMAGE=/cvmfs/unpacked.cern.ch/gitlab-registry.cern.ch/bendavid/cmswmassdocker/wmassdevrolling:latest
 
@@ -249,6 +250,7 @@ if [[ -n $MASS_LOW || -n $MASS_HIGH || -n $MASS_BINS ]]; then
     echo "--massLow, --massHigh and --massBins must be given together" >&2; exit 2
   fi
 fi
+[[ -n $MZ ]] || { echo "--mzDir <base output dir> is required" >&2; exit 2; }
 TENSOR_DIR=${TENSOR_DIR:-$MZ/tensors}
 FIT_DIR=${FIT_DIR:-$MZ/fitresults}
 LOG_DIR=${LOG_DIR:-$MZ/logs}

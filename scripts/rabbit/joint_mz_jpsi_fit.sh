@@ -28,6 +28,8 @@
 #   joint_mz_jpsi_fit.sh pilot 4,5,6      # only the listed stages
 #
 # Options, after the positionals:
+#   --baseDir DIR   base directory for histograms/, tensors/, fitresults/ and
+#                   logs/ (required)
 #   --nEta N        nuisance eta basis for both histmakers and the check  [24]
 #   --nThreads N    histmaker threads (-j)                               [160]
 #
@@ -43,7 +45,7 @@ if [[ $# -gt 0 && $1 != --* ]]; then STAGES=$1; shift; fi
 
 case "$MODE" in
   pilot|full|repro) ;;
-  *) echo "usage: $0 {pilot|full|repro} [stages] [--nEta N] [--nThreads N]" >&2; exit 2 ;;
+  *) echo "usage: $0 {pilot|full|repro} [stages] --baseDir DIR [--nEta N] [--nThreads N]" >&2; exit 2 ;;
 esac
 
 # Configuration is by flag only; a stale export must not change a fit silently.
@@ -60,12 +62,14 @@ done
 # at 48 each histogram bin spans two nuisance bins and adjacent pairs come out
 # nearly degenerate (measured rho = -0.81 / -0.75 / -0.44 for A / e / M). 24
 # aligns the basis 1:1 with what the data resolves.
+BASE=""
 N_ETA=24
 # The histmakers are I/O-bound on the NanoAOD reads, so more threads than
 # cores-in-use still helps; lower it on a busy node.
 NTHREADS=160
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --baseDir)  [[ $# -ge 2 ]] || { echo "--baseDir needs a value" >&2; exit 2; }; BASE=$2; shift 2 ;;
     --nEta)     [[ $# -ge 2 ]] || { echo "--nEta needs a value" >&2; exit 2; }; N_ETA=$2; shift 2 ;;
     --nThreads) [[ $# -ge 2 ]] || { echo "--nThreads needs a value" >&2; exit 2; }; NTHREADS=$2; shift 2 ;;
     *) echo "unknown option '$1'" >&2; exit 2 ;;
@@ -75,11 +79,11 @@ done
 run_stage() { [[ ",$STAGES," == *",$1,"* ]]; }
 
 WREM="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CEPH=/ceph/submit/data/user/p/pmlugato/mz
-HISTS="$CEPH/histograms"
-TENSORS="$CEPH/tensors"
-FITS="$CEPH/fitresults"
-LOGS="$CEPH/logs"
+[[ -n $BASE ]] || { echo "--baseDir <base directory> is required" >&2; exit 2; }
+HISTS="$BASE/histograms"
+TENSORS="$BASE/tensors"
+FITS="$BASE/fitresults"
+LOGS="$BASE/logs"
 PLOTS="$HOME/public_html/mz"
 TAG="joint_${MODE}"
 

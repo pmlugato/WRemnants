@@ -14,11 +14,11 @@
 # rest of btojpsik_cvhnano_plots.sh carries. Raw yields are in
 # scripts/btojpsik/kaon_pt_spectrum_fig.py.
 #
-# Usage: btojpsik_cvhnano_softkaon_pt.sh [histmaker.hdf5] [outfolder]
+# Usage: btojpsik_cvhnano_softkaon_pt.sh <histmaker.hdf5> [outfolder]
 
 set -euo pipefail
 
-INFILE=${1:-/ceph/submit/data/user/p/pmlugato/mz/histograms/btojpsik_cvhnano_softk_noclamp.hdf5}
+INFILE=${1:?usage: $0 <histmaker.hdf5> [outfolder]}
 OUTFOLDER=${2:-btojpsik_softkaon_pt}
 OUTPATH=${OUTPATH:-$HOME/public_html/mz}
 

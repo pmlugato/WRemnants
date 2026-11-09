@@ -32,6 +32,7 @@ Weights are capped at `--cropHighWeight`, as the central helper does.
 import argparse
 import glob
 import json
+import os
 
 import numpy as np
 import uproot
@@ -40,9 +41,10 @@ DEFAULT_MC = (
     "/ceph/submit/data/group/cms/store/mc/"
     "inclusive_btojpsix_2016postvfp_v3_NanoAOD_v2/*.root"
 )
-DEFAULT_PROFILE = (
-    "/work/submit/pmlugato/REALmz/mz/real/WRemnants/wremnants-data/data/"
-    "pileupProfiles/pileupProfileData_2016Legacy_RunpostVFP_04June2021.root"
+DEFAULT_PROFILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "../../wremnants-data/data/pileupProfiles",
+    "pileupProfileData_2016Legacy_RunpostVFP_04June2021.root",
 )
 
 parser = argparse.ArgumentParser(description=__doc__)
