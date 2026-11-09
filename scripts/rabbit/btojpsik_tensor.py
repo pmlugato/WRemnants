@@ -1,12 +1,16 @@
 import argparse
 import os
 
+import numpy as np
+
 from rabbit import tensorwriter
 from wremnants.postprocessing.rabbit_btojpsik_helpers import (
     _reorder_hist_axes,
     _resolve_plot_labels,
     assert_matching_axes,
     collapse_axes,
+    evaluate_exp_plus_constant,
+    fit_exp_plus_constant_seed,
     load_histogram,
     plot_curvature_response,
     plot_variation_projection,
@@ -50,6 +54,42 @@ def parse_args():
         default=None,
         help="Optional lnN uncertainty applied to the signal normalization.",
     )
+    parser.add_argument(
+        "--flatBkgSeed",
+        default="dataResidual",
+        choices=["dataResidual", "fixedFraction"],
+        help="How to seed the artificial background normalization in each (eta, pt, charge) bin.",
+    )
+    parser.add_argument(
+        "--flatBkgFraction",
+        type=float,
+        default=0.40,
+        help="Flat-background fraction relative to the signal yield when --flatBkgSeed fixedFraction is used.",
+    )
+    parser.add_argument(
+        "--bkgModel",
+        default="flat",
+        choices=["exp", "flat", "exp_poi"],
+        help="Background model. 'flat': legacy constant background with per-bin NOIs. "
+        "'exp': A*exp(-B*x)+C with per-bin NOIs (deprecated). "
+        "'exp_poi': single all-ones bkgExp process; shape exp(lnAmpl+slope*x) "
+        "handled entirely by AxisExpModel POIs (no flatBkg process).",
+    )
+    parser.add_argument(
+        "--signalNormPOI",
+        action="store_true",
+        help="Signal per-bin yields are handled by AxisNormModel (or another "
+        "POI model) instead of template-morph NOIs. When set, per-bin signal "
+        "norm systematics are NOT added to the tensor and the signal process "
+        "is marked signal=True; A/e/M systematics are still added as NOIs.",
+    )
+    parser.add_argument(
+        "--bkgPOI",
+        action="store_true",
+        help="Write a single all-ones 'background' process whose shape and "
+        "amplitude are fully owned by a POI model (e.g. AxisExpModel or "
+        "AxisBernsteinModel). No background NOIs are added to the tensor.",
+    )
 
     parser.add_argument(
         "--systematicLabels",
@@ -71,12 +111,23 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--massAxis", default="bkmm_jpsimc_mass", help="Name of the mass axis."
+        "--nomc",
+        action="store_true",
+        help="Input histograms were made with the histmaker's --nomc option: "
+        "the default --massAxis becomes bkmm_nomc_mass. The muon A/e/M "
+        "variations are already folded into the single combined kaon+muon "
+        "variation histogram, so no extra nuisances are added.",
+    )
+    parser.add_argument(
+        "--massAxis",
+        default=None,
+        help="Name of the mass axis. Defaults to bkmm_nomc_mass when --nomc is set, "
+        "bkmm_jpsimc_mass otherwise.",
     )
     parser.add_argument(
         "--ptAxis",
         default="bkmm_kaon_pt",
-        help="Name of the kaon-pt axis to be summed over.",
+        help="Name of the kaon-pt axis kept in the tensor.",
     )
     parser.add_argument(
         "--etaAxis",
@@ -164,11 +215,137 @@ def parse_args():
         action="store_true",
         help="Print debug summaries for variation templates.",
     )
+    parser.add_argument(
+        "--normalizeAeM",
+        action="store_true",
+        help="Normalize A/e/M variation templates so the mass-integrated yield per "
+        "(pt, eta, charge) cell equals the nominal. Makes A/e/M pure mass-shape "
+        "variations, removing the normalization redundancy with AxisNormModel POIs "
+        "and preventing non-positive-definite Hessian failures when using "
+        "--signalNormPOI.",
+    )
+    parser.add_argument(
+        "--etaBins",
+        type=int,
+        default=None,
+        help="Rebin the eta axis to this many bins before writing. Set to the nominal axis size to disable eta rebinning.",
+    )
+    parser.add_argument(
+        "--massBins",
+        type=int,
+        default=10,
+        help="Rebin the mass axis to this many bins before writing. Set to the nominal axis size to disable mass rebinning.",
+    )
     return parser.parse_args()
+
+
+def _add_aem_systematics(writer, variation_hist, signal_hist, args, labels, n_eta_bins):
+    for eta_idx in range(n_eta_bins):
+        for label in labels:
+            offset = labels.index(label)
+            systematic_bin = len(labels) * eta_idx + offset
+
+            up_selection = {
+                args.systematicAxis: systematic_bin,
+                args.variationAxis: args.variationUpIndex,
+            }
+            down_selection = {
+                args.systematicAxis: systematic_bin,
+                args.variationAxis: args.variationDownIndex,
+            }
+
+            up_variation = collapse_axes(
+                variation_hist[up_selection],
+                [args.systematicAxis, args.variationAxis],
+            )
+            down_variation = collapse_axes(
+                variation_hist[down_selection],
+                [args.systematicAxis, args.variationAxis],
+            )
+
+            target_axes = signal_hist.axes.name
+            up_variation = _reorder_hist_axes(up_variation, target_axes)
+            down_variation = _reorder_hist_axes(down_variation, target_axes)
+
+            if up_variation.axes.name != signal_hist.axes.name:
+                raise RuntimeError(
+                    f"Up variation axes {up_variation.axes.name} do not match "
+                    f"nominal axes {signal_hist.axes.name}."
+                )
+            if down_variation.axes.name != signal_hist.axes.name:
+                raise RuntimeError(
+                    f"Down variation axes {down_variation.axes.name} do not match "
+                    f"nominal axes {signal_hist.axes.name}."
+                )
+
+            up_hist = signal_hist.copy()
+            down_hist = signal_hist.copy()
+
+            eta_target = [slice(None)] * up_hist.values().ndim
+            eta_axis_idx = up_hist.axes.name.index(args.etaAxis)
+            eta_target[eta_axis_idx] = eta_idx
+            eta_target = tuple(eta_target)
+
+            up_hist.values()[eta_target] = up_variation.values()[eta_target]
+            down_hist.values()[eta_target] = down_variation.values()[eta_target]
+
+            up_vars = up_variation.variances()
+            down_vars = down_variation.variances()
+            if up_vars is not None:
+                up_hist.variances()[eta_target] = up_vars[eta_target]
+            if down_vars is not None:
+                down_hist.variances()[eta_target] = down_vars[eta_target]
+
+            if args.normalizeAeM:
+                mass_ax = up_hist.axes.name.index(args.massAxis)
+                # After eta_target fixes eta with an integer index, the mass axis
+                # position in the reduced array shifts left by 1 if it was after eta.
+                mass_ax_r = mass_ax if mass_ax < eta_axis_idx else mass_ax - 1
+                nom_sum = signal_hist.values()[eta_target].sum(
+                    axis=mass_ax_r, keepdims=True
+                )
+                up_slice = up_hist.values()[eta_target].copy()
+                up_sum = up_slice.sum(axis=mass_ax_r, keepdims=True)
+                up_scale = np.where(up_sum > 0, nom_sum / up_sum, 1.0)
+                up_hist.values()[eta_target] = up_slice * up_scale
+
+                down_slice = down_hist.values()[eta_target].copy()
+                down_sum = down_slice.sum(axis=mass_ax_r, keepdims=True)
+                down_scale = np.where(down_sum > 0, nom_sum / down_sum, 1.0)
+                down_hist.values()[eta_target] = down_slice * down_scale
+
+            writer.add_systematic(
+                [up_hist, down_hist],
+                name=f"{label}_eta{eta_idx}",
+                process=args.signalProcess,
+                channel=args.channel,
+                constrained=False,
+                noi=True,
+            )
 
 
 def main():
     args = parse_args()
+    # The plotting helpers use snake_case attribute names, while this script
+    # follows the repo CLI convention of camelCase options.
+    args.charge_axis = args.chargeAxis
+    args.curvature_axis = args.curvatureAxis
+    args.debug_variation = args.debugVariation
+    args.eta_axis = args.etaAxis
+    args.overlay_bin_variations = args.overlayBinVariations
+    args.plot_curvature_response = args.plotCurvatureResponse
+    args.plot_curvature_scale = args.plotCurvatureScale
+    args.plot_output = args.plotOutput
+    args.plot_variation_scale = args.plotVariationScale
+    args.systematic_axis = args.systematicAxis
+    args.systematic_labels = tuple(args.systematicLabels)
+    args.tensor_output = args.outfolder
+    args.variation_axis = args.variationAxis
+    args.variation_down_index = args.variationDownIndex
+    args.variation_up_index = args.variationUpIndex
+    if args.massAxis is None:
+        args.massAxis = "bkmm_nomc_mass" if args.nomc else "bkmm_jpsimc_mass"
+
     outname = os.path.splitext(os.path.basename(__file__))[0]
     if args.postfix:
         outname += f"_{args.postfix}"
@@ -177,16 +354,15 @@ def main():
         args.infile, args.datasetSignal
     )
 
-    print(signal_hist)
-    print(data_hist)
-    print(variation_hist)
-
     n_pt_bins = signal_hist.axes[args.ptAxis].size
-    n_mass_bins = 10
-    rebinning = {
-        args.etaAxis: 7,
-        args.massAxis: n_mass_bins,
-    }
+    rebinning = {}
+    if args.etaBins is not None and signal_hist.axes[args.etaAxis].size != args.etaBins:
+        rebinning[args.etaAxis] = args.etaBins
+    if (
+        args.massBins is not None
+        and signal_hist.axes[args.massAxis].size != args.massBins
+    ):
+        rebinning[args.massAxis] = args.massBins
     for axis, bins in rebinning.items():
         print(f"Rebinning {axis} into {bins} bins")
 
@@ -210,11 +386,6 @@ def main():
         variation_rebinning.pop(args.etaAxis, None)
     variation_hist = rebin_histogram(variation_hist, variation_rebinning)
 
-    # lose stats quick at "high" pT...
-
-    # import pdb
-    # pdb.set_trace()
-
     background_hists = {}
     for spec in args.background:
         if "=" not in spec:
@@ -233,37 +404,172 @@ def main():
 
     assert_matching_axes(background_hists, signal_hist, label="Background")
 
-    # add an artificial flat background
-    total_yield = signal_hist.values().sum()
-    bkg_yield = total_yield * 0.40
+    n_eta_bins = signal_hist.axes[args.etaAxis].size
+    n_charge_bins = signal_hist.axes[args.chargeAxis].size
+
     bkg_hist = signal_hist.copy()
-    bkg_hist.values()[...] = bkg_yield / bkg_hist.size
+    bkg_hist.values()[...] = 0.0
     if bkg_hist.variances() is not None:
-        # poisson
-        # bkg_hist.variances()[...] = bkg_hist.values()
-        # no statistical uncertainty for flat background
         bkg_hist.variances()[...] = 0.0
 
-    # combine artificial background with signal MC for "data"
-    # data_hist = hist.Hist(*signal_hist.axes, storage=hist.storage.Weight())
-    # data_hist.values()[...] = signal_hist.values() + bkg_hist.values()
-    # sig_vars = signal_hist.variances()
-    # bkg_vars = bkg_hist.variances()
-    # if sig_vars is not None and bkg_vars is not None:
-    #    data_hist.variances()[...] = sig_vars + bkg_vars
-    # else:
-    #    # poisson
-    #    data_hist.variances()[...] = data_hist.values()
+    bkg_exp_hist = None
+    bkg_const_hist = None
+    if args.bkgModel == "exp":
+        bkg_exp_hist = signal_hist.copy()
+        bkg_exp_hist.values()[...] = 0.0
+        if bkg_exp_hist.variances() is not None:
+            bkg_exp_hist.variances()[...] = 0.0
+
+        bkg_const_hist = signal_hist.copy()
+        bkg_const_hist.values()[...] = 0.0
+        if bkg_const_hist.variances() is not None:
+            bkg_const_hist.variances()[...] = 0.0
+
+    # exp_poi mode: single all-ones template; shape owned by AxisExpModel POIs
+    bkg_exp_poi_hist = None
+    if args.bkgModel == "exp_poi":
+        bkg_exp_poi_hist = signal_hist.copy()
+        bkg_exp_poi_hist.values()[...] = 1.0
+        if bkg_exp_poi_hist.variances() is not None:
+            bkg_exp_poi_hist.variances()[...] = 0.0
+
+    # --bkgPOI: generic all-ones template; shape owned by AxisExpModel/AxisBernsteinModel
+    bkg_poi_hist = None
+    if args.bkgPOI:
+        bkg_poi_hist = signal_hist.copy()
+        bkg_poi_hist.values()[...] = 1.0
+        if bkg_poi_hist.variances() is not None:
+            bkg_poi_hist.variances()[...] = 0.0
+
+    mass_axis_idx = signal_hist.axes.name.index(args.massAxis)
+    mass_bins = signal_hist.axes[args.massAxis].size
+    mass_coordinate = np.asarray(signal_hist.axes[args.massAxis].centers, dtype=float)
+    mass_coordinate = mass_coordinate - mass_coordinate[0]
+    mass_span = max(float(mass_coordinate[-1]), 1e-6)
+    floor_yield = 1e-6
+    # These background coefficients are free fit parameters, so use small local
+    # finite-difference steps to define their tensor directions rather than a
+    # full-component jump as the nominal prefit variation.
+    bkg_amp_step_fraction = 0.10
+
+    bkg_seed_A = np.zeros((n_charge_bins, n_pt_bins, n_eta_bins), dtype=float)
+    bkg_seed_C = np.zeros((n_charge_bins, n_pt_bins, n_eta_bins), dtype=float)
+    bkg_seed_total = np.zeros((n_charge_bins, n_pt_bins, n_eta_bins), dtype=float)
+
+    background_process = "flatBkg" if args.bkgModel == "flat" else "expBkg"
+
+    for icharge in range(n_charge_bins):
+        for ipt in range(n_pt_bins):
+            for ieta in range(n_eta_bins):
+                sel = {
+                    args.chargeAxis: icharge,
+                    args.ptAxis: ipt,
+                    args.etaAxis: ieta,
+                }
+                signal_slice = signal_hist[sel]
+                data_slice = data_hist[sel]
+                signal_yield = signal_slice.values().sum()
+                residual_spectrum = np.clip(
+                    data_slice.values() - signal_slice.values(), 0.0, None
+                )
+
+                if args.flatBkgSeed == "dataResidual":
+                    seed_yield = float(np.sum(residual_spectrum))
+                else:
+                    seed_yield = args.flatBkgFraction * signal_yield
+                    residual_spectrum = None
+
+                if seed_yield <= 0.0:
+                    continue
+
+                target = [slice(None)] * bkg_hist.values().ndim
+                target[signal_hist.axes.name.index(args.chargeAxis)] = icharge
+                target[signal_hist.axes.name.index(args.ptAxis)] = ipt
+                target[signal_hist.axes.name.index(args.etaAxis)] = ieta
+                target[mass_axis_idx] = slice(None)
+                target = tuple(target)
+
+                if args.bkgModel == "flat":
+                    model_values = np.full(
+                        mass_bins, seed_yield / mass_bins, dtype=float
+                    )
+                    seed_A = 0.0
+                    seed_B = 0.0
+                    seed_C = float(seed_yield / mass_bins)
+                elif args.bkgModel == "exp_poi" or args.bkgPOI:
+                    # All-ones templates; shape is owned by POI models.
+                    continue
+                else:
+                    if (
+                        residual_spectrum is not None
+                        and np.sum(residual_spectrum) > 0.0
+                    ):
+                        fit = fit_exp_plus_constant_seed(
+                            residual_spectrum, mass_coordinate, floor=floor_yield
+                        )
+                        seed_A = float(fit["A"])
+                        seed_B = max(float(fit["B"]), 0.5 / mass_span)
+                        seed_C = float(fit["C"])
+                    else:
+                        seed_B = 0.5 / mass_span
+                        seed_A = 0.7 * seed_yield
+                        seed_C = 0.3 * seed_yield / mass_bins
+                    component_floor = max(0.1 * seed_yield / mass_bins, floor_yield)
+                    exp_component = evaluate_exp_plus_constant(
+                        mass_coordinate,
+                        max(seed_A, component_floor),
+                        seed_B,
+                        0.0,
+                        floor=floor_yield,
+                    )
+                    const_component = np.full(
+                        mass_bins, max(seed_C, component_floor), dtype=float
+                    )
+                    component_scale = seed_yield / (
+                        np.sum(exp_component) + np.sum(const_component)
+                    )
+                    exp_component = np.clip(
+                        exp_component * component_scale, floor_yield, None
+                    )
+                    const_component = np.clip(
+                        const_component * component_scale, floor_yield, None
+                    )
+                    model_values = exp_component + const_component
+                    bkg_exp_hist.values()[target] = exp_component
+                    bkg_const_hist.values()[target] = const_component
+                    seed_A = float(max(seed_A, component_floor) * component_scale)
+                    seed_C = float(max(seed_C, component_floor) * component_scale)
+
+                model_values = np.clip(model_values, floor_yield, None)
+                bkg_hist.values()[target] = model_values
+                bkg_seed_A[icharge, ipt, ieta] = seed_A
+                bkg_seed_C[icharge, ipt, ieta] = seed_C
+                bkg_seed_total[icharge, ipt, ieta] = float(np.sum(model_values))
 
     # tensor writer now
     writer = tensorwriter.TensorWriter(systematic_type=args.systematicType)
     writer.add_channel(signal_hist.axes, name=args.channel)
     writer.add_data(data_hist, channel=args.channel)
-    writer.add_process(signal_hist, args.signalProcess, args.channel, signal=True)
+    # When --signalNormPOI is set, per-bin yields are handled by AxisNormModel
+    # and no template-morph NOIs are added below, so signal=True is safe.
+    # Without --signalNormPOI the legacy NOI path is used and signal=False
+    # prevents a redundant global signal-strength POI.
+    writer.add_process(
+        signal_hist, args.signalProcess, args.channel, signal=args.signalNormPOI
+    )
     for proc, h in background_hists.items():
         writer.add_process(h, proc, args.channel)
     # artificial background
-    writer.add_process(bkg_hist, "flatBkg", args.channel)
+    if args.bkgPOI:
+        writer.add_process(bkg_poi_hist, "background", args.channel)
+    elif args.bkgModel == "flat":
+        writer.add_process(bkg_hist, background_process, args.channel)
+    elif args.bkgModel == "exp_poi":
+        writer.add_process(bkg_exp_poi_hist, "bkgExp", args.channel)
+    else:
+        # exp model: separate exp/const processes with per-bin systematics
+        writer.add_process(bkg_exp_hist, "bkgExp", args.channel)
+        writer.add_process(bkg_const_hist, "bkgConst", args.channel)
 
     # if args.signalNormUncertainty is not None:
     #    writer.add_norm_systematic(
@@ -276,39 +582,58 @@ def main():
     n_eta_bins = signal_hist.axes[args.etaAxis].size
     n_charge_bins = signal_hist.axes[args.chargeAxis].size
 
-    # free float yields in bins of pt eta charge
-    new_sig_basis = hh.expand_hist_by_duplicate_axes(
-        signal_hist,
-        [args.chargeAxis, args.ptAxis, args.etaAxis],
-        ["chargeVar", "ptVar", "etaVar"],
-        put_trailing=True,
-        flow=False,
-    )
-    new_bkg_basis = hh.expand_hist_by_duplicate_axes(
-        bkg_hist,
-        [args.chargeAxis, args.ptAxis, args.etaAxis],
-        ["chargeVar", "ptVar", "etaVar"],
-        put_trailing=True,
-        flow=False,
-    )
-
-    procs = {args.signalProcess: signal_hist, "flatBkg": bkg_hist}
-    basis_by_proc = {
-        args.signalProcess: new_sig_basis,
-        "flatBkg": new_bkg_basis,
-    }
-    # unc = 1.5
+    # Free-float yields in bins of pt eta charge.
+    # When --signalNormPOI is set, per-bin norms for both signal and flat
+    # background are handled by AxisNormModel and NOT added as template-morph
+    # systematics here.
+    procs = {}
+    basis_by_proc = {}
+    if not args.signalNormPOI:
+        new_sig_basis = hh.expand_hist_by_duplicate_axes(
+            signal_hist,
+            [args.chargeAxis, args.ptAxis, args.etaAxis],
+            ["chargeVar", "ptVar", "etaVar"],
+            put_trailing=True,
+            flow=False,
+        )
+        procs[args.signalProcess] = signal_hist
+        basis_by_proc[args.signalProcess] = new_sig_basis
+    if args.bkgModel == "flat" and not args.signalNormPOI and not args.bkgPOI:
+        new_bkg_basis = hh.expand_hist_by_duplicate_axes(
+            bkg_hist,
+            [args.chargeAxis, args.ptAxis, args.etaAxis],
+            ["chargeVar", "ptVar", "etaVar"],
+            put_trailing=True,
+            flow=False,
+        )
+        procs[background_process] = bkg_hist
+        basis_by_proc[background_process] = new_bkg_basis
+    elif args.bkgModel == "exp":
+        new_bkg_exp_basis = hh.expand_hist_by_duplicate_axes(
+            bkg_exp_hist,
+            [args.chargeAxis, args.ptAxis, args.etaAxis],
+            ["chargeVar", "ptVar", "etaVar"],
+            put_trailing=True,
+            flow=False,
+        )
+        new_bkg_const_basis = hh.expand_hist_by_duplicate_axes(
+            bkg_const_hist,
+            [args.chargeAxis, args.ptAxis, args.etaAxis],
+            ["chargeVar", "ptVar", "etaVar"],
+            put_trailing=True,
+            flow=False,
+        )
     unc = 0.1
     for proc, nominal_hist in procs.items():
         basis_hist = basis_by_proc[proc]
-        # if proc == args.signalProcess:
-        #    continue
         for icharge in range(n_charge_bins):
             for ipt in range(n_pt_bins):
                 for ieta in range(n_eta_bins):
 
                     mask = {"etaVar": ieta, "ptVar": ipt, "chargeVar": icharge}
                     bin = basis_hist[mask]
+                    if not np.any(bin.values()):
+                        continue
 
                     syst_name = f"norm_{proc}_eta{ieta}_pt{ipt}_charge{icharge}"
 
@@ -319,6 +644,94 @@ def main():
                         up_hist,
                         name=syst_name,
                         process=proc,
+                        channel=args.channel,
+                        constrained=False,
+                        noi=True,
+                    )
+
+    if args.bkgModel == "exp":
+        charge_axis_idx = bkg_hist.axes.name.index(args.chargeAxis)
+        pt_axis_idx = bkg_hist.axes.name.index(args.ptAxis)
+        eta_axis_idx = bkg_hist.axes.name.index(args.etaAxis)
+
+        def make_component_variation(hist_template, values, target):
+            variation_hist = hist_template.copy()
+            variation_hist.values()[target] = np.clip(values, floor_yield, None)
+            if variation_hist.variances() is not None:
+                variation_hist.variances()[target] = 0.0
+            return variation_hist
+
+        for icharge in range(n_charge_bins):
+            for ipt in range(n_pt_bins):
+                for ieta in range(n_eta_bins):
+                    seed_yield = bkg_seed_total[icharge, ipt, ieta]
+                    if seed_yield <= 0.0:
+                        continue
+
+                    target = [slice(None)] * bkg_hist.values().ndim
+                    target[charge_axis_idx] = icharge
+                    target[pt_axis_idx] = ipt
+                    target[eta_axis_idx] = ieta
+                    target[mass_axis_idx] = slice(None)
+                    target = tuple(target)
+
+                    seed_A = bkg_seed_A[icharge, ipt, ieta]
+                    seed_C = bkg_seed_C[icharge, ipt, ieta]
+                    exp_nominal = np.asarray(bkg_exp_hist.values()[target], dtype=float)
+                    const_nominal = np.asarray(
+                        bkg_const_hist.values()[target], dtype=float
+                    )
+
+                    writer.add_systematic(
+                        [
+                            make_component_variation(
+                                bkg_exp_hist,
+                                np.clip(
+                                    exp_nominal * (1.0 + bkg_amp_step_fraction),
+                                    floor_yield,
+                                    None,
+                                ),
+                                target,
+                            ),
+                            make_component_variation(
+                                bkg_exp_hist,
+                                np.clip(
+                                    exp_nominal * (1.0 - bkg_amp_step_fraction),
+                                    floor_yield,
+                                    None,
+                                ),
+                                target,
+                            ),
+                        ],
+                        name=f"bkgA_eta{ieta}_pt{ipt}_charge{icharge}",
+                        process="bkgExp",
+                        channel=args.channel,
+                        constrained=False,
+                        noi=True,
+                    )
+                    writer.add_systematic(
+                        [
+                            make_component_variation(
+                                bkg_const_hist,
+                                np.clip(
+                                    const_nominal * (1.0 + bkg_amp_step_fraction),
+                                    floor_yield,
+                                    None,
+                                ),
+                                target,
+                            ),
+                            make_component_variation(
+                                bkg_const_hist,
+                                np.clip(
+                                    const_nominal * (1.0 - bkg_amp_step_fraction),
+                                    floor_yield,
+                                    None,
+                                ),
+                                target,
+                            ),
+                        ],
+                        name=f"bkgC_eta{ieta}_pt{ipt}_charge{icharge}",
+                        process="bkgConst",
                         channel=args.channel,
                         constrained=False,
                         noi=True,
@@ -341,7 +754,6 @@ def main():
     #        noi=True
     #    )
 
-    # A e M bitchhhh
     labels = tuple(args.systematicLabels)
 
     plot_labels = _resolve_plot_labels(args)
@@ -372,89 +784,13 @@ def main():
             bin_axis=args.binPlotVariation,
         )
 
-    for eta_idx in range(n_eta_bins):
-        for label in labels:
-            offset = labels.index(label)
-            systematic_bin = len(labels) * eta_idx + offset
+    _add_aem_systematics(writer, variation_hist, signal_hist, args, labels, n_eta_bins)
 
-            up_selection = {
-                args.systematicAxis: systematic_bin,
-                args.variationAxis: args.variationUpIndex,
-            }
-            down_selection = {
-                args.systematicAxis: systematic_bin,
-                args.variationAxis: args.variationDownIndex,
-            }
+    meta_data_dict = {}
+    if args.signalNormPOI:
+        meta_data_dict["signal_process"] = args.signalProcess
 
-            up_variation = collapse_axes(
-                variation_hist[up_selection],
-                [args.systematicAxis, args.variationAxis],
-            )
-            down_variation = collapse_axes(
-                variation_hist[down_selection],
-                [args.systematicAxis, args.variationAxis],
-            )
-
-            target_axes = signal_hist.axes.name
-            up_variation = _reorder_hist_axes(up_variation, target_axes)
-            down_variation = _reorder_hist_axes(down_variation, target_axes)
-
-            if up_variation.axes.name != signal_hist.axes.name:
-                raise RuntimeError(
-                    f"Up variation axes {up_variation.axes.name} do not match nominal axes {signal_hist.axes.name}."
-                )
-            if down_variation.axes.name != signal_hist.axes.name:
-                raise RuntimeError(
-                    f"Down variation axes {down_variation.axes.name} do not match nominal axes {signal_hist.axes.name}."
-                )
-
-            up_hist = signal_hist.copy()
-            down_hist = signal_hist.copy()
-            for charge_idx in range(n_charge_bins):
-                up_hist.values()[..., charge_idx] = up_variation.values()[
-                    ..., charge_idx
-                ]
-                down_hist.values()[..., charge_idx] = down_variation.values()[
-                    ..., charge_idx
-                ]
-
-                up_vars = up_variation.variances()
-                down_vars = down_variation.variances()
-                if up_vars is not None:
-                    up_hist.variances()[..., charge_idx] = up_vars[..., charge_idx]
-                if down_vars is not None:
-                    down_hist.variances()[..., charge_idx] = down_vars[..., charge_idx]
-
-            writer.add_systematic(
-                [up_hist, down_hist],
-                name=f"{label}_eta{eta_idx}",
-                process=args.signalProcess,
-                channel=args.channel,
-                constrained=False,
-                noi=True,
-            )
-        # up_hist.values()[..., charge_idx] = up_variation.values()[..., charge_idx]
-        # down_hist.values()[..., charge_idx] = down_variation.values()[..., charge_idx]
-    #
-    # up_vars = up_variation.variances()
-    # down_vars = down_variation.variances()
-    # up_hist_vars = up_hist.variances()
-    # down_hist_vars = down_hist.variances()
-    #
-    # if up_vars is not None and up_hist_vars is not None:
-    #    up_hist_vars[..., charge_idx] = up_vars[..., charge_idx]
-    # if down_vars is not None and down_hist_vars is not None:
-    #    down_hist_vars[..., charge_idx] = down_vars[..., charge_idx]
-    #
-    # writer.add_systematic(
-    #    [up_hist, down_hist],
-    #    name=f"{label}_eta{eta_idx}",
-    #    process=args.signalProcess,
-    #    channel=args.channel,
-    #    constrained=False,
-    # )
-
-    writer.write(args.outfolder, outname)
+    writer.write(args.outfolder, outname, meta_data_dict=meta_data_dict)
 
 
 if __name__ == "__main__":
