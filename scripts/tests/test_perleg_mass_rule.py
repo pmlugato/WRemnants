@@ -27,10 +27,10 @@ Run under the container:
 """
 
 import hist
-import narf
 import numpy as np
 import ROOT
 
+import narf
 import wremnants.production.muon_calibration  # noqa: F401  (declares the headers)
 from wremnants.utilities import binning
 
@@ -137,8 +137,12 @@ def main():
         "  kaon mass on leg 0 is (E/p - 1) on the e term; bachelor p = 2.006 GeV "
         "here, so E/p = 1.0299 and the expected size is 3.0%"
     )
-    print(f"max |kaon_only - allzero|        : {np.max(np.abs(kaon_only - allzero)):.6e}")
-    print(f"max |broadcast - kaon_only|      : {np.max(np.abs(broadcast - kaon_only)):.6e}")
+    print(
+        f"max |kaon_only - allzero|        : {np.max(np.abs(kaon_only - allzero)):.6e}"
+    )
+    print(
+        f"max |broadcast - kaon_only|      : {np.max(np.abs(broadcast - kaon_only)):.6e}"
+    )
 
     if failures:
         for f in failures:

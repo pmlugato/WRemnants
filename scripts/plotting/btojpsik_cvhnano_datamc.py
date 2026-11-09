@@ -184,7 +184,11 @@ def data_mc_plot(data_hist, mc_hist, label, outpath):
 
     stack, labels, colors = [], [], []
     for vals, name, color in (
-        (sig_val, r"MC: $\mathrm{B}^{+}\to\mathrm{J}/\psi\,\mathrm{K}^{+}$", COLOR_SIGNAL),
+        (
+            sig_val,
+            r"MC: $\mathrm{B}^{+}\to\mathrm{J}/\psi\,\mathrm{K}^{+}$",
+            COLOR_SIGNAL,
+        ),
         (oth_val, "MC: other real b decay", COLOR_OTHER_B),
         (unm_val, "MC: no b ancestor", COLOR_UNMATCHED),
     ):
@@ -345,9 +349,7 @@ def main():
     data_hists = samples[DATA_SAMPLE]
     mc_hists = samples[MC_SAMPLE]
 
-    variables = (
-        {v: v for v in args.variables} if args.variables else DEFAULT_VARIABLES
-    )
+    variables = {v: v for v in args.variables} if args.variables else DEFAULT_VARIABLES
     written = []
     for var, label in variables.items():
         key = f"nominal_{var}"

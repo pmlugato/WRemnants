@@ -92,8 +92,8 @@ def systs_per_channel_sparse(indata, channels):
     """
     import numpy as np
 
-    norm_idx = np.asarray(indata.norm.indices)          # [nnz, 2] -> (bin, proc)
-    logk_idx = np.asarray(indata.logk.indices)          # [nnz_logk, 2] -> (row, c)
+    norm_idx = np.asarray(indata.norm.indices)  # [nnz, 2] -> (bin, proc)
+    logk_idx = np.asarray(indata.logk.indices)  # [nnz_logk, 2] -> (row, c)
     nsyst = int(indata.nsyst)
 
     bins_of_row = norm_idx[:, 0]
@@ -239,7 +239,9 @@ def structural_checks(c, tensor, families, z_scale_base, n_eta):
 
     single, partial, neither = {}, [], []
     for name in sorted(expected & set(counts), key=lambda s: (s[0], int(s[1:]))):
-        fams = [f for f, chans in present.items() if any(acts_on(name, ch) for ch in chans)]
+        fams = [
+            f for f, chans in present.items() if any(acts_on(name, ch) for ch in chans)
+        ]
         if len(fams) == 1:
             single.setdefault(fams[0], []).append(name)
         elif not fams:
@@ -270,9 +272,9 @@ def structural_checks(c, tensor, families, z_scale_base, n_eta):
 
 def massfit_variances(muon_corr_data):
     """[neta, 3] massfit variances of (A, e, M) from the data correction file."""
-    import narf
     import ROOT
 
+    import narf
     from wremnants.utilities import common
 
     path = common.calib_filepaths["data_corrfile"][muon_corr_data]
@@ -348,7 +350,9 @@ def read_bplus_tensor_stretch(c, b_tensor, b_hist):
     base = 1.0 if base is None else float(base)
     built_from = meta.get("input_histogram")
     if built_from is None:
-        c.note(f"{b_tensor} does not record its input histogram (written before 2026-10-06)")
+        c.note(
+            f"{b_tensor} does not record its input histogram (written before 2026-10-06)"
+        )
     else:
         c.check(
             os.path.realpath(built_from) == os.path.realpath(b_hist),
@@ -396,7 +400,9 @@ def provenance_checks(c, inputs, z_tensor, expect_stat_scaling, n_eta, b_tensor=
     # (--scaleVarScale, --scaleVarParamScale); that multiplies the unit.
     if b_tensor is not None:
         b_label, b_hist = next((l, p) for l, k, p in inputs if k == "bplus")
-        widths[b_label] = widths[b_label] * read_bplus_tensor_stretch(c, b_tensor, b_hist)
+        widths[b_label] = widths[b_label] * read_bplus_tensor_stretch(
+            c, b_tensor, b_hist
+        )
     print_width_table(widths)
     ref_label = next(iter(widths))
     ref = widths[ref_label]

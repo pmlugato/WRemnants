@@ -23,9 +23,9 @@ import json
 import os
 
 import hist
+import numpy as np
 
 import narf
-import numpy as np
 from wremnants.production import btojpsik_cvhnano_selections as sel
 from wremnants.production import muon_calibration
 from wremnants.production.btojpsik_cvhnano_axes import (
@@ -484,9 +484,7 @@ if args.scaleVariations:
     # numerically valid and undetectable downstream -- 321 through the muon
     # remap becomes 1, which the kpi graph reads as its residual class.
     _spec = muon_calibration.response_model_spec(args.responseModel)
-    _legs = (
-        sel.SCALE_VAR_LEGS if args.scaleVarLegs == "all" else sel.SCALE_VAR_LEGS[:1]
-    )
+    _legs = sel.SCALE_VAR_LEGS if args.scaleVarLegs == "all" else sel.SCALE_VAR_LEGS[:1]
     if args.perLegResponseModel and args.responseModel != "kpi":
         raise ValueError(
             "--perLegResponseModel is config D: the muon legs stay on the muon "
@@ -626,9 +624,7 @@ if args.scaleVariations:
             if args.perLegResponseModel
             else muon_calibration.default_shift_smear_reweight_onnx(
                 smearing=(
-                    args.useSmearedTrainedModel
-                    if _spec["smearing_variants"]
-                    else False
+                    args.useSmearedTrainedModel if _spec["smearing_variants"] else False
                 ),
                 model=args.responseModel,
             )

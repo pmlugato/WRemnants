@@ -39,7 +39,6 @@ import matplotlib.pyplot as plt
 
 from wremnants.postprocessing.datagroups.datagroups import Datagroups
 from wremnants.postprocessing.datagroups.datagroups_cvhnano import TEMPLATE_GROUP_NAMES
-from wremnants.utilities.styles import styles
 from wums import logging
 
 logger = logging.child_logger(__name__)
@@ -49,21 +48,71 @@ C_DATA, C_BKG, C_TOT = "black", "#6b6b6b", "#c0392b"
 
 # variable -> (histogram name, axis name, axis label, is a mass)
 VARIABLES = [
-    ("nominal_BuJpsiK_jointCvhMass", "jointCvh_mass", r"$m(\mu\mu K)$, joint CVH [GeV]", True),
-    ("nominal_BuJpsiK_kvfCvhMass", "kvfCvh_mass", r"$m(\mu\mu K)$, KVF on CVH tracks [GeV]", True),
-    ("nominal_BuJpsiK_kvfRawMass", "kvfRaw_mass", r"$m(\mu\mu K)$, KVF on raw tracks [GeV]", True),
+    (
+        "nominal_BuJpsiK_jointCvhMass",
+        "jointCvh_mass",
+        r"$m(\mu\mu K)$, joint CVH [GeV]",
+        True,
+    ),
+    (
+        "nominal_BuJpsiK_kvfCvhMass",
+        "kvfCvh_mass",
+        r"$m(\mu\mu K)$, KVF on CVH tracks [GeV]",
+        True,
+    ),
+    (
+        "nominal_BuJpsiK_kvfRawMass",
+        "kvfRaw_mass",
+        r"$m(\mu\mu K)$, KVF on raw tracks [GeV]",
+        True,
+    ),
     ("nominal_BuJpsiK_mass", "cand_mass", r"$m(\mu\mu K)$, pre-fit [GeV]", True),
-    ("nominal_BuJpsiK_kvfCvhDimuonMass", "kvfCvh_dimuon_mass", r"$m(\mu\mu)$, unconstrained, CVH tracks [GeV]", False),
-    ("nominal_BuJpsiK_jointCvhPt", "jointCvh_pt", r"$p_{T}(B)$, joint CVH [GeV]", False),
+    (
+        "nominal_BuJpsiK_kvfCvhDimuonMass",
+        "kvfCvh_dimuon_mass",
+        r"$m(\mu\mu)$, unconstrained, CVH tracks [GeV]",
+        False,
+    ),
+    (
+        "nominal_BuJpsiK_jointCvhPt",
+        "jointCvh_pt",
+        r"$p_{T}(B)$, joint CVH [GeV]",
+        False,
+    ),
     ("nominal_BuJpsiK_kaonPt", "bachelor_pt", r"$p_{T}(K)$ [GeV]", False),
     ("nominal_BuJpsiK_kaonEta", "bachelor_eta", r"$\eta(K)$", False),
-    ("nominal_BuJpsiK_jointCvhJpsiPt", "jointCvh_jpsi_pt", r"$p_{T}(J/\psi)$, joint CVH [GeV]", False),
+    (
+        "nominal_BuJpsiK_jointCvhJpsiPt",
+        "jointCvh_jpsi_pt",
+        r"$p_{T}(J/\psi)$, joint CVH [GeV]",
+        False,
+    ),
     ("nominal_cand_mu0Pt", "mu0_pt", r"$p_{T}(\mu_{0})$ [GeV]", False),
     ("nominal_cand_bachelorD0", "bachelor_d0", r"$d_{0}(K)$ w.r.t. PV [cm]", False),
-    ("nominal_cand_bachelorD0Sig", "bachelor_d0Sig", r"$d_{0}(K)/\sigma_{d_{0}}$", False),
-    ("nominal_cand_bachelorNValidHits", "bachelor_nValidHits", r"$N_{\mathrm{hits}}(K)$", False),
-    ("nominal_BuJpsiK_jointCvhSl3d", "jointCvh_sl3d", r"$L_{3D}/\sigma$ ($B$), joint CVH", False),
-    ("nominal_BuJpsiK_jointCvhAlpha3dPV", "jointCvh_alpha3dPV", r"$\alpha_{3D}$ ($B$, PV) [rad]", False),
+    (
+        "nominal_cand_bachelorD0Sig",
+        "bachelor_d0Sig",
+        r"$d_{0}(K)/\sigma_{d_{0}}$",
+        False,
+    ),
+    (
+        "nominal_cand_bachelorNValidHits",
+        "bachelor_nValidHits",
+        r"$N_{\mathrm{hits}}(K)$",
+        False,
+    ),
+    (
+        "nominal_BuJpsiK_jointCvhSl3d",
+        "jointCvh_sl3d",
+        r"$L_{3D}/\sigma$ ($B$), joint CVH",
+        False,
+    ),
+    (
+        "nominal_BuJpsiK_jointCvhAlpha3dPV",
+        "jointCvh_alpha3dPV",
+        r"$\alpha_{3D}$ ($B$, PV) [rad]",
+        False,
+    ),
     ("nominal_nPV", "nPV", r"$N_{PV}$", False),
     ("nominal_Pileup_nTrueInt", "nTrueInt", r"$N_{\mathrm{true\ int}}$", False),
 ]
@@ -197,22 +246,47 @@ def panel_b(groups_hists, axis, label, outfile, rebin):
     ndf = int(m.sum()) - 3
 
     fig, (ax, rax) = plt.subplots(
-        2, 1, figsize=(7.0, 5.6), sharex=True,
-        gridspec_kw={"height_ratios": [3, 1], "hspace": 0.07})
+        2,
+        1,
+        figsize=(7.0, 5.6),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3, 1], "hspace": 0.07},
+    )
     for a in (ax, rax):
         a.set_facecolor(SURFACE)
         a.grid(alpha=0.22)
         a.set_axisbelow(True)
     fig.patch.set_facecolor(SURFACE)
 
-    ax.errorbar(centres, d, yerr=np.sqrt(dvar), fmt="o", ms=3.2, color=C_DATA,
-                lw=0, elinewidth=1.0, label="data")
-    ax.plot(centres[m], bkg, color=C_BKG, lw=1.6, ls="--",
-            label="fitted background (exponential)")
-    ax.plot(centres[m], bkg + sig, color=C_TOT, lw=2.0,
-            label="templates + background")
-    ax.fill_between(centres[m], bkg, bkg + sig, color=C_TOT, alpha=0.20, lw=0,
-                    label="simulated b-hadron templates")
+    ax.errorbar(
+        centres,
+        d,
+        yerr=np.sqrt(dvar),
+        fmt="o",
+        ms=3.2,
+        color=C_DATA,
+        lw=0,
+        elinewidth=1.0,
+        label="data",
+    )
+    ax.plot(
+        centres[m],
+        bkg,
+        color=C_BKG,
+        lw=1.6,
+        ls="--",
+        label="fitted background (exponential)",
+    )
+    ax.plot(centres[m], bkg + sig, color=C_TOT, lw=2.0, label="templates + background")
+    ax.fill_between(
+        centres[m],
+        bkg,
+        bkg + sig,
+        color=C_TOT,
+        alpha=0.20,
+        lw=0,
+        label="simulated b-hadron templates",
+    )
     ax.set_ylabel("candidates / bin")
     ax.set_xlim(edges[0], edges[-1])
     ax.set_ylim(0.0, None)
@@ -221,13 +295,23 @@ def panel_b(groups_hists, axis, label, outfile, rebin):
     ax.set_title(
         f"fitted B$^+\\to$J/$\\psi$K$^+$ {n_template * signal_fraction:.0f} "
         f"in window, $\\chi^2$/ndf {chi2 / max(ndf, 1):.2f}",
-        fontsize=9, color=INK_MUTED, loc="right")
+        fontsize=9,
+        color=INK_MUTED,
+        loc="right",
+    )
 
     model = bkg + sig
     rax.axhline(1.0, color=C_TOT, lw=1.2)
-    rax.errorbar(centres[m], d[m] / model,
-                 yerr=np.sqrt(dvar[m]) / model, fmt="o", ms=3.2,
-                 color=C_DATA, lw=0, elinewidth=1.0)
+    rax.errorbar(
+        centres[m],
+        d[m] / model,
+        yerr=np.sqrt(dvar[m]) / model,
+        fmt="o",
+        ms=3.2,
+        color=C_DATA,
+        lw=0,
+        elinewidth=1.0,
+    )
     rax.set_ylabel("data / model", fontsize=9)
     rax.set_xlabel(label)
     lim = max(0.12, float(np.nanmax(np.abs(d[m] / model - 1.0))) * 1.25)
@@ -236,12 +320,16 @@ def panel_b(groups_hists, axis, label, outfile, rebin):
     fig.tight_layout()
     fig.savefig(outfile, bbox_inches="tight", dpi=140)
     plt.close(fig)
-    return dict(template_yield=float(n_template),
-                signal=float(n_template * signal_fraction),
-                signal_fraction_of_template=signal_fraction,
-                background=float(bkg.sum()), data=float(d[m].sum()),
-                chi2ndf=float(chi2 / max(ndf, 1)), slope=float(slope),
-                other_over_signal=float(ratio_other))
+    return dict(
+        template_yield=float(n_template),
+        signal=float(n_template * signal_fraction),
+        signal_fraction_of_template=signal_fraction,
+        background=float(bkg.sum()),
+        data=float(d[m].sum()),
+        chi2ndf=float(chi2 / max(ndf, 1)),
+        slope=float(slope),
+        other_over_signal=float(ratio_other),
+    )
 
 
 def main():
@@ -281,8 +369,9 @@ def main():
             name: float(project(h, axis, args.rebin)[1].sum())
             for name, h in hists.items()
         }
-        fitres = panel_b(hists, axis, label,
-                         os.path.join(outdir, f"{base}_prefit.png"), args.rebin)
+        fitres = panel_b(
+            hists, axis, label, os.path.join(outdir, f"{base}_prefit.png"), args.rebin
+        )
         summary[base] = dict(yields=yields, prefit=fitres)
         logger.info("%s: %s", base, fitres if fitres else "yields only")
 

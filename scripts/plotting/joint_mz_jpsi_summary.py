@@ -70,12 +70,19 @@ def fig_constraints(idx, err, err0, neta, out):
     fig, ax = plt.subplots(figsize=(11.0, 4.2))
     x = np.arange(neta)
     for fam in PARAMS:
-        r = np.array([err[idx[f"{fam}{k}"]] / err0[idx[f"{fam}{k}"]] for k in range(neta)])
+        r = np.array(
+            [err[idx[f"{fam}{k}"]] / err0[idx[f"{fam}{k}"]] for k in range(neta)]
+        )
         ax.plot(x, r, MARK[fam] + "-", color=COL[fam], ms=5, lw=1.4, label=LABEL[fam])
     ax.axhline(1.0, color=GREY, ls="--", lw=1.2)
     ax.text(
-        neta - 0.5, 1.005, "prefit width — data said nothing",
-        ha="right", va="bottom", fontsize=10, color=GREY,
+        neta - 0.5,
+        1.005,
+        "prefit width — data said nothing",
+        ha="right",
+        va="bottom",
+        fontsize=10,
+        color=GREY,
     )
     ax.set_xlabel("nuisance eta bin", fontsize=12, color=INK)
     ax.set_ylabel("postfit / prefit width", fontsize=12, color=INK)
@@ -173,7 +180,9 @@ def main():
     print(f"nuisance eta bins: {neta}  ({3*neta} shared scale parameters)")
 
     i = idx["massShiftZ100MeV"]
-    print(f"massShiftZ100MeV = {val[i]:+.5f} +/- {err[i]:.5f}  -> sigma(mZ) = {err[i]*100:.2f} MeV")
+    print(
+        f"massShiftZ100MeV = {val[i]:+.5f} +/- {err[i]:.5f}  -> sigma(mZ) = {err[i]*100:.2f} MeV"
+    )
 
     o = args.outdir
     fig_constraints(idx, err, err0, neta, f"{o}/joint_constraints{sfx}.png")

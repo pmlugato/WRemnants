@@ -48,14 +48,14 @@ import numpy as np
 from rabbit import tensorwriter
 from wremnants.postprocessing import rabbit_cvhnano_helpers as cvh
 from wremnants.production.btojpsik_cvhnano_axes import (
-    GEN_DATA,
     GEN_BD,
     GEN_BS,
     GEN_BU_KX,
     GEN_BU_PIX,
+    GEN_DATA,
     GEN_MC_CATEGORIES,
-    GEN_NON_SIGNAL_CATEGORIES,
     GEN_NO_B_ANCESTOR,
+    GEN_NON_SIGNAL_CATEGORIES,
     GEN_OTHER_B,
     GEN_SIGNAL,
 )
@@ -440,9 +440,7 @@ def split_scale_variations(
     # nuisance on a different eta bin -- and the fit still converges. Refuse.
     if naming == "joint":
         if joint_eta_bins is None:
-            raise RuntimeError(
-                "--scaleParamNaming joint needs --jointEtaBins"
-            )
+            raise RuntimeError("--scaleParamNaming joint needs --jointEtaBins")
         if ngroups != joint_eta_bins:
             raise RuntimeError(
                 f"--scaleParamNaming joint expects {joint_eta_bins} eta groups "
@@ -512,7 +510,9 @@ def split_scale_variations(
             logger.info(
                 "  %s variations stretched x%g in log(var/nominal); %d differing "
                 "bins without a positive ratio left as built",
-                param, pfac, nkept,
+                param,
+                pfac,
+                nkept,
             )
 
     if logger is not None:
@@ -576,8 +576,8 @@ def smear_along_mass(h, sigma, mass_axis_name, logger=None):
         return t * Phi + phi
 
     a = edges[:-1][None, :]  # source bin low edges, shape (1, n)
-    b = edges[1:][None, :]   # source bin high edges
-    E = edges[:, None]       # destination edges, shape (n+1, 1)
+    b = edges[1:][None, :]  # source bin high edges
+    E = edges[:, None]  # destination edges, shape (n+1, 1)
     # C[k, j] = P(x + noise < E_k) integrated over source bin j, divided by width
     C = sigma * (G((E - a) / sigma) - G((E - b) / sigma)) / width
     T = C[1:, :] - C[:-1, :]  # (n, n): destination i, source j
@@ -592,7 +592,7 @@ def smear_along_mass(h, sigma, mass_axis_name, logger=None):
     sv = v @ T.T
     # Variances transform with the square of the kernel; this keeps the smeared
     # template's own MC statistical uncertainty honest rather than copying it.
-    svar = var @ (T.T ** 2)
+    svar = var @ (T.T**2)
     out.view(flow=False)["value"] = np.moveaxis(sv, -1, imass)
     out.view(flow=False)["variance"] = np.moveaxis(svar, -1, imass)
 
@@ -602,22 +602,34 @@ def smear_along_mass(h, sigma, mass_axis_name, logger=None):
         logger.warning(
             "Smearing changed the integral by %.3g (%.6g -> %.6g); the kernel "
             "normalisation is meant to prevent this.",
-            after / before - 1.0, before, after,
+            after / before - 1.0,
+            before,
+            after,
         )
     if logger is not None:
         logger.info(
             "Smeared the signal template by %.2f MeV (%.2f bins of %.2f MeV; an "
             "interior bin keeps %.1f%% of its content); integral %.6g -> %.6g "
             "(ratio %.9f)",
-            sigma * 1e3, sigma / width, width * 1e3,
+            sigma * 1e3,
+            sigma / width,
+            width * 1e3,
             100.0 * float(np.mean(np.diag(T)[1:-1])) if n > 2 else 100.0 * T[0, 0],
-            before, after, after / max(before, 1e-12),
+            before,
+            after,
+            after / max(before, 1e-12),
         )
     return out
 
 
 def smear_at_stored_granularity(
-    mc_raw, reduce_kwargs, category, signal_scale, sigma, nominal, logger=None,
+    mc_raw,
+    reduce_kwargs,
+    category,
+    signal_scale,
+    sigma,
+    nominal,
+    logger=None,
     var_scale=None,
 ):
     """Smear the signal template at the histmaker's 5 MeV mass granularity, then
@@ -666,13 +678,22 @@ def smear_at_stored_granularity(
         logger.info(
             "Resolution smear applied at the stored %.1f MeV granularity (%d bins) "
             "and rebinned by %d to the %d fit bins",
-            stored * 1e3, n_fine, factor, n_coarse,
+            stored * 1e3,
+            n_fine,
+            factor,
+            n_coarse,
         )
     return smeared
 
 
 def shift_at_stored_granularity(
-    mc_raw, reduce_kwargs, category, signal_scale, n_shift, nominal, logger=None,
+    mc_raw,
+    reduce_kwargs,
+    category,
+    signal_scale,
+    n_shift,
+    nominal,
+    logger=None,
     var_scale=None,
 ):
     """Translate the signal template along the mass axis by +/- n_shift stored
@@ -696,8 +717,10 @@ def shift_at_stored_granularity(
     pad = int(n_shift)
     wide_kwargs = dict(
         reduce_kwargs,
-        mass_low=low - pad * stored, mass_high=high + pad * stored,
-        mass_bins=n_fine + 2 * pad, check_totals=False,
+        mass_low=low - pad * stored,
+        mass_high=high + pad * stored,
+        mass_bins=n_fine + 2 * pad,
+        check_totals=False,
     )
     wide = cvh.select_category(cvh.reduce_fitbins(mc_raw, **wide_kwargs), category)
     wide.view(flow=False)["value"] *= signal_scale
@@ -712,7 +735,8 @@ def shift_at_stored_granularity(
     for sign in (+1, -1):
         # rolling +pad moves content to higher mass; the wrapped edge bins fall
         # outside the fit window and are dropped by the crop below
-        sv = np.roll(v, sign * pad, axis=imass); svar = np.roll(var, sign * pad, axis=imass)
+        sv = np.roll(v, sign * pad, axis=imass)
+        svar = np.roll(var, sign * pad, axis=imass)
         sl[imass] = slice(pad, pad + n_fine)
         fine = nominal.copy()  # coarse template, to be overwritten after rebinning
         fine_h = wide[{cvh.MASS_AXIS: slice(pad, pad + n_fine)}]
@@ -724,17 +748,25 @@ def shift_at_stored_granularity(
         out.append(fine)
     # closure: the unshifted crop must be the nominal
     sl[imass] = slice(pad, pad + n_fine)
-    check = wide[{cvh.MASS_AXIS: slice(pad, pad + n_fine)}][{cvh.MASS_AXIS: hist.rebin(factor)}]
+    check = wide[{cvh.MASS_AXIS: slice(pad, pad + n_fine)}][
+        {cvh.MASS_AXIS: hist.rebin(factor)}
+    ]
     if not np.allclose(check.values(), nominal.values(), rtol=1e-9, atol=1e-9):
-        raise RuntimeError("cropped wide template differs from the nominal; the shift is not a pure translation")
+        raise RuntimeError(
+            "cropped wide template differs from the nominal; the shift is not a pure translation"
+        )
     if logger is not None:
         up, down = out
         n0 = float(nominal.values().sum())
         logger.info(
             "B+ mass shift templates: +/-%d stored bins = +/-%.1f MeV, at %.1f MeV granularity, "
             "rebinned by %d; integral up/nominal %.6f, down/nominal %.6f (edge leakage only)",
-            pad, pad * stored * 1e3, stored * 1e3, factor,
-            float(up.values().sum()) / n0, float(down.values().sum()) / n0,
+            pad,
+            pad * stored * 1e3,
+            stored * 1e3,
+            factor,
+            float(up.values().sum()) / n0,
+            float(down.values().sum()) / n0,
         )
     return out
 
@@ -772,7 +804,9 @@ def exp_sideband_seed(residual, cell_total, ref_hist, mass_index, peak_half_widt
             continue
         w = r2[i][ok]
         A = np.column_stack([np.ones(ok.sum()), x[ok]])
-        coef, *_ = np.linalg.lstsq(A * np.sqrt(w)[:, None], np.log(w) * np.sqrt(w), rcond=None)
+        coef, *_ = np.linalg.lstsq(
+            A * np.sqrt(w)[:, None], np.log(w) * np.sqrt(w), rcond=None
+        )
         shape_m = np.exp(coef[0] + coef[1] * x)
         out[i] = shape_m * (tot2[i] / shape_m.sum())
         slopes.append(float(coef[1]))
@@ -848,7 +882,9 @@ def split_resolution_by_axes(nominal, smeared, axes, logger=None):
             logger.info(
                 "  %-18s cells %5d  largest single-bin shift %.4g events (%.2f%% of "
                 "the slab's peak bin)",
-                name, int(mask.sum()), float(moved.max()),
+                name,
+                int(mask.sum()),
+                float(moved.max()),
                 100.0 * float(moved.max()) / max(peak, 1e-12),
             )
         out.append((name, h))
@@ -947,8 +983,10 @@ def main():
             "Data scaled by %.4g -> %.6g events. Shape unchanged, so the model is "
             "wrong by the same FRACTION, but per-bin precision is %.2fx worse and "
             "a given mismodelling costs sqrt(%.4g) fewer sigma.",
-            args.dataScale, float(data_hist.values().sum()),
-            1.0 / np.sqrt(args.dataScale), args.dataScale,
+            args.dataScale,
+            float(data_hist.values().sum()),
+            1.0 / np.sqrt(args.dataScale),
+            args.dataScale,
         )
     signal_hist = cvh.select_category(mc_reduced, args.signalCategory)
     mc_total_hist = cvh.sum_categories(mc_reduced, GEN_MC_CATEGORIES)
@@ -1034,8 +1072,10 @@ def main():
         logger.info(
             "MC-stat scale %.4g: template variances divided by %.4g, values untouched. "
             "Template variance / Asimov Poisson variance per bin is %.3f (was %.3f).",
-            args.mcStatScale, args.mcStatScale,
-            signal_scale / args.mcStatScale, signal_scale,
+            args.mcStatScale,
+            args.mcStatScale,
+            signal_scale / args.mcStatScale,
+            signal_scale,
         )
     scaled_signal = signal_hist.copy()
     scaled_signal.view(flow=False)["value"] *= signal_scale
@@ -1086,7 +1126,9 @@ def main():
             name,
             signal_scale,
             float(sh.values().sum()),
-            100.0 * float(sh.values().sum()) / max(float(observed.values().sum()), 1e-12),
+            100.0
+            * float(sh.values().sum())
+            / max(float(observed.values().sum()), 1e-12),
         )
 
     bkg_hist = signal_hist.copy()
@@ -1120,7 +1162,9 @@ def main():
             "Background seed 'expSideband': exp(a + b m) fitted to the sideband "
             "residual in %d of %d cells (%d fell back to flat); slope b median %.2f, "
             "range [%.2f, %.2f] per GeV. Cell integrals unchanged.",
-            n_fit, n_cells, n_flat,
+            n_fit,
+            n_cells,
+            n_flat,
             float(np.median(slopes)) if slopes else float("nan"),
             float(np.min(slopes)) if slopes else float("nan"),
             float(np.max(slopes)) if slopes else float("nan"),
@@ -1214,12 +1258,18 @@ def main():
     resolution_names = []
     if args.resolutionVariation > 0.0:
         res_up = smear_at_stored_granularity(
-            mc_raw, reduce_kwargs, args.signalCategory, signal_scale,
-            args.resolutionVariation, scaled_signal, logger=logger,
+            mc_raw,
+            reduce_kwargs,
+            args.signalCategory,
+            signal_scale,
+            args.resolutionVariation,
+            scaled_signal,
+            logger=logger,
             var_scale=var_scale,
         )
         constrained_label = (
-            "CONSTRAINED (unit Gaussian prior)" if args.resolutionConstrained
+            "CONSTRAINED (unit Gaussian prior)"
+            if args.resolutionConstrained
             else "UNCONSTRAINED (no prior; the data determines it)"
         )
         if not args.resolutionAxes:
@@ -1228,7 +1278,8 @@ def main():
                 "Resolution nuisance 'sigRes': %s, largest single-bin shift %.4g "
                 "events (%.2f%% of the peak bin)",
                 constrained_label,
-                shift, 100.0 * shift / max(float(scaled_signal.values().max()), 1e-12),
+                shift,
+                100.0 * shift / max(float(scaled_signal.values().max()), 1e-12),
             )
             writer.add_systematic(
                 res_up,
@@ -1246,7 +1297,9 @@ def main():
             )
             logger.info(
                 "Resolution nuisances over %s: %d slabs, %s",
-                args.resolutionAxes, len(slab_templates), constrained_label,
+                args.resolutionAxes,
+                len(slab_templates),
+                constrained_label,
             )
             for name, h in slab_templates:
                 writer.add_systematic(
@@ -1265,8 +1318,14 @@ def main():
         stored_mev = float(np.diff(mc_raw.axes[cvh.MASS_AXIS].edges)[0]) * 1e3
         mass_shift_name = f"massShiftB{int(round(args.massShiftB * stored_mev))}MeV"
         up, down = shift_at_stored_granularity(
-            mc_raw, reduce_kwargs, args.signalCategory, signal_scale,
-            args.massShiftB, scaled_signal, logger=logger, var_scale=var_scale,
+            mc_raw,
+            reduce_kwargs,
+            args.signalCategory,
+            signal_scale,
+            args.massShiftB,
+            scaled_signal,
+            logger=logger,
+            var_scale=var_scale,
         )
         writer.add_systematic(
             [up, down],
@@ -1276,9 +1335,12 @@ def main():
             mirror=False,
             groups=["massShiftB"],
             constrained=False,
-            noi=True,   # a nuisance-of-interest: rabbit computes impacts ON it, like massShiftZ100MeV
+            noi=True,  # a nuisance-of-interest: rabbit computes impacts ON it, like massShiftZ100MeV
         )
-        logger.info("Added the B+ mass POI '%s' (unconstrained, signal template only)", mass_shift_name)
+        logger.info(
+            "Added the B+ mass POI '%s' (unconstrained, signal template only)",
+            mass_shift_name,
+        )
 
     meta = {
         "signal_scale": signal_scale,
@@ -1324,7 +1386,9 @@ def main():
         "scale_params": args.scaleParams if args.scaleVariations else [],
         "scale_params_skipped": list(args.skipScaleParams),
         "scale_param_naming": args.scaleParamNaming,
-        "joint_eta_bins": args.jointEtaBins if args.scaleParamNaming == "joint" else None,
+        "joint_eta_bins": (
+            args.jointEtaBins if args.scaleParamNaming == "joint" else None
+        ),
     }
     if true_signal is not None:
         meta["pseudodata_scale"] = pseudo_scale
