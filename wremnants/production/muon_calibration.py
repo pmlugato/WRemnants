@@ -2052,15 +2052,18 @@ def add_jpsi_crctn_stats_unc_hists(
             f"{reco_sel_GF}_response_weight",
         )
         df = df.Define(
-            "muonScaleSyst_responseWeights_tensor_onnx",
+            f"muonScaleSyst{hist_suffix}_responseWeights_tensor_onnx",
             jpsi_unc_helper,
             [*onnx_cols, "nominal_weight"],
         )
         if args.validationHists:
             muonScaleSyst_responseWeights_onnx = df.HistoBoost(
-                "muonScaleSyst_responseWeights_onnx",
+                f"muonScaleSyst{hist_suffix}_responseWeights_onnx",
                 axes,
-                [*nominal_cols, "muonScaleSyst_responseWeights_tensor_onnx"],
+                [
+                    *nominal_cols,
+                    f"muonScaleSyst{hist_suffix}_responseWeights_tensor_onnx",
+                ],
                 tensor_axes=jpsi_unc_helper.tensor_axes,
                 storage=hist.storage.Double(),
             )
@@ -2117,8 +2120,8 @@ def add_jpsi_crctn_stats_unc_hists(
             )
         elif args.muonScaleVariation == "onnxReweight":
             df = df.Define(
-                "nominal_muonScaleSyst_responseWeights_tensor",
-                "muonScaleSyst_responseWeights_tensor_onnx",
+                f"nominal_muonScaleSyst{hist_suffix}_responseWeights_tensor",
+                f"muonScaleSyst{hist_suffix}_responseWeights_tensor_onnx",
             )
         nominal_muonScaleSyst_responseWeights = df.HistoBoost(
             f"nominal_muonScaleSyst{hist_suffix}_responseWeights",
