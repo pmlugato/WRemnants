@@ -218,9 +218,9 @@ public:
     const float condPt = (condGenPt > 0.0f) ? condGenPt : genPt;
     const float kappa_gen_cond =
         static_cast<float>(genCharge) / (condPt * std::cosh(genEta));
-    const int muon_source = raw_source_
-                                ? muonSource_raw
-                                : muon_source_from_gen_part_flav(muonSource_raw);
+    const int muon_source =
+        raw_source_ ? muonSource_raw
+                    : muon_source_from_gen_part_flav(muonSource_raw);
 
     // RowMajor so the byte order forwarded to ONNX via ``.data()``
     // matches ORT's row-major expectation. See ``ReweightModel::run``.
@@ -315,13 +315,10 @@ public:
   // (default) disables it.
   // ``raw_source`` bypasses the Muon_genPartFlav adaptor; it belongs to the
   // model family, not to the caller. See ReweightEvaluator.
-  JpsiCorrectionsUncReweightHelper(T &&corrections,
-                                   const std::string &onnx_path,
-                                   unsigned int nslots = 1,
-                                   std::vector<double> masses = {},
-                                   double cond_pt_gen_min = -1.0,
-                                   bool e_pt_convention = true,
-                                   bool raw_source = false)
+  JpsiCorrectionsUncReweightHelper(
+      T &&corrections, const std::string &onnx_path, unsigned int nslots = 1,
+      std::vector<double> masses = {}, double cond_pt_gen_min = -1.0,
+      bool e_pt_convention = true, bool raw_source = false)
       : correctionHist_(std::make_shared<const T>(std::move(corrections))),
         masses_(std::move(masses)), e_pt_convention_(e_pt_convention),
         n_exact_fallback_(std::make_shared<std::atomic<std::size_t>>(0)) {
@@ -332,9 +329,7 @@ public:
   // Per-leg model dispatch. ``onnx_paths`` and the three parallel vectors are
   // indexed by MODEL, and ``leg_model`` maps leg position -> model index, so
   // a three-body candidate can keep its muons on the network trained on muons
-  // while the hadron leg goes to the hadron network. This is the ONLY correct
-  // configuration if the hadron model's residual class turns out to be a
-  // catch-all rather than a trained muon class.
+  // while the hadron leg goes to the hadron network.
   //
   // The conditioning floor travels per model because the two want different
   // ones -- 2.0 GeV for muon/443, ~1.0 for kpi -- and a single shared value
@@ -383,9 +378,8 @@ public:
   std::size_t model_for_leg(std::size_t i) const {
     if (leg_model_.empty())
       return 0;
-    return (i < leg_model_.size())
-               ? static_cast<std::size_t>(leg_model_[i])
-               : 0;
+    return (i < leg_model_.size()) ? static_cast<std::size_t>(leg_model_[i])
+                                   : 0;
   }
 
   // Variadic templated bin lookup (lifted from JpsiCorrectionsUncHelperSplines
@@ -440,13 +434,12 @@ public:
         const double AUnc = params(0, ivar);
         const double eUnc = params(1, ivar);
         const double MUnc = params(2, ivar);
-        // LOCAL DIVERGENCE from upstream: the exact shift is evaluated through
-        // the non-throwing calculateQopShiftExactSafe. A std::domain_error
-        // inside an RDataFrame Define kills the whole event loop, and the
-        // condition is reachable for a soft hadron leg. When it fires, this
+        // The exact shift is evaluated through the non-throwing
+        // calculateQopShiftExactSafe: a std::domain_error inside an RDataFrame
+        // Define kills the whole event loop, and an unphysical shifted state
+        // is reachable for a soft hadron leg. When it happens, this
         // (leg, variation) falls back to the massless linearisation and the
-        // occurrence is counted, so the policy is attributable rather than
-        // silent. Remove if upstream adopts a guard of its own.
+        // occurrence is counted (see nExactFallback).
         bool exact_ok = false;
         if (legMass > 0.0) {
           // calculateShiftedPtExact adds eUnc to TOTAL ENERGY and divides by

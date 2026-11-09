@@ -562,7 +562,7 @@ double calculateQopUnc(float pt, float eta, int charge, double AUnc,
 // energy loss to pt shift. A kaon of the same momentum loses the same energy
 // but changes momentum by dp = (E/p) dE, so the pt shift is larger by exactly
 // E/p: 1.115 at pt 1 GeV, 1.029 at 2 GeV. That factor -- and only that factor
-// -- has to be reinstated. See notes/E_IN_MATERIAL_TERM.md.
+// -- has to be reinstated.
 double calculateQopUncPtConvention(float pt, float eta, int charge, double AUnc,
                                    double eUnc, double MUnc, double mass) {
   const double k = 1. / pt;
@@ -1420,8 +1420,8 @@ public:
         // A massless leg goes through the 6-argument form, which has no
         // cosh(eta) and is therefore already in the file's pt convention. A
         // massive leg picks the convention explicitly: pt (default, matching
-        // the central-value corrector) or energy (havyn's, which carries an
-        // extra 1/cosh(eta)).
+        // the central-value corrector) or energy (calculateQopUnc with mass,
+        // which carries an extra 1/cosh(eta)).
         const double recoQopUnc =
             (pmass <= 0.0)
                 ? calculateQopUnc(recPt, recEta, recCharge, AUnc, eUnc, MUnc)

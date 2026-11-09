@@ -29,34 +29,28 @@ data_dir = common.data_dir
 # Produced by
 # scripts/corrections/muon_calibration/shift_smear_reweight_export.py.
 #
-# TWO FAMILIES, and they do not agree on what c_raw[5] means. Each graph
-# remaps the caller's integer class code internally, and the remaps are
-# different:
+# There are two model families, and their graphs remap the integer class
+# code (c_raw[5]) differently:
 #
 #   muon family:  class = (s == 443) - (s == 1)      {1, 15, 443}
 #   kpi  family:  class = (s == 211) - (s == 321)    {211, 321, other}
 #
-# So the model choice and the class alphabet are ONE decision, not two;
-# ``RESPONSE_MODELS`` keeps them together and ``response_model_spec``
-# is the only way to look either of them up. Passing a muon-family code
-# to the kpi graph is not an error at any layer -- 321 falls through the
-# muon remap to 1, which the kpi graph reads as its residual class -- so
-# nothing downstream can catch the mistake.
+# The model choice and the class alphabet are therefore one decision;
+# ``RESPONSE_MODELS`` keeps them together. A code from the wrong family is
+# not caught at any layer (321 through the muon remap becomes 1, which the
+# kpi graph reads as its residual class), so look codes up through
+# ``response_model_code`` rather than writing literals.
 #
-# They also cover disjoint momentum ranges. Mean log pt_gen baked into
-# the conditioning normalisation is 3.338 (28.2 GeV) for the muon models
-# and 1.113 (3.04 GeV) for kpi, and the measured response slope confirms
-# it: the muon/443 model breaks by a factor 21 across 1.5 -> 1.95 GeV,
-# while kpi is smooth from ~1 to ~15 GeV and reverses sign above ~25 GeV.
-# ``pt_window`` records that, and ``cond_pt_gen_min`` is the conditioning
-# floor each model wants -- see
-# openspec/changes/add-kpi-onnx-reweights/design.md.
+# The families were trained at different momenta (mean pt_gen ~28 GeV for
+# the muon models, ~3 GeV for kpi). ``cond_pt_gen_min`` is the gen-pt floor
+# each model wants on its conditioning input: the muon J/psi class is
+# unstable below ~2 GeV, while kpi is smooth down to ~1 GeV but returns
+# the wrong-sign response above ~25 GeV, so it cannot back W/Z muon legs.
 #
 # The muon family ships as a _smearing / _nosmearing pair because it was
-# trained jointly on W/Z -> mumu and J/psi -> mumu, and one of those has
-# to be smeared to match the other's resolution. Hadron training has no
-# such pair, so kpi exists only in the un-smeared form (confirmed with
-# the author, 2026-09-08).
+# trained jointly on W/Z -> mumu and J/psi -> mumu, one of which has to be
+# smeared to match the other's resolution. The kpi model exists only in the
+# un-smeared form.
 RESPONSE_MODELS = {
     "muon": {
         "stem": "shift_smear_reweight_mlp_factored_combined",
@@ -1068,10 +1062,6 @@ def make_jpsi_crctn_unc_helper(
             fixed_M_unc=fixed_M_unc,
         )
 
-        print("A unc", uncs[:, 0])
-        print("e unc", uncs[:, 1])
-        print("M unc", uncs[:, 2])
-
         var_mat = np.zeros((neta, n_scale_params, nvars))
 
         ivar = 0
@@ -1126,9 +1116,8 @@ def make_jpsi_crctn_unc_helper(
         ](ROOT.std.move(hist_scale_params_unc_cpp))
     helper.tensor_axes = (hist_scale_params_unc.axes["unc"], binning.down_up_axis)
     # What one unit of each nuisance moves each fine eta bin by, [neta, 3] for
-    # (A, e, M). Histmakers record it so the joint-fit guard
-    # (scripts/rabbit/check_joint_tensor.py) compares the widths actually built
-    # rather than re-deriving them from flags that might not have been wired.
+    # (A, e, M). Histmakers can record it in their metadata, so that the widths
+    # actually built can be compared across channels of a joint fit.
     helper.scale_param_widths = np.abs(var_mat).max(axis=-1)
     return helper
 
@@ -1261,7 +1250,8 @@ def _make_muon_reweight_unc_helper(
             else (ROOT.GetThreadPoolSize() if ROOT.IsImplicitMTEnabled() else 1)
         )
         if onnx_paths:
-            # Per-leg model dispatch (config D). Vectors are indexed by MODEL;
+            # Per-leg model dispatch, e.g. muon legs on the muon model and a
+            # hadron leg on the kpi model. Vectors are indexed by MODEL;
             # leg_model maps leg position -> model index. The conditioning floor
             # and the raw-source mode travel with the model because the two
             # families want different values of each, and a shared value would
