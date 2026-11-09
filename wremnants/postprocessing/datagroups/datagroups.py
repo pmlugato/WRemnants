@@ -96,7 +96,13 @@ class Datagroups(object):
 
         self.setGenAxes()
 
-        if self.mode == "btojpsik":
+        if self.mode == "btojpsik_cvhnano":
+            # One inclusive simulated sample, split by the genCategory axis
+            # rather than by dataset -- see datagroups_cvhnano.
+            from wremnants.postprocessing.datagroups.datagroups_cvhnano import (
+                make_datagroups_cvhnano as make_datagroups,
+            )
+        elif self.mode == "btojpsik":
             # The BMM-Tools NanoAOD analysis: BuToJpsiK / signalBuToJpsiK /
             # BuToJpsiPi are separate datasets, grouped by datagroups_btojpsik.
             # Without this branch a btojpsik output falls through to
