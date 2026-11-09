@@ -893,6 +893,10 @@ def muon_reweight_helper_cols(df, helper, reco_sel_GF, response_weight_col):
     return df, cols
 
 
+# Former name, still called by the W and W-like histmakers (and upstream).
+jpsi_style_cols = muon_reweight_helper_cols
+
+
 def make_jpsi_crctn_unc_helper(
     filepath_correction,
     scale_A=1.0,
